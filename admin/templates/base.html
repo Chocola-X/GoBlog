@@ -1,0 +1,39 @@
+{{define "base"}}
+<!doctype html>
+<html lang="zh-CN" class="mdui-theme-auto">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{.Title}} - {{index .Site "site_title"}}</title>
+  <link rel="stylesheet" href="/admin/assets/vendor/mdui.css">
+  <link rel="stylesheet" href="/admin/assets/app.css">
+  <script src="/admin/assets/vendor/mdui.global.js"></script>
+  <script type="module" src="/admin/assets/vendor/mdui-icons.js"></script>
+</head>
+<body>
+{{if eq .Title "登录"}}
+  <main class="login-main">{{template "content" .}}</main>
+{{else}}
+  <mdui-layout class="admin-shell">
+    <mdui-top-app-bar>
+      <mdui-top-app-bar-title>{{index .Site "site_title"}}</mdui-top-app-bar-title>
+      <form method="post" action="/admin/logout">
+        <mdui-button-icon type="submit" title="退出"><mdui-icon-logout></mdui-icon-logout></mdui-button-icon>
+      </form>
+    </mdui-top-app-bar>
+    <mdui-navigation-drawer open>
+      <mdui-list>
+        <mdui-list-item href="/admin"><mdui-icon-home slot="icon"></mdui-icon-home>控制台</mdui-list-item>
+        <mdui-list-item href="/admin/posts"><mdui-icon-article slot="icon"></mdui-icon-article>文章</mdui-list-item>
+        <mdui-list-item href="/admin/options"><mdui-icon-settings slot="icon"></mdui-icon-settings>设置</mdui-list-item>
+      </mdui-list>
+    </mdui-navigation-drawer>
+    <mdui-layout-main>
+      <main class="admin-main">{{template "content" .}}</main>
+    </mdui-layout-main>
+  </mdui-layout>
+{{end}}
+</body>
+</html>
+{{end}}
+

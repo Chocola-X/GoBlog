@@ -1,0 +1,28 @@
+{{define "base"}}
+<!doctype html>
+<html lang="zh-CN" class="mdui-theme-auto">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{if .Post}}{{.Post.Title}} - {{end}}{{index .Site "site_title"}}</title>
+  <link rel="stylesheet" href="/theme/default/mdui.css">
+  <link rel="stylesheet" href="/theme/default/theme.css">
+  <script src="/theme/default/mdui.global.js"></script>
+  <script type="module" src="/theme/default/mdui-icons.js"></script>
+</head>
+<body>
+  <div class="site">
+    <header class="site-header">
+      <a class="brand" href="/">
+        <h1>{{index .Site "site_title"}}</h1>
+        <div class="site-desc">{{index .Site "site_description"}}</div>
+      </a>
+      <a href="/sitemap.xml" class="meta"><mdui-icon-rss-feed></mdui-icon-rss-feed> sitemap</a>
+    </header>
+    <main>{{template "content" .}}</main>
+    <footer class="site-footer">Powered by GoBlog</footer>
+  </div>
+</body>
+</html>
+{{end}}
+

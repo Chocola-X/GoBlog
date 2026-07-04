@@ -1,0 +1,44 @@
+{{define "content"}}
+<div class="page-head">
+  <div>
+    <h1>文章</h1>
+    <p class="muted">管理发布内容和草稿。</p>
+  </div>
+  <mdui-button href="/admin/posts/new"><mdui-icon-add slot="icon"></mdui-icon-add>写文章</mdui-button>
+</div>
+<section class="table-panel">
+  <table>
+    <thead>
+      <tr>
+        <th>标题</th>
+        <th>状态</th>
+        <th>修改时间</th>
+        <th></th>
+      </tr>
+    </thead>
+    <tbody>
+    {{range .Posts}}
+      <tr>
+        <td>
+          <strong>{{.Title}}</strong><br>
+          <span class="muted">/post/{{.Slug}}</span>
+        </td>
+        <td>{{statusLabel .Status}}</td>
+        <td>{{date .Modified}}</td>
+        <td>
+          <div class="row-actions">
+            <mdui-button-icon href="/admin/posts/{{.CID}}/edit" title="编辑"><mdui-icon-edit></mdui-icon-edit></mdui-button-icon>
+            <form method="post" action="/admin/posts/{{.CID}}/delete">
+              <mdui-button-icon type="submit" title="删除"><mdui-icon-delete></mdui-icon-delete></mdui-button-icon>
+            </form>
+          </div>
+        </td>
+      </tr>
+    {{else}}
+      <tr><td colspan="4" class="muted">还没有文章。</td></tr>
+    {{end}}
+    </tbody>
+  </table>
+</section>
+{{end}}
+

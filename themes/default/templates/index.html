@@ -1,0 +1,14 @@
+{{define "content"}}
+<section class="post-list">
+  {{range .Posts}}
+  <article class="post-item">
+    <h2><a href="/post/{{.Slug}}">{{.Title}}</a></h2>
+    <div class="meta">{{date .Created}}</div>
+    <p>{{excerpt .Text 160}}</p>
+  </article>
+  {{else}}
+  <p class="empty">还没有发布文章。</p>
+  {{end}}
+</section>
+{{end}}
+

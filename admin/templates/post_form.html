@@ -1,0 +1,24 @@
+{{define "content"}}
+<div class="page-head">
+  <div>
+    <h1>{{.Title}}</h1>
+    <p class="muted">正文按纯文本保存并安全渲染。</p>
+  </div>
+  <mdui-button variant="outlined" href="/admin/posts">返回</mdui-button>
+</div>
+{{if .Saved}}<div class="notice">已保存。</div>{{end}}
+<form method="post" action="{{.Action}}" class="form-panel field-stack">
+  <mdui-text-field name="title" label="标题" value="{{.Post.Title}}" required></mdui-text-field>
+  <mdui-text-field name="slug" label="固定链接" value="{{.Post.Slug}}" helper="留空时由标题生成"></mdui-text-field>
+  <label class="muted" for="status">状态</label>
+  <select id="status" name="status">
+    <option value="publish" {{if eq .Post.Status "publish"}}selected{{end}}>发布</option>
+    <option value="draft" {{if eq .Post.Status "draft"}}selected{{end}}>草稿</option>
+  </select>
+  <mdui-text-field name="text" label="正文" rows="14" autosize>{{.Post.Text}}</mdui-text-field>
+  <div class="form-actions">
+    <mdui-button type="submit"><mdui-icon-edit slot="icon"></mdui-icon-edit>保存</mdui-button>
+  </div>
+</form>
+{{end}}
+

@@ -1,0 +1,70 @@
+package auth
+
+import (
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/base64"
+	"fmt"
+	"net/http"
+	"strconv"
+	"strings"
+	"time"
+)
+
+const CookieName = "goblog_session"
+
+func SetSession(w http.ResponseWriter, secret string, uid int64) {
+	exp := time.Now().Add(7 * 24 * time.Hour).Unix()
+	payload := fmt.Sprintf("%d:%d", uid, exp)
+	sig := sign(secret, payload)
+	http.SetCookie(w, &http.Cookie{
+		Name:     CookieName,
+		Value:    payload + ":" + sig,
+		Path:     "/",
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+		Expires:  time.Unix(exp, 0),
+	})
+}
+
+func ClearSession(w http.ResponseWriter) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     CookieName,
+		Value:    "",
+		Path:     "/",
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+		MaxAge:   -1,
+	})
+}
+
+func ParseSession(r *http.Request, secret string) (int64, bool) {
+	cookie, err := r.Cookie(CookieName)
+	if err != nil {
+		return 0, false
+	}
+
+	parts := strings.Split(cookie.Value, ":")
+	if len(parts) != 3 {
+		return 0, false
+	}
+
+	payload := parts[0] + ":" + parts[1]
+	if !hmac.Equal([]byte(sign(secret, payload)), []byte(parts[2])) {
+		return 0, false
+	}
+
+	exp, err := strconv.ParseInt(parts[1], 10, 64)
+	if err != nil || time.Now().Unix() > exp {
+		return 0, false
+	}
+
+	uid, err := strconv.ParseInt(parts[0], 10, 64)
+	return uid, err == nil
+}
+
+func sign(secret, payload string) string {
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write([]byte(payload))
+	return base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
+}

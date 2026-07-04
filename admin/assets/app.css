@@ -1,0 +1,157 @@
+body {
+  margin: 0;
+  color: rgb(var(--mdui-color-on-background));
+  background: rgb(var(--mdui-color-background));
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+.admin-shell {
+  min-height: 100vh;
+}
+
+.admin-main {
+  max-width: 1120px;
+  margin: 0 auto;
+  padding: 28px 20px 56px;
+}
+
+.login-main {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+}
+
+.login-panel,
+.form-panel,
+.table-panel,
+.stat-panel {
+  border: 1px solid rgb(var(--mdui-color-outline-variant));
+  border-radius: 8px;
+  background: rgb(var(--mdui-color-surface));
+}
+
+.login-panel {
+  width: min(420px, 100%);
+  padding: 28px;
+}
+
+.page-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 20px;
+}
+
+.page-head h1,
+.login-panel h1 {
+  margin: 0;
+  font-size: 28px;
+  line-height: 1.2;
+  letter-spacing: 0;
+}
+
+.muted {
+  color: rgb(var(--mdui-color-on-surface-variant));
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 16px;
+}
+
+.stat-panel,
+.form-panel {
+  padding: 20px;
+}
+
+.stat-value {
+  display: block;
+  margin-top: 8px;
+  font-size: 34px;
+  line-height: 1;
+}
+
+.field-stack {
+  display: grid;
+  gap: 16px;
+}
+
+.form-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 12px;
+  margin-top: 18px;
+}
+
+.table-panel {
+  overflow: auto;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  min-width: 720px;
+}
+
+th,
+td {
+  padding: 14px 16px;
+  border-bottom: 1px solid rgb(var(--mdui-color-outline-variant));
+  text-align: left;
+  vertical-align: middle;
+}
+
+th {
+  color: rgb(var(--mdui-color-on-surface-variant));
+  font-weight: 600;
+}
+
+.row-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.notice {
+  margin-bottom: 16px;
+  padding: 12px 14px;
+  border: 1px solid rgb(var(--mdui-color-primary));
+  border-radius: 8px;
+  color: rgb(var(--mdui-color-on-primary-container));
+  background: rgb(var(--mdui-color-primary-container));
+}
+
+.danger {
+  color: rgb(var(--mdui-color-error));
+}
+
+mdui-icon-home,
+mdui-icon-article,
+mdui-icon-add,
+mdui-icon-edit,
+mdui-icon-delete,
+mdui-icon-settings,
+mdui-icon-logout,
+mdui-icon-rss-feed {
+  display: inline-flex;
+  width: 20px;
+  height: 20px;
+  vertical-align: middle;
+}
+
+@media (max-width: 720px) {
+  .page-head {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .admin-main {
+    padding: 20px 14px 44px;
+  }
+}
+
