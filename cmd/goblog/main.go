@@ -43,8 +43,20 @@ func main() {
 	}
 
 	users := services.NewUserService(db)
-	if err := users.EnsureDefaultAdmin(ctx, cfg.AdminUser, cfg.AdminPassword, cfg.AdminMail); err != nil {
+	userCount, err := users.Count(ctx)
+	if err != nil {
 		log.Fatal(err)
+	}
+	defaultAdminReady := false
+	if shouldCreateDefaultAdmin(userCount, cfg) {
+		if err := users.EnsureDefaultAdmin(ctx, cfg.AdminUser, cfg.AdminPassword, cfg.AdminMail); err != nil {
+			log.Fatal(err)
+		}
+		defaultAdminReady = true
+	} else if userCount == 0 {
+		log.Printf("web install is available at http://localhost%s/install", cfg.Addr)
+	} else {
+		defaultAdminReady = true
 	}
 
 	contents := services.NewContentService(db)
@@ -56,7 +68,9 @@ func main() {
 	app := handlers.New(contents, metas, comments, users, options, plugin.Default)
 
 	log.Printf("goblog listening on %s", cfg.Addr)
-	log.Printf("admin: http://localhost%s/admin (default %s/%s)", cfg.Addr, cfg.AdminUser, cfg.AdminPassword)
+	if defaultAdminReady {
+		log.Printf("admin: http://localhost%s/admin", cfg.Addr)
+	}
 	if err := http.ListenAndServe(cfg.Addr, app.Handler()); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		log.Fatal(err)
 	}
@@ -69,6 +83,8 @@ type config struct {
 	AdminUser     string
 	AdminPassword string
 	AdminMail     string
+	WebInstall    bool
+	AdminExplicit bool
 }
 
 func loadConfig() config {
@@ -81,6 +97,10 @@ func loadConfig() config {
 		dsn = filepath.Join("data", "goblog.db")
 	}
 
+	_, adminUserSet := os.LookupEnv("GOBLOG_ADMIN_USER")
+	_, adminPasswordSet := os.LookupEnv("GOBLOG_ADMIN_PASSWORD")
+	_, adminMailSet := os.LookupEnv("GOBLOG_ADMIN_MAIL")
+
 	return config{
 		Addr:          env("GOBLOG_ADDR", ":8080"),
 		DBDriver:      driver,
@@ -88,7 +108,16 @@ func loadConfig() config {
 		AdminUser:     env("GOBLOG_ADMIN_USER", "admin"),
 		AdminPassword: env("GOBLOG_ADMIN_PASSWORD", "admin123"),
 		AdminMail:     env("GOBLOG_ADMIN_MAIL", "admin@example.com"),
+		WebInstall:    envBool("GOBLOG_WEB_INSTALL", true),
+		AdminExplicit: adminUserSet || adminPasswordSet || adminMailSet,
 	}
+}
+
+func shouldCreateDefaultAdmin(userCount int, cfg config) bool {
+	if userCount > 0 {
+		return false
+	}
+	return !cfg.WebInstall || cfg.AdminExplicit
 }
 
 func chooseDriver() string {
@@ -143,4 +172,16 @@ func env(key, fallback string) string {
 		return value
 	}
 	return fallback
+}
+
+func envBool(key string, fallback bool) bool {
+	value := strings.ToLower(strings.TrimSpace(os.Getenv(key)))
+	switch value {
+	case "1", "true", "yes", "on":
+		return true
+	case "0", "false", "no", "off":
+		return false
+	default:
+		return fallback
+	}
 }

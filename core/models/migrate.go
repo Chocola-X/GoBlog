@@ -4,7 +4,11 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strconv"
+	"strings"
 )
+
+const CurrentSchemaVersion = 1
 
 func Migrate(ctx context.Context, db *sql.DB, driver string) error {
 	var stmts []string
@@ -20,14 +24,92 @@ func Migrate(ctx context.Context, db *sql.DB, driver string) error {
 			return fmt.Errorf("migrate: %w", err)
 		}
 	}
-	ensureColumn(ctx, db, `ALTER TABLE gb_contents ADD COLUMN sortOrder int(10) default '0'`)
-	ensureColumn(ctx, db, `ALTER TABLE gb_users ADD COLUMN role varchar(16) default 'visitor'`)
+	return RunVersionedMigrations(ctx, db)
+}
 
+func ensureColumn(ctx context.Context, db *sql.DB, stmt string) error {
+	_, err := db.ExecContext(ctx, stmt)
+	if err == nil || isDuplicateColumnError(err) {
+		return nil
+	}
+	return err
+}
+
+func isDuplicateColumnError(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "duplicate column") ||
+		strings.Contains(message, "duplicate column name") ||
+		strings.Contains(message, "column already exists")
+}
+
+func RunVersionedMigrations(ctx context.Context, db *sql.DB) error {
+	version, err := schemaVersion(ctx, db)
+	if err != nil {
+		return err
+	}
+	migrations := []struct {
+		Version int
+		Run     func(context.Context, *sql.DB) error
+	}{
+		{Version: 1, Run: migrateV1},
+	}
+	for _, migration := range migrations {
+		if version >= migration.Version {
+			continue
+		}
+		if err := migration.Run(ctx, db); err != nil {
+			return fmt.Errorf("schema migration %d: %w", migration.Version, err)
+		}
+		if err := setSchemaVersion(ctx, db, migration.Version); err != nil {
+			return err
+		}
+		version = migration.Version
+	}
+	if version == 0 {
+		return setSchemaVersion(ctx, db, CurrentSchemaVersion)
+	}
 	return nil
 }
 
-func ensureColumn(ctx context.Context, db *sql.DB, stmt string) {
-	_, _ = db.ExecContext(ctx, stmt)
+func migrateV1(ctx context.Context, db *sql.DB) error {
+	if err := ensureColumn(ctx, db, `ALTER TABLE gb_contents ADD COLUMN sortOrder int(10) default '0'`); err != nil {
+		return err
+	}
+	if err := ensureColumn(ctx, db, `ALTER TABLE gb_users ADD COLUMN role varchar(16) default 'visitor'`); err != nil {
+		return err
+	}
+	return nil
+}
+
+func schemaVersion(ctx context.Context, db *sql.DB) (int, error) {
+	var raw string
+	err := db.QueryRowContext(ctx, `SELECT value FROM gb_options WHERE name = ? AND user = 0`, "schema_version").Scan(&raw)
+	if err == nil {
+		version, _ := strconv.Atoi(raw)
+		return version, nil
+	}
+	if err == sql.ErrNoRows {
+		return 0, nil
+	}
+	return 0, err
+}
+
+func setSchemaVersion(ctx context.Context, db *sql.DB, version int) error {
+	value := strconv.Itoa(version)
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO gb_options (name, user, value) VALUES (?, 0, ?)
+		ON CONFLICT(name, user) DO UPDATE SET value = excluded.value
+	`, "schema_version", value); err == nil {
+		return nil
+	}
+	_, err := db.ExecContext(ctx, `
+		INSERT INTO gb_options (name, user, value) VALUES (?, 0, ?)
+		ON DUPLICATE KEY UPDATE value = VALUES(value)
+	`, "schema_version", value)
+	return err
 }
 
 func sqliteSchema() []string {

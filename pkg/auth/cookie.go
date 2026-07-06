@@ -13,33 +13,73 @@ import (
 
 const CookieName = "goblog_session"
 
+type CookieOptions struct {
+	Prefix   string
+	Secure   bool
+	HTTPOnly bool
+	SameSite http.SameSite
+}
+
+func (o CookieOptions) Name(base string) string {
+	if o.Prefix == "" {
+		return base
+	}
+	return o.Prefix + base
+}
+
 func SetSession(w http.ResponseWriter, secret string, uid int64) {
+	SetSessionWithOptions(w, secret, uid, CookieOptions{})
+}
+
+func SetSessionWithOptions(w http.ResponseWriter, secret string, uid int64, options CookieOptions) {
+	if !options.HTTPOnly {
+		options.HTTPOnly = true
+	}
+	if options.SameSite == 0 {
+		options.SameSite = http.SameSiteLaxMode
+	}
 	exp := time.Now().Add(7 * 24 * time.Hour).Unix()
 	payload := fmt.Sprintf("%d:%d", uid, exp)
 	sig := sign(secret, payload)
 	http.SetCookie(w, &http.Cookie{
-		Name:     CookieName,
+		Name:     options.Name(CookieName),
 		Value:    payload + ":" + sig,
 		Path:     "/",
-		HttpOnly: true,
-		SameSite: http.SameSiteLaxMode,
+		HttpOnly: options.HTTPOnly,
+		SameSite: options.SameSite,
+		Secure:   options.Secure,
 		Expires:  time.Unix(exp, 0),
 	})
 }
 
 func ClearSession(w http.ResponseWriter) {
+	ClearSessionWithOptions(w, CookieOptions{})
+}
+
+func ClearSessionWithOptions(w http.ResponseWriter, options CookieOptions) {
+	if !options.HTTPOnly {
+		options.HTTPOnly = true
+	}
+	if options.SameSite == 0 {
+		options.SameSite = http.SameSiteLaxMode
+	}
 	http.SetCookie(w, &http.Cookie{
-		Name:     CookieName,
+		Name:     options.Name(CookieName),
 		Value:    "",
 		Path:     "/",
-		HttpOnly: true,
-		SameSite: http.SameSiteLaxMode,
+		HttpOnly: options.HTTPOnly,
+		SameSite: options.SameSite,
+		Secure:   options.Secure,
 		MaxAge:   -1,
 	})
 }
 
 func ParseSession(r *http.Request, secret string) (int64, bool) {
-	cookie, err := r.Cookie(CookieName)
+	return ParseSessionWithOptions(r, secret, CookieOptions{})
+}
+
+func ParseSessionWithOptions(r *http.Request, secret string, options CookieOptions) (int64, bool) {
+	cookie, err := r.Cookie(options.Name(CookieName))
 	if err != nil {
 		return 0, false
 	}

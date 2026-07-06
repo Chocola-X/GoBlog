@@ -37,6 +37,7 @@ import (
 	"goblog/core/services"
 	"goblog/core/validate"
 	"goblog/pkg/auth"
+	"goblog/pkg/i18n"
 	"goblog/pkg/render"
 )
 
@@ -79,7 +80,10 @@ func (a *App) Handler() http.Handler {
 	}
 
 	mux.HandleFunc("/admin/login", a.adminLogin)
+	mux.HandleFunc("/admin/register", a.adminRegister)
 	mux.HandleFunc("/admin/logout", a.adminLogout)
+	mux.HandleFunc("/register", a.adminRegister)
+	mux.HandleFunc("/install", a.installWizard)
 
 	adminRoutes := map[string]http.HandlerFunc{
 		"/admin":                    a.adminDashboard,
@@ -109,6 +113,7 @@ func (a *App) Handler() http.Handler {
 		"/admin/medias":             a.adminMedias,
 		"/admin/medias/":            a.adminMediaRoutes,
 		"/admin/backup":             a.adminBackup,
+		"/admin/upgrade":            a.adminUpgrade,
 		"/admin/autosave":           a.adminAutosave,
 		"/admin/tags/search":        a.adminTagSearch,
 		"/admin/theme-editor":       a.adminPlaceholder("主题编辑器", "对应 Typecho 的 theme-editor.php。直接编辑文件需要额外权限和审计，当前先保留入口。"),
@@ -182,14 +187,117 @@ func (a *App) adminLogin(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		secret, _ := a.Options.Get(r.Context(), "auth_secret")
-		auth.SetSession(w, secret, user.UID)
+		auth.SetSessionWithOptions(w, secret, user.UID, a.cookieOptions(r.Context()))
 		if next == "" {
 			next = "/admin"
 		}
-		http.Redirect(w, r, next, http.StatusSeeOther)
+		a.flashRedirect(w, r, next, http.StatusSeeOther, flashNotice{Type: "success", Message: "登录成功。"})
 	default:
 		methodNotAllowed(w, http.MethodGet+", "+http.MethodPost)
 	}
+}
+
+func (a *App) adminRegister(w http.ResponseWriter, r *http.Request) {
+	if !optionBool(a.option(r.Context(), "allow_register", "0")) {
+		http.NotFound(w, r)
+		return
+	}
+	switch r.Method {
+	case http.MethodGet:
+		a.renderAdmin(w, r, "register.html", map[string]any{"Title": "注册"})
+	case http.MethodPost:
+		if !a.validCSRFFor(r, "register") {
+			http.Error(w, "invalid csrf token", http.StatusForbidden)
+			return
+		}
+		if err := r.ParseForm(); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		role := a.option(r.Context(), "register_default_role", "subscriber")
+		if roleRank(role) > roleRank("subscriber") {
+			role = "subscriber"
+		}
+		input := services.SaveUserInput{
+			Name:       strings.TrimSpace(r.FormValue("name")),
+			Password:   r.FormValue("password"),
+			Mail:       strings.TrimSpace(r.FormValue("mail")),
+			URL:        strings.TrimSpace(r.FormValue("url")),
+			ScreenName: strings.TrimSpace(r.FormValue("screenName")),
+			Role:       role,
+		}
+		errs := validateUserInput(input, true)
+		if strings.TrimSpace(input.Mail) == "" {
+			errs.Add("mail", "不能为空")
+		}
+		a.addUserUniqueErrors(r.Context(), &errs, input.Name, input.Mail, 0)
+		if !errs.Empty() {
+			a.renderAdmin(w, r, "register.html", map[string]any{"Title": "注册", "User": models.User{Name: input.Name, Mail: input.Mail, URL: input.URL, ScreenName: input.ScreenName}, "Errors": errs})
+			return
+		}
+		if _, err := a.Users.Save(r.Context(), input, 0); err != nil {
+			a.renderAdmin(w, r, "register.html", map[string]any{"Title": "注册", "User": models.User{Name: input.Name, Mail: input.Mail, URL: input.URL, ScreenName: input.ScreenName}, "Error": err.Error()})
+			return
+		}
+		a.flashRedirect(w, r, "/admin/login", http.StatusSeeOther, flashNotice{Type: "success", Message: "注册成功，请登录。"})
+	default:
+		methodNotAllowed(w, http.MethodGet+", "+http.MethodPost)
+	}
+}
+
+func (a *App) installWizard(w http.ResponseWriter, r *http.Request) {
+	if !a.needsInstall(r.Context()) {
+		http.NotFound(w, r)
+		return
+	}
+	switch r.Method {
+	case http.MethodGet:
+		a.renderAdmin(w, r, "install.html", map[string]any{"Title": "安装"})
+	case http.MethodPost:
+		if !a.validCSRFFor(r, "install") {
+			http.Error(w, "invalid csrf token", http.StatusForbidden)
+			return
+		}
+		if err := r.ParseForm(); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		siteTitle := strings.TrimSpace(r.FormValue("site_title"))
+		if siteTitle == "" {
+			siteTitle = "GoBlog"
+		}
+		input := services.SaveUserInput{
+			Name:       strings.TrimSpace(r.FormValue("name")),
+			Password:   r.FormValue("password"),
+			Mail:       strings.TrimSpace(r.FormValue("mail")),
+			ScreenName: strings.TrimSpace(r.FormValue("screenName")),
+			Role:       "administrator",
+		}
+		errs := validateUserInput(input, true)
+		if !errs.Empty() {
+			a.renderAdmin(w, r, "install.html", map[string]any{"Title": "安装", "User": models.User{Name: input.Name, Mail: input.Mail, ScreenName: input.ScreenName}, "SiteTitle": siteTitle, "Errors": errs})
+			return
+		}
+		if err := a.Options.Set(r.Context(), "site_title", siteTitle); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if baseURL := strings.TrimSpace(r.FormValue("base_url")); baseURL != "" {
+			_ = a.Options.Set(r.Context(), "base_url", baseURL)
+		}
+		if _, err := a.Users.Save(r.Context(), input, 0); err != nil {
+			a.renderAdmin(w, r, "install.html", map[string]any{"Title": "安装", "Error": err.Error(), "SiteTitle": siteTitle})
+			return
+		}
+		a.flashRedirect(w, r, "/admin/login", http.StatusSeeOther, flashNotice{Type: "success", Message: "安装完成，请登录。"})
+	default:
+		methodNotAllowed(w, http.MethodGet+", "+http.MethodPost)
+	}
+}
+
+func (a *App) needsInstall(ctx context.Context) bool {
+	users, err := a.Users.List(ctx, "")
+	return err == nil && len(users) == 0
 }
 
 func (a *App) adminLogout(w http.ResponseWriter, r *http.Request) {
@@ -205,8 +313,8 @@ func (a *App) adminLogout(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid csrf token", http.StatusForbidden)
 		return
 	}
-	auth.ClearSession(w)
-	http.Redirect(w, r, "/admin/login", http.StatusSeeOther)
+	auth.ClearSessionWithOptions(w, a.cookieOptions(r.Context()))
+	a.flashRedirect(w, r, "/admin/login", http.StatusSeeOther, flashNotice{Type: "success", Message: "已退出。"})
 }
 
 func (a *App) adminDashboard(w http.ResponseWriter, r *http.Request) {
@@ -333,7 +441,7 @@ func (a *App) contentRoutes(w http.ResponseWriter, r *http.Request, prefix, typ 
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		http.Redirect(w, r, contentActionURL(typ, id)+"?saved=1", http.StatusSeeOther)
+		a.flashRedirect(w, r, contentActionURL(typ, id), http.StatusSeeOther, flashNotice{Type: "success", Message: "修订版本已恢复。"})
 	case "delete":
 		if r.Method != http.MethodPost {
 			methodNotAllowed(w, http.MethodPost)
@@ -346,7 +454,7 @@ func (a *App) contentRoutes(w http.ResponseWriter, r *http.Request, prefix, typ 
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		http.Redirect(w, r, contentListURL(typ), http.StatusSeeOther)
+		a.flashRedirect(w, r, contentListURL(typ), http.StatusSeeOther, flashNotice{Type: "success", Message: "内容已删除。"})
 	case "mark":
 		if r.Method != http.MethodPost {
 			methodNotAllowed(w, http.MethodPost)
@@ -359,7 +467,7 @@ func (a *App) contentRoutes(w http.ResponseWriter, r *http.Request, prefix, typ 
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		http.Redirect(w, r, contentListURL(typ), http.StatusSeeOther)
+		a.flashRedirect(w, r, contentListURL(typ), http.StatusSeeOther, flashNotice{Type: "success", Message: "状态已更新。"})
 	default:
 		http.NotFound(w, r)
 	}
@@ -453,7 +561,7 @@ func (a *App) contentForm(w http.ResponseWriter, r *http.Request, typ string, id
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		http.Redirect(w, r, contentActionURL(typ, id)+"?saved=1", http.StatusSeeOther)
+		a.flashRedirect(w, r, contentActionURL(typ, id), http.StatusSeeOther, flashNotice{Type: "success", Message: "内容已保存。"})
 	default:
 		methodNotAllowed(w, http.MethodGet+", "+http.MethodPost)
 	}
@@ -689,7 +797,7 @@ func (a *App) adminCommentRoutes(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		http.Redirect(w, r, "/admin/comments", http.StatusSeeOther)
+		a.flashRedirect(w, r, "/admin/comments", http.StatusSeeOther, flashNotice{Type: "success", Message: "评论状态已更新。"})
 	case "delete":
 		if r.Method != http.MethodPost {
 			methodNotAllowed(w, http.MethodPost)
@@ -699,7 +807,7 @@ func (a *App) adminCommentRoutes(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		http.Redirect(w, r, "/admin/comments", http.StatusSeeOther)
+		a.flashRedirect(w, r, "/admin/comments", http.StatusSeeOther, flashNotice{Type: "success", Message: "评论已删除。"})
 	default:
 		http.NotFound(w, r)
 	}
@@ -716,7 +824,7 @@ func (a *App) adminCommentsBatch(w http.ResponseWriter, r *http.Request) {
 	}
 	ids := parseInt64Values(r.Form["id"])
 	if len(ids) == 0 {
-		http.Redirect(w, r, "/admin/comments", http.StatusSeeOther)
+		a.flashRedirect(w, r, "/admin/comments", http.StatusSeeOther, flashNotice{Type: "success", Message: "评论已保存。"})
 		return
 	}
 	switch r.FormValue("action") {
@@ -734,7 +842,7 @@ func (a *App) adminCommentsBatch(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "unsupported comment action", http.StatusBadRequest)
 		return
 	}
-	http.Redirect(w, r, "/admin/comments", http.StatusSeeOther)
+	a.flashRedirect(w, r, "/admin/comments", http.StatusSeeOther, flashNotice{Type: "success", Message: "评论已批量处理。"})
 }
 
 func (a *App) adminCommentsClearSpam(w http.ResponseWriter, r *http.Request) {
@@ -746,7 +854,7 @@ func (a *App) adminCommentsClearSpam(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	http.Redirect(w, r, "/admin/comments?status=spam", http.StatusSeeOther)
+	a.flashRedirect(w, r, "/admin/comments?status=spam", http.StatusSeeOther, flashNotice{Type: "success", Message: "垃圾评论已清空。"})
 }
 
 func (a *App) commentForm(w http.ResponseWriter, r *http.Request, id int64, reply bool) {
@@ -799,7 +907,7 @@ func (a *App) commentForm(w http.ResponseWriter, r *http.Request, id int64, repl
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		http.Redirect(w, r, "/admin/comments", http.StatusSeeOther)
+		a.flashRedirect(w, r, "/admin/comments", http.StatusSeeOther, flashNotice{Type: "success", Message: "评论已保存。"})
 	default:
 		methodNotAllowed(w, http.MethodGet+", "+http.MethodPost)
 	}
@@ -852,7 +960,7 @@ func (a *App) adminUserRoutes(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		http.Redirect(w, r, "/admin/users", http.StatusSeeOther)
+		a.flashRedirect(w, r, "/admin/users", http.StatusSeeOther, flashNotice{Type: "success", Message: "用户已删除。"})
 	default:
 		http.NotFound(w, r)
 	}
@@ -877,7 +985,9 @@ func (a *App) userForm(w http.ResponseWriter, r *http.Request, id int64) {
 			return
 		}
 		input := services.SaveUserInput{Name: strings.TrimSpace(r.FormValue("name")), Password: r.FormValue("password"), Mail: strings.TrimSpace(r.FormValue("mail")), URL: strings.TrimSpace(r.FormValue("url")), ScreenName: strings.TrimSpace(r.FormValue("screenName")), Role: r.FormValue("role")}
-		if errs := validateUserInput(input, id == 0); !errs.Empty() {
+		errs := validateUserInput(input, id == 0)
+		a.addUserUniqueErrors(r.Context(), &errs, input.Name, input.Mail, id)
+		if !errs.Empty() {
 			user = models.User{UID: id, Name: input.Name, Mail: input.Mail, URL: input.URL, ScreenName: input.ScreenName, Role: input.Role}
 			a.renderAdmin(w, r, "user_form.html", map[string]any{"Title": userTitle(id), "User": user, "Action": userActionURL(id), "Errors": errs})
 			return
@@ -887,7 +997,7 @@ func (a *App) userForm(w http.ResponseWriter, r *http.Request, id int64) {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		http.Redirect(w, r, "/admin/users", http.StatusSeeOther)
+		a.flashRedirect(w, r, "/admin/users", http.StatusSeeOther, flashNotice{Type: "success", Message: "用户已保存。"})
 	default:
 		methodNotAllowed(w, http.MethodGet+", "+http.MethodPost)
 	}
@@ -910,6 +1020,7 @@ func (a *App) adminProfile(w http.ResponseWriter, r *http.Request) {
 		}
 		input := services.SaveUserInput{Name: user.Name, Mail: strings.TrimSpace(r.FormValue("mail")), URL: strings.TrimSpace(r.FormValue("url")), ScreenName: strings.TrimSpace(r.FormValue("screenName")), Role: user.Role}
 		errs := validateUserInput(input, false)
+		a.addUserUniqueErrors(r.Context(), &errs, input.Name, input.Mail, uid)
 		if password := r.FormValue("password"); password != "" && len([]rune(password)) < 6 {
 			errs.Add("password", "长度不能少于 6 个字符")
 		}
@@ -928,7 +1039,7 @@ func (a *App) adminProfile(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		http.Redirect(w, r, "/admin/profile?saved=1", http.StatusSeeOther)
+		a.flashRedirect(w, r, "/admin/profile", http.StatusSeeOther, flashNotice{Type: "success", Message: "个人资料已保存。"})
 	default:
 		methodNotAllowed(w, http.MethodGet+", "+http.MethodPost)
 	}
@@ -938,7 +1049,26 @@ func (a *App) adminOptionsGeneral(w http.ResponseWriter, r *http.Request) {
 	if !a.requireRole(w, r, "administrator") {
 		return
 	}
-	a.optionsForm(w, r, "基本设置", "options_general.html", []string{"site_title", "site_description", "site_keywords", "base_url", "allow_register", "active_theme", "upload_allowed_exts", "upload_max_size", "upload_replace_same_ext_only", "attachment_delete_policy"})
+	a.optionsForm(w, r, "General Settings", "options_general.html", []string{"site_title", "site_description", "site_keywords", "base_url", "site_language", "site_timezone", "allow_register", "register_default_role", "cookie_prefix", "cookie_secure", "cookie_samesite", "active_theme", "upload_allowed_exts", "upload_max_size", "upload_replace_same_ext_only", "attachment_delete_policy"})
+}
+
+func (a *App) adminUpgrade(w http.ResponseWriter, r *http.Request) {
+	if !a.requireRole(w, r, "administrator") {
+		return
+	}
+	current := optionInt(a.option(r.Context(), "schema_version", "0"), 0)
+	switch r.Method {
+	case http.MethodGet:
+		a.renderAdmin(w, r, "upgrade.html", map[string]any{"Title": "升级", "CurrentVersion": current, "TargetVersion": models.CurrentSchemaVersion})
+	case http.MethodPost:
+		if err := models.RunVersionedMigrations(r.Context(), a.Contents.DB()); err != nil {
+			a.renderAdmin(w, r, "upgrade.html", map[string]any{"Title": "升级", "CurrentVersion": current, "TargetVersion": models.CurrentSchemaVersion, "Error": err.Error()})
+			return
+		}
+		a.flashRedirect(w, r, "/admin/upgrade", http.StatusSeeOther, flashNotice{Type: "success", Message: "升级检查已完成。"})
+	default:
+		methodNotAllowed(w, http.MethodGet+", "+http.MethodPost)
+	}
 }
 
 func (a *App) adminOptionsReading(w http.ResponseWriter, r *http.Request) {
@@ -1002,7 +1132,7 @@ func (a *App) optionsForm(w http.ResponseWriter, r *http.Request, title, tmpl st
 				return
 			}
 		}
-		http.Redirect(w, r, r.URL.Path+"?saved=1", http.StatusSeeOther)
+		a.flashRedirect(w, r, r.URL.Path, http.StatusSeeOther, flashNotice{Type: "success", Message: "设置已保存。"})
 	default:
 		methodNotAllowed(w, http.MethodGet+", "+http.MethodPost)
 	}
@@ -1026,7 +1156,7 @@ func (a *App) adminThemes(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		http.Redirect(w, r, "/admin/themes?saved=1", http.StatusSeeOther)
+		a.flashRedirect(w, r, "/admin/themes", http.StatusSeeOther, flashNotice{Type: "success", Message: "主题已切换。"})
 		return
 	}
 	active, _ := a.Options.Get(r.Context(), "active_theme")
@@ -1162,7 +1292,7 @@ func (a *App) adminPluginToggle(w http.ResponseWriter, r *http.Request, name str
 		return
 	}
 	a.syncActivePlugins(r.Context())
-	http.Redirect(w, r, "/admin/plugins?saved=1", http.StatusSeeOther)
+	a.flashRedirect(w, r, "/admin/plugins", http.StatusSeeOther, flashNotice{Type: "success", Message: "插件状态已保存。"})
 }
 
 func (a *App) adminPluginConfig(w http.ResponseWriter, r *http.Request, name string, personal bool) {
@@ -1202,7 +1332,7 @@ func (a *App) adminPluginConfig(w http.ResponseWriter, r *http.Request, name str
 		OptionKey: key,
 		UserID:    userID,
 		Schema:    schema,
-		SavedURL:  r.URL.Path + "?saved=1",
+		SavedURL:  r.URL.Path,
 		Saved:     r.URL.Query().Get("saved") == "1",
 	})
 }
@@ -1223,7 +1353,7 @@ func (a *App) adminThemeConfig(w http.ResponseWriter, r *http.Request, name stri
 		BackURL:   "/admin/themes",
 		OptionKey: themeOptionKey(name),
 		Schema:    theme.ConfigSchema,
-		SavedURL:  r.URL.Path + "?saved=1",
+		SavedURL:  r.URL.Path,
 		Saved:     r.URL.Query().Get("saved") == "1",
 	})
 }
@@ -1269,7 +1399,7 @@ func (a *App) adminThemeFiles(w http.ResponseWriter, r *http.Request, name strin
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		http.Redirect(w, r, r.URL.Path+"?file="+neturl.QueryEscape(rel)+"&saved=1", http.StatusSeeOther)
+		a.flashRedirect(w, r, r.URL.Path+"?file="+neturl.QueryEscape(rel), http.StatusSeeOther, flashNotice{Type: "success", Message: "主题文件已保存。"})
 	default:
 		methodNotAllowed(w, http.MethodGet+", "+http.MethodPost)
 	}
@@ -1306,7 +1436,7 @@ func (a *App) schemaForm(w http.ResponseWriter, r *http.Request, cfg schemaFormC
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		http.Redirect(w, r, cfg.SavedURL, http.StatusSeeOther)
+		a.flashRedirect(w, r, cfg.SavedURL, http.StatusSeeOther, flashNotice{Type: "success", Message: "设置已保存。"})
 	default:
 		methodNotAllowed(w, http.MethodGet+", "+http.MethodPost)
 	}
@@ -1449,7 +1579,7 @@ func (a *App) adminMedias(w http.ResponseWriter, r *http.Request) {
 			_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "cid": id, "url": meta.URL, "markdown": attachmentMarkdown(meta)})
 			return
 		}
-		http.Redirect(w, r, "/admin/medias?saved=1", http.StatusSeeOther)
+		a.flashRedirect(w, r, "/admin/medias", http.StatusSeeOther, flashNotice{Type: "success", Message: "附件已上传。"})
 	default:
 		methodNotAllowed(w, http.MethodGet+", "+http.MethodPost)
 	}
@@ -1498,7 +1628,7 @@ func (a *App) adminMediaRoutes(w http.ResponseWriter, r *http.Request) {
 		}
 		a.removeAttachmentFile(meta)
 		_, _ = a.Plugins.ApplyActive(r.Context(), plugin.HookAttachmentAfterDelete, payload)
-		http.Redirect(w, r, "/admin/medias", http.StatusSeeOther)
+		a.flashRedirect(w, r, "/admin/medias", http.StatusSeeOther, flashNotice{Type: "success", Message: "附件已删除。"})
 	case "replace":
 		if r.Method != http.MethodPost {
 			methodNotAllowed(w, http.MethodPost)
@@ -1524,7 +1654,7 @@ func (a *App) adminMediaRoutes(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		http.Redirect(w, r, "/admin/medias?saved=1", http.StatusSeeOther)
+		a.flashRedirect(w, r, "/admin/medias", http.StatusSeeOther, flashNotice{Type: "success", Message: "附件已替换。"})
 	default:
 		http.NotFound(w, r)
 	}
@@ -1647,7 +1777,7 @@ func (a *App) adminBackup(w http.ResponseWriter, r *http.Request) {
 				http.Error(w, err.Error(), http.StatusInternalServerError)
 				return
 			}
-			http.Redirect(w, r, "/admin/backup?imported=1", http.StatusSeeOther)
+			a.flashRedirect(w, r, "/admin/backup", http.StatusSeeOther, flashNotice{Type: "success", Message: "备份已导入。"})
 		default:
 			http.Error(w, "unsupported backup action", http.StatusBadRequest)
 		}
@@ -2049,8 +2179,9 @@ func (a *App) frontComment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_, _ = a.Plugins.ApplyActive(r.Context(), plugin.HookCommentAfterSave, commentPayload)
-	http.SetCookie(w, &http.Cookie{Name: "comment_author", Value: author, Path: "/", MaxAge: 86400 * 365})
-	http.SetCookie(w, &http.Cookie{Name: "comment_mail", Value: mail, Path: "/", MaxAge: 86400 * 365})
+	cookies := a.cookieOptions(r.Context())
+	http.SetCookie(w, &http.Cookie{Name: cookies.Name("comment_author"), Value: author, Path: "/", MaxAge: 86400 * 365, HttpOnly: true, SameSite: cookies.SameSite, Secure: cookies.Secure})
+	http.SetCookie(w, &http.Cookie{Name: cookies.Name("comment_mail"), Value: mail, Path: "/", MaxAge: 86400 * 365, HttpOnly: true, SameSite: cookies.SameSite, Secure: cookies.Secure})
 	http.Redirect(w, r, redirectTo+"?comment_ok=1#comments", http.StatusSeeOther)
 }
 
@@ -3049,7 +3180,7 @@ func (a *App) requireAdmin(next http.HandlerFunc) http.HandlerFunc {
 		}
 		user, err := a.Users.ByID(r.Context(), uid)
 		if err != nil {
-			auth.ClearSession(w)
+			auth.ClearSessionWithOptions(w, a.cookieOptions(r.Context()))
 			http.Redirect(w, r, "/admin/login", http.StatusSeeOther)
 			return
 		}
@@ -3066,7 +3197,7 @@ func (a *App) currentUserID(r *http.Request) (int64, bool) {
 	if err != nil || secret == "" {
 		return 0, false
 	}
-	return auth.ParseSession(r, secret)
+	return auth.ParseSessionWithOptions(r, secret, a.cookieOptions(r.Context()))
 }
 
 func (a *App) currentUser(r *http.Request) (models.User, bool) {
@@ -3181,6 +3312,10 @@ func (a *App) csrfPurpose(r *http.Request) string {
 	switch {
 	case r.URL.Path == "/admin/login":
 		return "login"
+	case r.URL.Path == "/admin/register" || r.URL.Path == "/register":
+		return "register"
+	case r.URL.Path == "/install":
+		return "install"
 	case r.URL.Path == "/comment":
 		return "comment"
 	case strings.HasPrefix(r.URL.Path, "/admin"):
@@ -3315,8 +3450,10 @@ func (a *App) validPreviewToken(r *http.Request, c models.Content) bool {
 }
 
 func (a *App) renderAdmin(w http.ResponseWriter, r *http.Request, page string, data map[string]any) {
+	lang := a.option(r.Context(), "site_language", "zh-CN")
 	funcs := template.FuncMap{
-		"date":             formatDate,
+		"date":             func(ts int64) string { return a.formatDate(r.Context(), ts, "post_date_format") },
+		"T":                func(key string) string { return i18n.T(lang, key) },
 		"statusLabel":      statusLabel,
 		"contentStatus":    contentStatusLabel,
 		"roleLabel":        roleLabel,
@@ -3336,6 +3473,9 @@ func (a *App) renderAdmin(w http.ResponseWriter, r *http.Request, page string, d
 		return
 	}
 	a.enrichData(r.Context(), data)
+	if notices := a.consumeFlash(w, r); len(notices) > 0 {
+		data["Notices"] = notices
+	}
 	if out, err := a.Plugins.ApplyActive(r.Context(), plugin.HookAdminMenu, []plugin.AdminMenuItem{}); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -3398,8 +3538,10 @@ func (a *App) renderThemeStatus(w http.ResponseWriter, r *http.Request, page str
 		http.Error(w, "active theme not found", http.StatusInternalServerError)
 		return
 	}
+	lang := a.option(r.Context(), "site_language", "zh-CN")
 	funcs := template.FuncMap{
-		"date": formatDate,
+		"date": func(ts int64) string { return a.formatDate(r.Context(), ts, "post_date_format") },
+		"T":    func(key string) string { return i18n.T(lang, key) },
 		"excerpt": func(text string, limit int) string {
 			return a.excerpt(r.Context(), text, limit)
 		},
@@ -3424,7 +3566,7 @@ func (a *App) renderThemeStatus(w http.ResponseWriter, r *http.Request, page str
 			if strings.TrimSpace(layout) == "" {
 				layout = "2006-01-02 15:04"
 			}
-			return time.Unix(ts, 0).Format(layout)
+			return time.Unix(ts, 0).In(a.siteLocation(r.Context())).Format(layout)
 		},
 	}
 	for name, fn := range theme.Funcs {
@@ -4349,6 +4491,123 @@ func (a *App) applySchemaDefaults(schema []plugin.FieldSchema, values map[string
 	for _, field := range schema {
 		if _, ok := values[field.Name]; !ok && field.Default != "" {
 			values[field.Name] = field.Default
+		}
+	}
+}
+
+type flashNotice struct {
+	Type    string `json:"type"`
+	Message string `json:"message"`
+}
+
+func (a *App) flashRedirect(w http.ResponseWriter, r *http.Request, target string, code int, notices ...flashNotice) {
+	a.setFlash(w, r, notices...)
+	http.Redirect(w, r, target, code)
+}
+
+func (a *App) setFlash(w http.ResponseWriter, r *http.Request, notices ...flashNotice) {
+	if len(notices) == 0 {
+		return
+	}
+	data, err := json.Marshal(notices)
+	if err != nil {
+		return
+	}
+	secret := a.option(r.Context(), "auth_secret", "goblog")
+	value := base64.RawURLEncoding.EncodeToString(data)
+	sig := flashSign(secret, value)
+	options := a.cookieOptions(r.Context())
+	http.SetCookie(w, &http.Cookie{
+		Name:     options.Name("flash"),
+		Value:    value + "." + sig,
+		Path:     "/",
+		MaxAge:   120,
+		HttpOnly: true,
+		SameSite: options.SameSite,
+		Secure:   options.Secure,
+	})
+}
+
+func (a *App) consumeFlash(w http.ResponseWriter, r *http.Request) []flashNotice {
+	options := a.cookieOptions(r.Context())
+	cookie, err := r.Cookie(options.Name("flash"))
+	if err != nil || cookie.Value == "" {
+		return nil
+	}
+	http.SetCookie(w, &http.Cookie{Name: options.Name("flash"), Value: "", Path: "/", MaxAge: -1, HttpOnly: true, SameSite: options.SameSite, Secure: options.Secure})
+	parts := strings.Split(cookie.Value, ".")
+	if len(parts) != 2 {
+		return nil
+	}
+	secret := a.option(r.Context(), "auth_secret", "goblog")
+	if !hmac.Equal([]byte(flashSign(secret, parts[0])), []byte(parts[1])) {
+		return nil
+	}
+	raw, err := base64.RawURLEncoding.DecodeString(parts[0])
+	if err != nil {
+		return nil
+	}
+	var notices []flashNotice
+	_ = json.Unmarshal(raw, &notices)
+	return notices
+}
+
+func flashSign(secret, payload string) string {
+	mac := hmac.New(sha256.New, []byte(secret))
+	_, _ = mac.Write([]byte(payload))
+	return base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
+}
+
+func (a *App) cookieOptions(ctx context.Context) auth.CookieOptions {
+	return auth.CookieOptions{
+		Prefix:   a.option(ctx, "cookie_prefix", ""),
+		Secure:   optionBool(a.option(ctx, "cookie_secure", "0")),
+		HTTPOnly: true,
+		SameSite: sameSiteMode(a.option(ctx, "cookie_samesite", "Lax")),
+	}
+}
+
+func sameSiteMode(value string) http.SameSite {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "strict":
+		return http.SameSiteStrictMode
+	case "none":
+		return http.SameSiteNoneMode
+	default:
+		return http.SameSiteLaxMode
+	}
+}
+
+func (a *App) siteLocation(ctx context.Context) *time.Location {
+	name := a.option(ctx, "site_timezone", "Local")
+	if name == "" || name == "Local" {
+		return time.Local
+	}
+	loc, err := time.LoadLocation(name)
+	if err != nil {
+		return time.Local
+	}
+	return loc
+}
+
+func (a *App) formatDate(ctx context.Context, ts int64, optionName string) string {
+	if ts <= 0 {
+		return ""
+	}
+	layout := a.option(ctx, optionName, "2006-01-02 15:04")
+	if strings.TrimSpace(layout) == "" {
+		layout = "2006-01-02 15:04"
+	}
+	return time.Unix(ts, 0).In(a.siteLocation(ctx)).Format(layout)
+}
+
+func (a *App) addUserUniqueErrors(ctx context.Context, errs *validate.Errors, name, mail string, exceptID int64) {
+	if exists, err := a.Users.ExistsName(ctx, name, exceptID); err == nil && exists {
+		errs.Add("name", "用户名已存在")
+	}
+	if mail != "" {
+		if exists, err := a.Users.ExistsMail(ctx, mail, exceptID); err == nil && exists {
+			errs.Add("mail", "邮箱已存在")
 		}
 	}
 }

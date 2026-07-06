@@ -55,9 +55,15 @@ func (s *OptionService) EnsureDefaults(ctx context.Context) error {
 		"site_description":              "一个极简的 Go 博客",
 		"site_keywords":                 "",
 		"base_url":                      "http://localhost:8080",
+		"site_language":                 "zh-CN",
+		"site_timezone":                 "Local",
 		"active_theme":                  "default",
 		"default_category":              "1",
 		"allow_register":                "0",
+		"register_default_role":         "subscriber",
+		"cookie_prefix":                 "",
+		"cookie_secure":                 "0",
+		"cookie_samesite":               "Lax",
 		"post_date_format":              "2006-01-02",
 		"page_size":                     "10",
 		"posts_list_size":               "10",
@@ -97,6 +103,7 @@ func (s *OptionService) EnsureDefaults(ctx context.Context) error {
 		"permalink_page":                "/page/{slug}",
 		"permalink_category":            "/category/{slug}",
 		"active_plugins":                `["sitemap"]`,
+		"schema_version":                "1",
 	}
 	for key, value := range defaults {
 		current, err := s.Get(ctx, key)

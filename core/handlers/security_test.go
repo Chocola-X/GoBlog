@@ -1390,6 +1390,269 @@ func TestThemeFileEditorRejectsPathTraversal(t *testing.T) {
 	}
 }
 
+func TestRegistrationToggleUniqueAndDefaultRole(t *testing.T) {
+	app, secret, _ := newSecurityTestApp(t)
+	ctx := context.Background()
+
+	req := httptest.NewRequest(http.MethodGet, "/register", nil)
+	rec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("disabled register status = %d, want 404", rec.Code)
+	}
+
+	if err := app.Options.Set(ctx, "allow_register", "1"); err != nil {
+		t.Fatal(err)
+	}
+	form := url.Values{
+		"_csrf":      {signCSRF(secret, "anon", "register", time.Now().UTC())},
+		"name":       {"reader"},
+		"mail":       {"reader@example.com"},
+		"password":   {"secret123"},
+		"screenName": {"Reader"},
+	}
+	req = httptest.NewRequest(http.MethodPost, "/register", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec = httptest.NewRecorder()
+	app.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/admin/login" {
+		t.Fatalf("register redirect = %d %q: %s", rec.Code, rec.Header().Get("Location"), rec.Body.String())
+	}
+	var flash *http.Cookie
+	for _, cookie := range rec.Result().Cookies() {
+		if cookie.Name == "flash" {
+			flash = cookie
+		}
+	}
+	if flash == nil {
+		t.Fatal("register success did not set flash")
+	}
+	req = httptest.NewRequest(http.MethodGet, "/admin/login", nil)
+	req.AddCookie(flash)
+	rec = httptest.NewRecorder()
+	app.Handler().ServeHTTP(rec, req)
+	if !strings.Contains(rec.Body.String(), "注册成功，请登录。") {
+		t.Fatalf("login page missing register flash: %s", rec.Body.String())
+	}
+	user, err := app.Users.ByName(ctx, "reader")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if user.Role != "subscriber" {
+		t.Fatalf("registered role = %q, want subscriber", user.Role)
+	}
+
+	form.Set("name", "reader2")
+	req = httptest.NewRequest(http.MethodPost, "/register", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec = httptest.NewRecorder()
+	app.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "邮箱已存在") {
+		t.Fatalf("duplicate register = %d, body %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestInstallWizardAvailableOnEmptyDatabaseThenLocks(t *testing.T) {
+	app, secret := newInstallTestApp(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/install", nil)
+	rec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("install get status = %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+
+	form := url.Values{
+		"_csrf":      {signCSRF(secret, "anon", "install", time.Now().UTC())},
+		"site_title": {"Installed"},
+		"base_url":   {"http://example.com"},
+		"name":       {"owner"},
+		"mail":       {"owner@example.com"},
+		"password":   {"secret123"},
+	}
+	req = httptest.NewRequest(http.MethodPost, "/install", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec = httptest.NewRecorder()
+	app.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/admin/login" {
+		t.Fatalf("install post redirect = %d %q: %s", rec.Code, rec.Header().Get("Location"), rec.Body.String())
+	}
+	user, err := app.Users.ByName(context.Background(), "owner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if user.Role != "administrator" {
+		t.Fatalf("installed user role = %q", user.Role)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/install", nil)
+	rec = httptest.NewRecorder()
+	app.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("install after setup status = %d, want 404", rec.Code)
+	}
+}
+
+func TestAdminI18nEnglishGeneralSettings(t *testing.T) {
+	app, secret, adminID := newSecurityTestApp(t)
+	if err := app.Options.Set(context.Background(), "site_language", "en-US"); err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/admin/options/general", nil)
+	setSession(t, req, secret, adminID)
+	rec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("general options status = %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	for _, want := range []string{"General Settings", "Site title", "Allow registration", "Save settings"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("missing english text %q in %s", want, body)
+		}
+	}
+	for _, unwanted := range []string{"基本设置", "站点名称", "是否允许注册", "保存设置"} {
+		if strings.Contains(body, unwanted) {
+			t.Fatalf("unexpected chinese text %q in %s", unwanted, body)
+		}
+	}
+}
+
+func TestFlashNoticeSurvivesRedirectAndClears(t *testing.T) {
+	app, secret, adminID := newSecurityTestApp(t)
+	form := url.Values{
+		"_csrf":                        {adminToken(secret, adminID)},
+		"site_title":                   {"GoBlog"},
+		"base_url":                     {"http://localhost:8080"},
+		"site_language":                {"zh-CN"},
+		"site_timezone":                {"Local"},
+		"allow_register":               {"0"},
+		"register_default_role":        {"subscriber"},
+		"cookie_secure":                {"0"},
+		"cookie_samesite":              {"Lax"},
+		"upload_replace_same_ext_only": {"1"},
+		"attachment_delete_policy":     {"keep"},
+	}
+	req := httptest.NewRequest(http.MethodPost, "/admin/options/general", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	setSession(t, req, secret, adminID)
+	rec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("options save = %d, want 303", rec.Code)
+	}
+	var flash *http.Cookie
+	for _, cookie := range rec.Result().Cookies() {
+		if cookie.Name == "flash" {
+			flash = cookie
+		}
+	}
+	if flash == nil {
+		t.Fatal("expected flash cookie")
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/admin/options/general", nil)
+	req.AddCookie(flash)
+	setSession(t, req, secret, adminID)
+	rec = httptest.NewRecorder()
+	app.Handler().ServeHTTP(rec, req)
+	if !strings.Contains(rec.Body.String(), "设置已保存") {
+		t.Fatalf("missing flash notice: %s", rec.Body.String())
+	}
+	cleared := false
+	for _, cookie := range rec.Result().Cookies() {
+		if cookie.Name == "flash" && cookie.MaxAge < 0 {
+			cleared = true
+		}
+	}
+	if !cleared {
+		t.Fatal("flash cookie was not cleared")
+	}
+}
+
+func TestSiteTimezoneFormatsDates(t *testing.T) {
+	app, _, _ := newSecurityTestApp(t)
+	ctx := context.Background()
+	ts := time.Date(2026, 7, 7, 0, 0, 0, 0, time.UTC).Unix()
+	if err := app.Options.Set(ctx, "post_date_format", "2006-01-02 15:04 MST"); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.Options.Set(ctx, "site_timezone", "UTC"); err != nil {
+		t.Fatal(err)
+	}
+	utc := app.formatDate(ctx, ts, "post_date_format")
+	if err := app.Options.Set(ctx, "site_timezone", "Asia/Shanghai"); err != nil {
+		t.Fatal(err)
+	}
+	shanghai := app.formatDate(ctx, ts, "post_date_format")
+	if utc == shanghai || !strings.Contains(shanghai, "08:00") {
+		t.Fatalf("timezone formatting utc=%q shanghai=%q", utc, shanghai)
+	}
+}
+
+func TestCookiePrefixAndSecurityOptions(t *testing.T) {
+	app, secret, _ := newSecurityTestApp(t)
+	ctx := context.Background()
+	if err := app.Options.Set(ctx, "cookie_prefix", "gb_"); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.Options.Set(ctx, "cookie_secure", "1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.Options.Set(ctx, "cookie_samesite", "Strict"); err != nil {
+		t.Fatal(err)
+	}
+	form := url.Values{
+		"_csrf":    {signCSRF(secret, "anon", "login", time.Now().UTC())},
+		"name":     {"admin"},
+		"password": {"admin123"},
+	}
+	req := httptest.NewRequest(http.MethodPost, "/admin/login", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("login status = %d: %s", rec.Code, rec.Body.String())
+	}
+	found := false
+	for _, cookie := range rec.Result().Cookies() {
+		if cookie.Name == "gb_goblog_session" {
+			found = true
+			if !cookie.Secure || cookie.SameSite != http.SameSiteStrictMode || !cookie.HttpOnly {
+				t.Fatalf("session cookie security = secure:%v samesite:%v httponly:%v", cookie.Secure, cookie.SameSite, cookie.HttpOnly)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("prefixed session cookie missing")
+	}
+}
+
+func TestSchemaVersionUpgrade(t *testing.T) {
+	db, err := sql.Open("sqlite3", ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	ctx := context.Background()
+	if err := models.Migrate(ctx, db, "sqlite"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, `UPDATE gb_options SET value = '0' WHERE name = 'schema_version'`); err != nil {
+		t.Fatal(err)
+	}
+	if err := models.RunVersionedMigrations(ctx, db); err != nil {
+		t.Fatal(err)
+	}
+	var version string
+	if err := db.QueryRowContext(ctx, `SELECT value FROM gb_options WHERE name = 'schema_version'`).Scan(&version); err != nil {
+		t.Fatal(err)
+	}
+	if version != strconv.Itoa(models.CurrentSchemaVersion) {
+		t.Fatalf("schema_version = %q", version)
+	}
+}
+
 type phase6Plugin struct{}
 
 func (phase6Plugin) Name() string        { return "phase6" }
@@ -1448,6 +1711,33 @@ func newSecurityTestApp(t *testing.T) (*App, string, int64) {
 		t.Fatal(err)
 	}
 	return New(services.NewContentService(db), metas, services.NewCommentService(db), users, options, plugin.Default), secret, admin.UID
+}
+
+func newInstallTestApp(t *testing.T) (*App, string) {
+	t.Helper()
+	db, err := sql.Open("sqlite3", ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	db.SetMaxOpenConns(1)
+	t.Cleanup(func() { _ = db.Close() })
+	ctx := context.Background()
+	if err := models.Migrate(ctx, db, "sqlite"); err != nil {
+		t.Fatal(err)
+	}
+	options := services.NewOptionService(db)
+	if err := options.EnsureDefaults(ctx); err != nil {
+		t.Fatal(err)
+	}
+	metas := services.NewMetaService(db)
+	if err := metas.EnsureDefaultCategory(ctx); err != nil {
+		t.Fatal(err)
+	}
+	secret, err := options.Get(ctx, "auth_secret")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return New(services.NewContentService(db), metas, services.NewCommentService(db), services.NewUserService(db), options, plugin.Default), secret
 }
 
 func createPublishedPost(t *testing.T, app *App, authorID int64, slug string) int64 {

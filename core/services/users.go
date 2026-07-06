@@ -30,8 +30,8 @@ func NewUserService(db *sql.DB) *UserService {
 }
 
 func (s *UserService) EnsureDefaultAdmin(ctx context.Context, name, password, mail string) error {
-	var count int
-	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM gb_users`).Scan(&count); err != nil {
+	count, err := s.Count(ctx)
+	if err != nil {
 		return err
 	}
 	if count > 0 {
@@ -48,6 +48,12 @@ func (s *UserService) EnsureDefaultAdmin(ctx context.Context, name, password, ma
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 	`, name, string(hash), mail, name, now, now, 0, "administrator")
 	return err
+}
+
+func (s *UserService) Count(ctx context.Context) (int, error) {
+	var count int
+	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM gb_users`).Scan(&count)
+	return count, err
 }
 
 func (s *UserService) Authenticate(ctx context.Context, name, password string) (models.User, error) {
@@ -69,6 +75,33 @@ func (s *UserService) ByName(ctx context.Context, name string) (models.User, err
 		FROM gb_users WHERE name = ?
 	`, name).Scan(&u.UID, &u.Name, &u.Password, &u.Mail, &u.URL, &u.ScreenName, &u.Created, &u.Activated, &u.Logged, &u.Role, &u.AuthCode)
 	return u, err
+}
+
+func (s *UserService) ByMail(ctx context.Context, mail string) (models.User, error) {
+	var u models.User
+	err := s.db.QueryRowContext(ctx, `
+		SELECT uid, name, password, COALESCE(mail,''), COALESCE(url,''), COALESCE(screenName,''), created, activated, logged, role, COALESCE(authCode,'')
+		FROM gb_users WHERE mail = ?
+	`, mail).Scan(&u.UID, &u.Name, &u.Password, &u.Mail, &u.URL, &u.ScreenName, &u.Created, &u.Activated, &u.Logged, &u.Role, &u.AuthCode)
+	return u, err
+}
+
+func (s *UserService) ExistsName(ctx context.Context, name string, exceptID int64) (bool, error) {
+	var id int64
+	err := s.db.QueryRowContext(ctx, `SELECT uid FROM gb_users WHERE name = ? AND uid <> ?`, strings.TrimSpace(name), exceptID).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	return err == nil, err
+}
+
+func (s *UserService) ExistsMail(ctx context.Context, mail string, exceptID int64) (bool, error) {
+	var id int64
+	err := s.db.QueryRowContext(ctx, `SELECT uid FROM gb_users WHERE mail = ? AND uid <> ?`, strings.TrimSpace(mail), exceptID).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	return err == nil, err
 }
 
 func (s *UserService) ByID(ctx context.Context, id int64) (models.User, error) {

@@ -1,30 +1,49 @@
 {{define "content"}}
-<div class="page-head"><div><h1>基本设置</h1></div></div>
+<div class="page-head"><div><h1>{{T "General Settings"}}</h1></div></div>
 {{template "options_tabs" .}}
 {{if .Saved}}<div class="notice">设置已保存。</div>{{end}}
 <form method="post" class="form-panel field-stack">
-  <mdui-text-field name="site_title" label="站点名称" value="{{index .Options "site_title"}}" required></mdui-text-field>
-  <mdui-text-field name="base_url" label="站点地址" value="{{index .Options "base_url"}}" required></mdui-text-field>
-  <mdui-text-field name="site_description" label="站点描述" value="{{index .Options "site_description"}}"></mdui-text-field>
-  <mdui-text-field name="site_keywords" label="关键词" value="{{index .Options "site_keywords"}}"></mdui-text-field>
-  <mdui-select name="allow_register" label="是否允许注册" value="{{index .Options "allow_register"}}">
-    <mdui-menu-item value="0">不允许</mdui-menu-item>
-    <mdui-menu-item value="1">允许</mdui-menu-item>
+  <mdui-text-field name="site_title" label="{{T "Site title"}}" value="{{index .Options "site_title"}}" required></mdui-text-field>
+  <mdui-text-field name="base_url" label="{{T "Site URL"}}" value="{{index .Options "base_url"}}" required></mdui-text-field>
+  <mdui-text-field name="site_description" label="{{T "Site description"}}" value="{{index .Options "site_description"}}"></mdui-text-field>
+  <mdui-text-field name="site_keywords" label="{{T "Keywords"}}" value="{{index .Options "site_keywords"}}"></mdui-text-field>
+  <mdui-select name="site_language" label="{{T "Language"}}" value="{{index .Options "site_language"}}">
+    <mdui-menu-item value="zh-CN">简体中文</mdui-menu-item>
+    <mdui-menu-item value="en-US">English</mdui-menu-item>
   </mdui-select>
-  <mdui-text-field name="active_theme" label="当前主题" value="{{index .Options "active_theme"}}"></mdui-text-field>
-  <mdui-text-field name="upload_allowed_exts" label="允许上传扩展名" helper="逗号分隔，不包含点" value="{{index .Options "upload_allowed_exts"}}"></mdui-text-field>
-  <mdui-text-field name="upload_max_size" label="单文件最大字节数" type="number" value="{{index .Options "upload_max_size"}}"></mdui-text-field>
-  <mdui-select name="upload_replace_same_ext_only" label="替换附件扩展名限制" value="{{index .Options "upload_replace_same_ext_only"}}">
-    <mdui-menu-item value="1">必须同扩展名</mdui-menu-item>
-    <mdui-menu-item value="0">允许不同扩展名</mdui-menu-item>
+  <mdui-text-field name="site_timezone" label="{{T "Timezone"}}" helper="Asia/Shanghai, UTC, Local" value="{{index .Options "site_timezone"}}"></mdui-text-field>
+  <mdui-select name="allow_register" label="{{T "Allow registration"}}" value="{{index .Options "allow_register"}}">
+    <mdui-menu-item value="0">{{T "Disallow"}}</mdui-menu-item>
+    <mdui-menu-item value="1">{{T "Allow"}}</mdui-menu-item>
   </mdui-select>
-  <mdui-select name="attachment_delete_policy" label="删除内容时的附件策略" value="{{index .Options "attachment_delete_policy"}}">
-    <mdui-menu-item value="keep">保留附件</mdui-menu-item>
-    <mdui-menu-item value="record">删除附件记录</mdui-menu-item>
-    <mdui-menu-item value="file">删除附件记录和文件</mdui-menu-item>
+  <mdui-select name="register_default_role" label="{{T "Default registration role"}}" value="{{index .Options "register_default_role"}}">
+    <mdui-menu-item value="subscriber">{{T "Subscriber"}}</mdui-menu-item>
+    <mdui-menu-item value="visitor">{{T "Visitor"}}</mdui-menu-item>
   </mdui-select>
-  <div class="form-actions"><mdui-button type="submit">保存设置</mdui-button></div>
+  <mdui-text-field name="cookie_prefix" label="{{T "Cookie prefix"}}" helper="gb_" value="{{index .Options "cookie_prefix"}}"></mdui-text-field>
+  <mdui-select name="cookie_secure" label="{{T "Cookie Secure"}}" value="{{index .Options "cookie_secure"}}">
+    <mdui-menu-item value="0">{{T "Auto off"}}</mdui-menu-item>
+    <mdui-menu-item value="1">{{T "Force secure"}}</mdui-menu-item>
+  </mdui-select>
+  <mdui-select name="cookie_samesite" label="{{T "Cookie SameSite"}}" value="{{index .Options "cookie_samesite"}}">
+    <mdui-menu-item value="Lax">Lax</mdui-menu-item>
+    <mdui-menu-item value="Strict">Strict</mdui-menu-item>
+    <mdui-menu-item value="None">None</mdui-menu-item>
+  </mdui-select>
+  <mdui-text-field name="active_theme" label="{{T "Active theme"}}" value="{{index .Options "active_theme"}}"></mdui-text-field>
+  <mdui-text-field name="upload_allowed_exts" label="{{T "Allowed upload extensions"}}" helper="jpg,png,webp" value="{{index .Options "upload_allowed_exts"}}"></mdui-text-field>
+  <mdui-text-field name="upload_max_size" label="{{T "Upload max bytes"}}" type="number" value="{{index .Options "upload_max_size"}}"></mdui-text-field>
+  <mdui-select name="upload_replace_same_ext_only" label="{{T "Replacement extension policy"}}" value="{{index .Options "upload_replace_same_ext_only"}}">
+    <mdui-menu-item value="1">{{T "Same extension required"}}</mdui-menu-item>
+    <mdui-menu-item value="0">{{T "Different extension allowed"}}</mdui-menu-item>
+  </mdui-select>
+  <mdui-select name="attachment_delete_policy" label="{{T "Attachment delete policy"}}" value="{{index .Options "attachment_delete_policy"}}">
+    <mdui-menu-item value="keep">{{T "Keep attachments"}}</mdui-menu-item>
+    <mdui-menu-item value="record">{{T "Delete records"}}</mdui-menu-item>
+    <mdui-menu-item value="file">{{T "Delete records and files"}}</mdui-menu-item>
+  </mdui-select>
+  <div class="form-actions"><mdui-button type="submit">{{T "Save settings"}}</mdui-button></div>
 </form>
 {{end}}
 
-{{define "options_tabs"}}<div class="subnav"><mdui-button variant="tonal" href="/admin/options/general">基本</mdui-button><mdui-button variant="tonal" href="/admin/options/reading">阅读</mdui-button><mdui-button variant="tonal" href="/admin/options/discussion">评论</mdui-button><mdui-button variant="tonal" href="/admin/options/permalink">永久链接</mdui-button></div>{{end}}
+{{define "options_tabs"}}<div class="subnav"><mdui-button variant="tonal" href="/admin/options/general">{{T "Basic"}}</mdui-button><mdui-button variant="tonal" href="/admin/options/reading">{{T "Reading"}}</mdui-button><mdui-button variant="tonal" href="/admin/options/discussion">{{T "Discussion"}}</mdui-button><mdui-button variant="tonal" href="/admin/options/permalink">{{T "Permalink"}}</mdui-button></div>{{end}}
