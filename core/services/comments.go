@@ -14,15 +14,17 @@ type CommentService struct {
 }
 
 type SaveCommentInput struct {
-	CID    int64
-	Author string
-	Mail   string
-	URL    string
-	Text   string
-	Status string
-	Parent int64
-	IP     string
-	Agent  string
+	CID      int64
+	Author   string
+	AuthorID int64
+	OwnerID  int64
+	Mail     string
+	URL      string
+	Text     string
+	Status   string
+	Parent   int64
+	IP       string
+	Agent    string
 }
 
 func NewCommentService(db *sql.DB) *CommentService {
@@ -74,16 +76,21 @@ func (s *CommentService) List(ctx context.Context, status, keywords string, cid 
 	return comments, rows.Err()
 }
 
-func (s *CommentService) ListForContent(ctx context.Context, cid int64, order string) ([]models.Comment, error) {
+func (s *CommentService) ListForContent(ctx context.Context, cid int64, order string, limit, offset int) ([]models.Comment, error) {
 	if strings.ToUpper(order) != "DESC" {
 		order = "ASC"
 	} else {
 		order = "DESC"
 	}
-	rows, err := s.db.QueryContext(ctx, `
+	query := `
 		SELECT coid, cid, created, COALESCE(author,''), authorId, ownerId, COALESCE(mail,''), COALESCE(url,''), COALESCE(ip,''), COALESCE(agent,''), COALESCE(text,''), type, status, parent
-		FROM gb_comments WHERE cid = ? AND status = 'approved' ORDER BY created `+order+`
-	`, cid)
+		FROM gb_comments WHERE cid = ? AND status = 'approved' ORDER BY created ` + order + `, coid ` + order
+	args := []any{cid}
+	if limit > 0 {
+		query += ` LIMIT ? OFFSET ?`
+		args = append(args, limit, offset)
+	}
+	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -98,6 +105,12 @@ func (s *CommentService) ListForContent(ctx context.Context, cid int64, order st
 		comments = append(comments, c)
 	}
 	return comments, rows.Err()
+}
+
+func (s *CommentService) CountForContent(ctx context.Context, cid int64) (int64, error) {
+	var count int64
+	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM gb_comments WHERE cid = ? AND status = 'approved'`, cid).Scan(&count)
+	return count, err
 }
 
 func (s *CommentService) CountRecentByIP(ctx context.Context, ip string, since int64) (int64, error) {
@@ -118,19 +131,57 @@ func (s *CommentService) ByID(ctx context.Context, id int64) (models.Comment, er
 	return c, err
 }
 
+func (s *CommentService) HasApprovedAuthor(ctx context.Context, author, mail string) (bool, error) {
+	var count int
+	err := s.db.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM gb_comments WHERE author = ? AND mail = ? AND status = 'approved'
+	`, author, mail).Scan(&count)
+	return count > 0, err
+}
+
+func (s *CommentService) ParentDepth(ctx context.Context, cid, parent int64) (int, error) {
+	if parent <= 0 {
+		return 0, nil
+	}
+	depth := 0
+	seen := map[int64]bool{}
+	for parent > 0 {
+		if seen[parent] {
+			return depth, nil
+		}
+		seen[parent] = true
+		var next, parentCID int64
+		err := s.db.QueryRowContext(ctx, `SELECT parent, cid FROM gb_comments WHERE coid = ?`, parent).Scan(&next, &parentCID)
+		if err != nil {
+			return depth, err
+		}
+		if parentCID != cid {
+			return depth, sql.ErrNoRows
+		}
+		depth++
+		parent = next
+	}
+	return depth, nil
+}
+
 func (s *CommentService) Save(ctx context.Context, input SaveCommentInput, id int64) error {
 	status := input.Status
 	if status == "" {
 		status = "approved"
 	}
 	if id > 0 {
+		var cid int64
+		_ = s.db.QueryRowContext(ctx, `SELECT cid FROM gb_comments WHERE coid = ?`, id).Scan(&cid)
 		_, err := s.db.ExecContext(ctx, `UPDATE gb_comments SET author = ?, mail = ?, url = ?, text = ?, status = ? WHERE coid = ?`, input.Author, input.Mail, input.URL, input.Text, status, id)
+		if err == nil && cid > 0 {
+			err = s.refreshContentCount(ctx, cid)
+		}
 		return err
 	}
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO gb_comments (cid, created, author, authorId, ownerId, mail, url, ip, agent, text, type, status, parent)
-		VALUES (?, ?, ?, 0, 0, ?, ?, ?, ?, ?, 'comment', ?, ?)
-	`, input.CID, time.Now().Unix(), input.Author, input.Mail, input.URL, input.IP, input.Agent, input.Text, status, input.Parent)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'comment', ?, ?)
+	`, input.CID, time.Now().Unix(), input.Author, input.AuthorID, input.OwnerID, input.Mail, input.URL, input.IP, input.Agent, input.Text, status, input.Parent)
 	if err != nil {
 		return err
 	}
@@ -138,8 +189,25 @@ func (s *CommentService) Save(ctx context.Context, input SaveCommentInput, id in
 }
 
 func (s *CommentService) Mark(ctx context.Context, id int64, status string) error {
+	var cid int64
+	_ = s.db.QueryRowContext(ctx, `SELECT cid FROM gb_comments WHERE coid = ?`, id).Scan(&cid)
 	_, err := s.db.ExecContext(ctx, `UPDATE gb_comments SET status = ? WHERE coid = ?`, status, id)
+	if err == nil && cid > 0 {
+		err = s.refreshContentCount(ctx, cid)
+	}
 	return err
+}
+
+func (s *CommentService) MarkMany(ctx context.Context, ids []int64, status string) error {
+	for _, id := range ids {
+		if id <= 0 {
+			continue
+		}
+		if err := s.Mark(ctx, id, status); err != nil {
+			return err
+		}
+	}
+	return s.refreshAllContentCounts(ctx)
 }
 
 func (s *CommentService) Delete(ctx context.Context, id int64) error {
@@ -152,11 +220,39 @@ func (s *CommentService) Delete(ctx context.Context, id int64) error {
 	return err
 }
 
+func (s *CommentService) DeleteMany(ctx context.Context, ids []int64) error {
+	for _, id := range ids {
+		if id <= 0 {
+			continue
+		}
+		if _, err := s.db.ExecContext(ctx, `DELETE FROM gb_comments WHERE coid = ?`, id); err != nil {
+			return err
+		}
+	}
+	return s.refreshAllContentCounts(ctx)
+}
+
+func (s *CommentService) ClearSpam(ctx context.Context) error {
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM gb_comments WHERE status = 'spam'`); err != nil {
+		return err
+	}
+	return s.refreshAllContentCounts(ctx)
+}
+
 func (s *CommentService) refreshContentCount(ctx context.Context, cid int64) error {
 	_, err := s.db.ExecContext(ctx, `
 		UPDATE gb_contents SET commentsNum = (
 			SELECT COUNT(*) FROM gb_comments WHERE cid = ? AND status = 'approved'
 		) WHERE cid = ?
 	`, cid, cid)
+	return err
+}
+
+func (s *CommentService) refreshAllContentCounts(ctx context.Context) error {
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE gb_contents SET commentsNum = (
+			SELECT COUNT(*) FROM gb_comments WHERE gb_comments.cid = gb_contents.cid AND status = 'approved'
+		)
+	`)
 	return err
 }

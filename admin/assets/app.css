@@ -264,6 +264,13 @@ select {
   margin-top: 18px;
 }
 
+.bulk-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin: 0 0 14px;
+}
+
 .table-panel {
   overflow: auto;
 }

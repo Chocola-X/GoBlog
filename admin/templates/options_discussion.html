@@ -5,13 +5,48 @@
     <mdui-menu-item value="0">不强制审核</mdui-menu-item>
     <mdui-menu-item value="1">所有评论必须审核</mdui-menu-item>
   </mdui-select>
+  <mdui-checkbox name="comments_whitelist" value="1" {{if eq (index .Options "comments_whitelist") "1"}}checked{{end}}>启用评论白名单</mdui-checkbox>
+  <input type="hidden" name="comments_whitelist" value="0">
   <mdui-checkbox name="comments_require_mail" value="1" {{if eq (index .Options "comments_require_mail") "1"}}checked{{end}}>必须填写邮箱</mdui-checkbox>
   <input type="hidden" name="comments_require_mail" value="0">
+  <mdui-checkbox name="comments_require_url" value="1" {{if eq (index .Options "comments_require_url") "1"}}checked{{end}}>必须填写网址</mdui-checkbox>
+  <input type="hidden" name="comments_require_url" value="0">
   <mdui-checkbox name="comments_show_url" value="1" {{if eq (index .Options "comments_show_url") "1"}}checked{{end}}>评论者名称显示主页链接</mdui-checkbox>
   <input type="hidden" name="comments_show_url" value="0">
+  <mdui-checkbox name="comments_url_nofollow" value="1" {{if eq (index .Options "comments_url_nofollow") "1"}}checked{{end}}>评论者链接添加 nofollow</mdui-checkbox>
+  <input type="hidden" name="comments_url_nofollow" value="0">
+  <mdui-checkbox name="comments_markdown" value="1" {{if eq (index .Options "comments_markdown") "1"}}checked{{end}}>评论支持 Markdown</mdui-checkbox>
+  <input type="hidden" name="comments_markdown" value="0">
+  <mdui-checkbox name="comments_avatar" value="1" {{if eq (index .Options "comments_avatar") "1"}}checked{{end}}>显示 Gravatar 头像</mdui-checkbox>
+  <input type="hidden" name="comments_avatar" value="0">
   <mdui-select name="comments_order" label="评论排序" value="{{index .Options "comments_order"}}">
     <mdui-menu-item value="ASC">较旧在前</mdui-menu-item>
     <mdui-menu-item value="DESC">较新在前</mdui-menu-item>
+  </mdui-select>
+  <mdui-select name="comments_page_display" label="默认评论页" value="{{index .Options "comments_page_display"}}">
+    <mdui-menu-item value="first">第一页</mdui-menu-item>
+    <mdui-menu-item value="last">最后一页</mdui-menu-item>
+  </mdui-select>
+  <mdui-text-field name="comment_date_format" label="评论日期格式" value="{{index .Options "comment_date_format"}}"></mdui-text-field>
+  <mdui-text-field name="comments_list_size" label="最新评论列表数" type="number" value="{{index .Options "comments_list_size"}}"></mdui-text-field>
+  <mdui-text-field name="comments_page_size" label="每页评论数" type="number" value="{{index .Options "comments_page_size"}}"></mdui-text-field>
+  <mdui-text-field name="comments_max_nesting_levels" label="最大嵌套层级" type="number" value="{{index .Options "comments_max_nesting_levels"}}"></mdui-text-field>
+  <mdui-text-field name="comments_auto_close" label="自动关闭评论天数" type="number" helper="0 表示不自动关闭" value="{{index .Options "comments_auto_close"}}"></mdui-text-field>
+  <mdui-checkbox name="comments_check_referer" value="1" {{if eq (index .Options "comments_check_referer") "1"}}checked{{end}}>检查评论来源页</mdui-checkbox>
+  <input type="hidden" name="comments_check_referer" value="0">
+  <mdui-checkbox name="comments_antispam" value="1" {{if eq (index .Options "comments_antispam") "1"}}checked{{end}}>启用基础反垃圾</mdui-checkbox>
+  <input type="hidden" name="comments_antispam" value="0">
+  <mdui-checkbox name="comments_post_interval_enable" value="1" {{if eq (index .Options "comments_post_interval_enable") "1"}}checked{{end}}>限制同 IP 评论间隔</mdui-checkbox>
+  <input type="hidden" name="comments_post_interval_enable" value="0">
+  <mdui-text-field name="comments_post_interval" label="同 IP 评论间隔秒数" type="number" value="{{index .Options "comments_post_interval"}}"></mdui-text-field>
+  <mdui-text-field name="comments_stop_words" label="停用词" rows="3" helper="每行或逗号分隔；命中后进入垃圾评论">{{index .Options "comments_stop_words"}}</mdui-text-field>
+  <mdui-text-field name="comments_ip_blacklist" label="IP 黑名单" rows="3" helper="每行或逗号分隔；命中后拒绝评论">{{index .Options "comments_ip_blacklist"}}</mdui-text-field>
+  <mdui-text-field name="comments_html_tag_allowed" label="允许的 HTML 标签" helper="例如：a,code,strong；默认全部转义" value="{{index .Options "comments_html_tag_allowed"}}"></mdui-text-field>
+  <mdui-select name="comments_avatar_rating" label="Gravatar 评级" value="{{index .Options "comments_avatar_rating"}}">
+    <mdui-menu-item value="g">G</mdui-menu-item>
+    <mdui-menu-item value="pg">PG</mdui-menu-item>
+    <mdui-menu-item value="r">R</mdui-menu-item>
+    <mdui-menu-item value="x">X</mdui-menu-item>
   </mdui-select>
   <div class="form-actions"><mdui-button type="submit">保存设置</mdui-button></div>
 </form>

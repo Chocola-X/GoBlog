@@ -360,6 +360,338 @@ func TestAutosaveAllowsOnlyPostOrPageAndChecksAuthor(t *testing.T) {
 	}
 }
 
+func TestPublicCommentWhitelistAndStopWords(t *testing.T) {
+	app, _, adminID := newSecurityTestApp(t)
+	ctx := context.Background()
+	if err := app.Options.Set(ctx, "comments_whitelist", "1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.Options.Set(ctx, "comments_post_interval_enable", "0"); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.Options.Set(ctx, "comments_stop_words", "buy now"); err != nil {
+		t.Fatal(err)
+	}
+	postID := createPublishedPost(t, app, adminID, "comment-white")
+	if err := app.Comments.Save(ctx, services.SaveCommentInput{CID: postID, Author: "Known", Mail: "known@example.com", Text: "old", Status: "approved"}, 0); err != nil {
+		t.Fatal(err)
+	}
+
+	rec := submitPublicComment(t, app, postID, url.Values{
+		"author": {"Known"},
+		"mail":   {"known@example.com"},
+		"text":   {"normal comment"},
+	}, "198.51.100.10")
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("known commenter status = %d, want 303", rec.Code)
+	}
+
+	rec = submitPublicComment(t, app, postID, url.Values{
+		"author": {"New"},
+		"mail":   {"new@example.com"},
+		"text":   {"normal comment"},
+	}, "198.51.100.11")
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("new commenter status = %d, want 303", rec.Code)
+	}
+
+	rec = submitPublicComment(t, app, postID, url.Values{
+		"author": {"Spammer"},
+		"mail":   {"spam@example.com"},
+		"text":   {"please buy now"},
+	}, "198.51.100.12")
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("spam commenter status = %d, want 303", rec.Code)
+	}
+
+	all, err := app.Comments.List(ctx, "all", "", postID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	statuses := map[string]int{}
+	for _, comment := range all {
+		statuses[comment.Status]++
+	}
+	if statuses["approved"] != 2 || statuses["waiting"] != 1 || statuses["spam"] != 1 {
+		t.Fatalf("comment statuses = %#v, want approved=2 waiting=1 spam=1", statuses)
+	}
+}
+
+func TestPublicCommentRefererCheckRequiresCurrentContent(t *testing.T) {
+	app, _, adminID := newSecurityTestApp(t)
+	ctx := context.Background()
+	if err := app.Options.Set(ctx, "comments_post_interval_enable", "0"); err != nil {
+		t.Fatal(err)
+	}
+	postID := createPublishedPost(t, app, adminID, "comment-referer")
+	form := url.Values{
+		"author": {"Ref"},
+		"mail":   {"ref@example.com"},
+		"text":   {"referer check"},
+	}
+
+	rec := submitPublicCommentWithReferer(t, app, postID, form, "198.51.100.40", "")
+	if rec.Code != http.StatusSeeOther || !strings.Contains(rec.Header().Get("Location"), "comment_error=referer") {
+		t.Fatalf("empty referer response = %d %q", rec.Code, rec.Header().Get("Location"))
+	}
+
+	rec = submitPublicCommentWithReferer(t, app, postID, form, "198.51.100.41", "http://evil.example/post/comment-referer")
+	if rec.Code != http.StatusSeeOther || !strings.Contains(rec.Header().Get("Location"), "comment_error=referer") {
+		t.Fatalf("wrong host referer response = %d %q", rec.Code, rec.Header().Get("Location"))
+	}
+
+	rec = submitPublicCommentWithReferer(t, app, postID, form, "198.51.100.42", "http://example.com/post/other")
+	if rec.Code != http.StatusSeeOther || !strings.Contains(rec.Header().Get("Location"), "comment_error=referer") {
+		t.Fatalf("wrong path referer response = %d %q", rec.Code, rec.Header().Get("Location"))
+	}
+
+	rec = submitPublicCommentWithReferer(t, app, postID, form, "198.51.100.43", "http://example.com/post/comment-referer?comments_page=1")
+	if rec.Code != http.StatusSeeOther || !strings.Contains(rec.Header().Get("Location"), "comment_ok=1") {
+		t.Fatalf("valid referer response = %d %q", rec.Code, rec.Header().Get("Location"))
+	}
+}
+
+func TestPublicCommentIPBlacklistAndParentValidation(t *testing.T) {
+	app, _, adminID := newSecurityTestApp(t)
+	ctx := context.Background()
+	if err := app.Options.Set(ctx, "comments_ip_blacklist", "203.0.113.*"); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.Options.Set(ctx, "comments_post_interval_enable", "0"); err != nil {
+		t.Fatal(err)
+	}
+	firstID := createPublishedPost(t, app, adminID, "first-parent")
+	secondID := createPublishedPost(t, app, adminID, "second-parent")
+	if err := app.Comments.Save(ctx, services.SaveCommentInput{CID: firstID, Author: "Parent", Mail: "p@example.com", Text: "parent", Status: "approved"}, 0); err != nil {
+		t.Fatal(err)
+	}
+	parentComments, err := app.Comments.List(ctx, "approved", "", firstID)
+	if err != nil || len(parentComments) == 0 {
+		t.Fatalf("parent comment missing: %v %#v", err, parentComments)
+	}
+
+	rec := submitPublicComment(t, app, secondID, url.Values{
+		"author": {"Blocked"},
+		"mail":   {"b@example.com"},
+		"text":   {"blocked"},
+	}, "203.0.113.9")
+	if rec.Code != http.StatusSeeOther || !strings.Contains(rec.Header().Get("Location"), "comment_error=blocked") {
+		t.Fatalf("blacklist response = %d %q", rec.Code, rec.Header().Get("Location"))
+	}
+
+	rec = submitPublicComment(t, app, secondID, url.Values{
+		"author": {"Child"},
+		"mail":   {"c@example.com"},
+		"text":   {"cross parent"},
+		"parent": {itoa(parentComments[0].COID)},
+	}, "198.51.100.20")
+	if rec.Code != http.StatusSeeOther || !strings.Contains(rec.Header().Get("Location"), "comment_error=parent") {
+		t.Fatalf("cross-parent response = %d %q", rec.Code, rec.Header().Get("Location"))
+	}
+
+	secondComments, err := app.Comments.List(ctx, "all", "", secondID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(secondComments) != 0 {
+		t.Fatalf("unexpected second post comments: %#v", secondComments)
+	}
+}
+
+func TestCommentPaginationKeepsThreadReplies(t *testing.T) {
+	app, _, adminID := newSecurityTestApp(t)
+	ctx := context.Background()
+	if err := app.Options.Set(ctx, "comments_page_size", "1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.Options.Set(ctx, "comments_page_display", "first"); err != nil {
+		t.Fatal(err)
+	}
+	postID := createPublishedPost(t, app, adminID, "comment-thread-page")
+	if err := app.Comments.Save(ctx, services.SaveCommentInput{CID: postID, Author: "Root One", Mail: "r1@example.com", Text: "root one", Status: "approved"}, 0); err != nil {
+		t.Fatal(err)
+	}
+	roots, err := app.Comments.List(ctx, "approved", "", postID)
+	if err != nil || len(roots) == 0 {
+		t.Fatalf("root comment missing: %v %#v", err, roots)
+	}
+	rootOneID := roots[len(roots)-1].COID
+	if err := app.Comments.Save(ctx, services.SaveCommentInput{CID: postID, Author: "Reply", Mail: "reply@example.com", Text: "reply", Status: "approved", Parent: rootOneID}, 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.Comments.Save(ctx, services.SaveCommentInput{CID: postID, Author: "Root Two", Mail: "r2@example.com", Text: "root two", Status: "approved"}, 0); err != nil {
+		t.Fatal(err)
+	}
+	post, err := app.Contents.ByID(ctx, postID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/post/comment-thread-page?comments_page=1", nil)
+	views, pager, err := app.commentsForPost(req, post)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pager.Total != 2 || pager.TotalPages != 2 {
+		t.Fatalf("pager = %#v, want 2 top-level threads over 2 pages", pager)
+	}
+	if len(views) != 2 || views[0].Author != "Root One" || views[1].Author != "Reply" || views[1].Parent != rootOneID {
+		t.Fatalf("page 1 views = %#v, want root one with reply", views)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/post/comment-thread-page?comments_page=2", nil)
+	views, _, err = app.commentsForPost(req, post)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(views) != 1 || views[0].Author != "Root Two" {
+		t.Fatalf("page 2 views = %#v, want only root two", views)
+	}
+}
+
+func TestPublicCommentNestingDepth(t *testing.T) {
+	app, _, adminID := newSecurityTestApp(t)
+	ctx := context.Background()
+	if err := app.Options.Set(ctx, "comments_max_nesting_levels", "1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.Options.Set(ctx, "comments_post_interval_enable", "0"); err != nil {
+		t.Fatal(err)
+	}
+	postID := createPublishedPost(t, app, adminID, "comment-depth")
+	if err := app.Comments.Save(ctx, services.SaveCommentInput{CID: postID, Author: "Parent", Mail: "p@example.com", Text: "parent", Status: "approved"}, 0); err != nil {
+		t.Fatal(err)
+	}
+	parentComments, err := app.Comments.List(ctx, "approved", "", postID)
+	if err != nil || len(parentComments) == 0 {
+		t.Fatalf("parent comment missing: %v %#v", err, parentComments)
+	}
+
+	rec := submitPublicComment(t, app, postID, url.Values{
+		"author": {"Child"},
+		"mail":   {"c@example.com"},
+		"text":   {"too deep"},
+		"parent": {itoa(parentComments[0].COID)},
+	}, "198.51.100.30")
+	if rec.Code != http.StatusSeeOther || !strings.Contains(rec.Header().Get("Location"), "comment_error=depth") {
+		t.Fatalf("depth response = %d %q", rec.Code, rec.Header().Get("Location"))
+	}
+}
+
+func TestAdminCommentBatchAndClearSpam(t *testing.T) {
+	app, secret, adminID := newSecurityTestApp(t)
+	ctx := context.Background()
+	postID := createPublishedPost(t, app, adminID, "comment-batch")
+	for _, input := range []services.SaveCommentInput{
+		{CID: postID, Author: "One", Mail: "one@example.com", Text: "one", Status: "waiting"},
+		{CID: postID, Author: "Two", Mail: "two@example.com", Text: "two", Status: "waiting"},
+		{CID: postID, Author: "Spam", Mail: "spam@example.com", Text: "spam", Status: "spam"},
+	} {
+		if err := app.Comments.Save(ctx, input, 0); err != nil {
+			t.Fatal(err)
+		}
+	}
+	all, err := app.Comments.List(ctx, "all", "", postID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	form := url.Values{"_csrf": {adminToken(secret, adminID)}, "action": {"approved"}}
+	for _, comment := range all {
+		if comment.Status == "waiting" {
+			form.Add("id", itoa(comment.COID))
+		}
+	}
+	req := httptest.NewRequest(http.MethodPost, "/admin/comments/batch", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	setSession(t, req, secret, adminID)
+	rec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("batch approve status = %d, want 303", rec.Code)
+	}
+	approved, err := app.Comments.List(ctx, "approved", "", postID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(approved) != 2 {
+		t.Fatalf("approved comments = %d, want 2", len(approved))
+	}
+
+	form = url.Values{"_csrf": {adminToken(secret, adminID)}, "action": {"spam"}}
+	for _, comment := range approved {
+		form.Add("id", itoa(comment.COID))
+	}
+	req = httptest.NewRequest(http.MethodPost, "/admin/comments/batch", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	setSession(t, req, secret, adminID)
+	rec = httptest.NewRecorder()
+	app.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("batch spam status = %d, want 303", rec.Code)
+	}
+	spam, err := app.Comments.List(ctx, "spam", "", postID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(spam) != 3 {
+		t.Fatalf("spam comments = %d, want 3", len(spam))
+	}
+
+	form = url.Values{"_csrf": {adminToken(secret, adminID)}, "action": {"delete"}}
+	form.Add("id", itoa(spam[0].COID))
+	req = httptest.NewRequest(http.MethodPost, "/admin/comments/batch", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	setSession(t, req, secret, adminID)
+	rec = httptest.NewRecorder()
+	app.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("batch delete status = %d, want 303", rec.Code)
+	}
+	spam, err = app.Comments.List(ctx, "spam", "", postID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(spam) != 2 {
+		t.Fatalf("spam comments after delete = %d, want 2", len(spam))
+	}
+
+	form = url.Values{"_csrf": {adminToken(secret, adminID)}}
+	req = httptest.NewRequest(http.MethodPost, "/admin/comments/clear-spam", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	setSession(t, req, secret, adminID)
+	rec = httptest.NewRecorder()
+	app.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("clear spam status = %d, want 303", rec.Code)
+	}
+	spam, err = app.Comments.List(ctx, "spam", "", postID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(spam) != 0 {
+		t.Fatalf("spam comments remain: %#v", spam)
+	}
+}
+
+func TestCommentHTMLAllowListSanitizesTags(t *testing.T) {
+	got := string(sanitizeCommentHTML(`<strong>ok</strong><script>alert(1)</script><a href="example.com" onclick="x">site</a>`, "strong,a", true))
+	if !strings.Contains(got, "<strong>ok</strong>") {
+		t.Fatalf("strong tag not preserved: %s", got)
+	}
+	if strings.Contains(got, "<script>") || strings.Contains(got, "onclick") {
+		t.Fatalf("unsafe html preserved: %s", got)
+	}
+	if !strings.Contains(got, `<a href="https://example.com" rel="nofollow">site</a>`) {
+		t.Fatalf("safe link not normalized: %s", got)
+	}
+	for _, raw := range []string{`<a href="javascript:alert(1)">x</a>`, `<a href="data:text/html,x">x</a>`} {
+		got = string(sanitizeCommentHTML(raw, "a", true))
+		if strings.Contains(got, "javascript:") || strings.Contains(got, "data:text") || strings.Contains(got, "href=") {
+			t.Fatalf("dangerous href preserved for %q: %s", raw, got)
+		}
+	}
+}
+
 func newSecurityTestApp(t *testing.T) (*App, string, int64) {
 	t.Helper()
 	db, err := sql.Open("sqlite3", ":memory:")
@@ -393,6 +725,60 @@ func newSecurityTestApp(t *testing.T) (*App, string, int64) {
 		t.Fatal(err)
 	}
 	return New(services.NewContentService(db), metas, services.NewCommentService(db), users, options, plugin.Default), secret, admin.UID
+}
+
+func createPublishedPost(t *testing.T, app *App, authorID int64, slug string) int64 {
+	t.Helper()
+	id, err := app.Contents.Create(context.Background(), services.SaveContentInput{
+		Title:        slug,
+		Slug:         slug,
+		Text:         "body",
+		Type:         models.ContentTypePost,
+		Status:       models.ContentStatusPost,
+		AllowComment: true,
+	}, authorID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return id
+}
+
+func submitPublicComment(t *testing.T, app *App, cid int64, form url.Values, ip string) *httptest.ResponseRecorder {
+	t.Helper()
+	post, err := app.Contents.ByID(context.Background(), cid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return submitPublicCommentWithReferer(t, app, cid, form, ip, "http://example.com"+contentPublicURL(post))
+}
+
+func submitPublicCommentWithReferer(t *testing.T, app *App, cid int64, form url.Values, ip, referer string) *httptest.ResponseRecorder {
+	t.Helper()
+	form = cloneValues(form)
+	form.Set("cid", itoa(cid))
+	req := httptest.NewRequest(http.MethodPost, "/comment", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("X-Real-IP", ip)
+	form.Set("_csrf", app.csrfTokenFor(req, "comment"))
+	req = httptest.NewRequest(http.MethodPost, "/comment", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("X-Real-IP", ip)
+	if referer != "" {
+		req.Header.Set("Referer", referer)
+	}
+	rec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(rec, req)
+	return rec
+}
+
+func cloneValues(values url.Values) url.Values {
+	out := url.Values{}
+	for key, items := range values {
+		for _, item := range items {
+			out.Add(key, item)
+		}
+	}
+	return out
 }
 
 func setSession(t *testing.T, req *http.Request, secret string, uid int64) {

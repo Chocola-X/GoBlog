@@ -31,17 +31,29 @@
     {{if .CommentError}}<mdui-card class="notice-card">评论提交失败，请检查必填项。</mdui-card>{{end}}
     <div class="comment-list">
       {{range .Comments}}
-      <article class="comment-item">
-        <div class="comment-meta"><strong>{{.Author}}</strong><span>{{date .Created}}</span></div>
-        <div class="comment-body">{{commentHTML .Text}}</div>
+      <article id="{{.Anchor}}" class="comment-item comment-level-{{.Level}}">
+        {{if .AvatarURL}}<img class="comment-avatar" src="{{.AvatarURL}}" alt="">{{end}}
+        <div class="comment-main">
+          <div class="comment-meta"><strong>{{.AuthorHTML}}</strong><span>{{commentDate .Created}}</span></div>
+          <div class="comment-body">{{.BodyHTML}}</div>
+          <div class="comment-tools"><a href="{{.ReplyURL}}">回复</a></div>
+        </div>
       </article>
       {{else}}
       <p class="muted">还没有评论。</p>
       {{end}}
     </div>
-    <form class="comment-form" method="post" action="/comment">
+    {{if gt .CommentPager.TotalPages 1}}
+    <nav class="pagination comment-pagination">
+      {{if .CommentPager.HasPrev}}<a href="{{.CommentPager.PrevURL}}"><mdui-icon-chevron-left></mdui-icon-chevron-left>上一页</a>{{else}}<span>上一页</span>{{end}}
+      <span>{{.CommentPager.Page}} / {{.CommentPager.TotalPages}}</span>
+      {{if .CommentPager.HasNext}}<a href="{{.CommentPager.NextURL}}">下一页<mdui-icon-chevron-right></mdui-icon-chevron-right></a>{{else}}<span>下一页</span>{{end}}
+    </nav>
+    {{end}}
+    <form id="comment-form" class="comment-form" method="post" action="/comment">
       <input type="hidden" name="_csrf" value="{{.CommentCSRF}}">
       <input type="hidden" name="cid" value="{{.Post.CID}}">
+      <input type="hidden" name="parent" value="{{.ReplyTo}}">
       <input class="hp-field" type="text" name="website" tabindex="-1" autocomplete="off">
       <div class="comment-grid">
         <mdui-text-field name="author" label="称呼" required></mdui-text-field>

@@ -3,9 +3,11 @@ package handlers
 import (
 	"context"
 	"crypto/hmac"
+	"crypto/md5"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"encoding/xml"
 	"errors"
@@ -14,9 +16,11 @@ import (
 	"io"
 	"io/fs"
 	"net/http"
+	neturl "net/url"
 	"os"
 	"path"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -617,6 +621,14 @@ func (a *App) adminCommentRoutes(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	clean := strings.Trim(strings.TrimPrefix(r.URL.Path, "/admin/comments/"), "/")
+	switch clean {
+	case "batch":
+		a.adminCommentsBatch(w, r)
+		return
+	case "clear-spam":
+		a.adminCommentsClearSpam(w, r)
+		return
+	}
 	parts := strings.Split(clean, "/")
 	if len(parts) < 2 {
 		http.NotFound(w, r)
@@ -657,6 +669,50 @@ func (a *App) adminCommentRoutes(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func (a *App) adminCommentsBatch(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w, http.MethodPost)
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	ids := parseInt64Values(r.Form["id"])
+	if len(ids) == 0 {
+		http.Redirect(w, r, "/admin/comments", http.StatusSeeOther)
+		return
+	}
+	switch r.FormValue("action") {
+	case "approved", "waiting", "spam":
+		if err := a.Comments.MarkMany(r.Context(), ids, r.FormValue("action")); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+	case "delete":
+		if err := a.Comments.DeleteMany(r.Context(), ids); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+	default:
+		http.Error(w, "unsupported comment action", http.StatusBadRequest)
+		return
+	}
+	http.Redirect(w, r, "/admin/comments", http.StatusSeeOther)
+}
+
+func (a *App) adminCommentsClearSpam(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w, http.MethodPost)
+		return
+	}
+	if err := a.Comments.ClearSpam(r.Context()); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	http.Redirect(w, r, "/admin/comments?status=spam", http.StatusSeeOther)
+}
+
 func (a *App) commentForm(w http.ResponseWriter, r *http.Request, id int64, reply bool) {
 	comment, err := a.Comments.ByID(r.Context(), id)
 	if err != nil {
@@ -678,6 +734,10 @@ func (a *App) commentForm(w http.ResponseWriter, r *http.Request, id int64, repl
 		input := services.SaveCommentInput{CID: comment.CID, Author: strings.TrimSpace(r.FormValue("author")), Mail: strings.TrimSpace(r.FormValue("mail")), URL: strings.TrimSpace(r.FormValue("url")), Text: strings.TrimSpace(r.FormValue("text")), Status: r.FormValue("status")}
 		if reply {
 			input.Parent = comment.COID
+			input.OwnerID = comment.OwnerID
+			if user, ok := a.currentUser(r); ok {
+				input.AuthorID = user.UID
+			}
 			if input.Author == "" {
 				input.Author = "admin"
 			}
@@ -856,7 +916,13 @@ func (a *App) adminOptionsDiscussion(w http.ResponseWriter, r *http.Request) {
 	if !a.requireRole(w, r, "administrator") {
 		return
 	}
-	a.optionsForm(w, r, "评论设置", "options_discussion.html", []string{"comments_require_moderation", "comments_require_mail", "comments_show_url", "comments_order"})
+	a.optionsForm(w, r, "评论设置", "options_discussion.html", []string{
+		"comments_require_moderation", "comments_require_mail", "comments_require_url", "comments_show_url", "comments_order",
+		"comment_date_format", "comments_list_size", "comments_page_size", "comments_page_display", "comments_max_nesting_levels",
+		"comments_whitelist", "comments_check_referer", "comments_antispam", "comments_auto_close", "comments_post_interval", "comments_post_interval_enable",
+		"comments_html_tag_allowed", "comments_stop_words", "comments_ip_blacklist",
+		"comments_markdown", "comments_url_nofollow", "comments_avatar", "comments_avatar_rating",
+	})
 }
 
 func (a *App) adminOptionsPermalink(w http.ResponseWriter, r *http.Request) {
@@ -1170,7 +1236,7 @@ func (a *App) frontPost(w http.ResponseWriter, r *http.Request) {
 		a.renderTheme(w, r, "post.html", map[string]any{"Post": post, "PasswordRequired": true})
 		return
 	}
-	comments, _ := a.Comments.ListForContent(r.Context(), post.CID, a.option(r.Context(), "comments_order", "ASC"))
+	comments, commentPager, _ := a.commentsForPost(r, post)
 	categories, _ := a.Metas.CategoriesForContent(r.Context(), post.CID)
 	tags, _ := a.Metas.TagsForContent(r.Context(), post.CID)
 	fields, _ := a.Contents.FieldMap(r.Context(), post.CID)
@@ -1179,6 +1245,8 @@ func (a *App) frontPost(w http.ResponseWriter, r *http.Request) {
 		"Post":         post,
 		"ContentHTML":  render.ContentHTML(post.Text, a.option(r.Context(), "content_render_mode", "markdown")),
 		"Comments":     comments,
+		"CommentPager": commentPager,
+		"ReplyTo":      r.URL.Query().Get("reply"),
 		"Categories":   categories,
 		"Tags":         tags,
 		"Fields":       fields,
@@ -1196,8 +1264,20 @@ func (a *App) frontPage(w http.ResponseWriter, r *http.Request) {
 		a.renderThemeStatus(w, r, "404.html", map[string]any{}, http.StatusNotFound)
 		return
 	}
+	comments, commentPager, _ := a.commentsForPost(r, pageData)
 	fields, _ := a.Contents.FieldMap(r.Context(), pageData.CID)
-	a.renderTheme(w, r, "post.html", map[string]any{"Post": pageData, "ContentHTML": render.ContentHTML(pageData.Text, a.option(r.Context(), "content_render_mode", "markdown")), "Fields": fields})
+	a.renderTheme(w, r, "post.html", map[string]any{
+		"Post":         pageData,
+		"ContentHTML":  render.ContentHTML(pageData.Text, a.option(r.Context(), "content_render_mode", "markdown")),
+		"Comments":     comments,
+		"CommentPager": commentPager,
+		"ReplyTo":      r.URL.Query().Get("reply"),
+		"Fields":       fields,
+		"PrevPost":     models.Content{},
+		"NextPost":     models.Content{},
+		"CommentError": r.URL.Query().Get("comment_error"),
+		"CommentOK":    r.URL.Query().Get("comment_ok") == "1",
+	})
 }
 
 func (a *App) frontPreview(w http.ResponseWriter, r *http.Request) {
@@ -1217,15 +1297,17 @@ func (a *App) frontPreview(w http.ResponseWriter, r *http.Request) {
 	}
 	fields, _ := a.Contents.FieldMap(r.Context(), item.CID)
 	a.renderTheme(w, r, "post.html", map[string]any{
-		"Post":        item,
-		"ContentHTML": render.ContentHTML(item.Text, a.option(r.Context(), "content_render_mode", "markdown")),
-		"Fields":      fields,
-		"Comments":    []models.Comment{},
-		"Categories":  []models.Meta{},
-		"Tags":        []models.Meta{},
-		"PrevPost":    models.Content{},
-		"NextPost":    models.Content{},
-		"Preview":     true,
+		"Post":         item,
+		"ContentHTML":  render.ContentHTML(item.Text, a.option(r.Context(), "content_render_mode", "markdown")),
+		"Fields":       fields,
+		"Comments":     []commentView{},
+		"CommentPager": commentPagination{},
+		"ReplyTo":      "",
+		"Categories":   []models.Meta{},
+		"Tags":         []models.Meta{},
+		"PrevPost":     models.Content{},
+		"NextPost":     models.Content{},
+		"Preview":      true,
 	})
 }
 
@@ -1309,12 +1391,12 @@ func (a *App) frontComment(w http.ResponseWriter, r *http.Request) {
 	}
 	cid, _ := strconv.ParseInt(r.FormValue("cid"), 10, 64)
 	post, err := a.Contents.ByID(r.Context(), cid)
-	if err != nil || post.Type != models.ContentTypePost || post.Status != models.ContentStatusPost {
+	if err != nil || (post.Type != models.ContentTypePost && post.Type != models.ContentTypePage) || post.Status != models.ContentStatusPost {
 		http.NotFound(w, r)
 		return
 	}
-	redirectTo := "/post/" + post.Slug
-	if ref := r.Referer(); ref != "" && !strings.Contains(ref, redirectTo) {
+	redirectTo := contentPublicURL(post)
+	if optionBool(a.option(r.Context(), "comments_check_referer", "1")) && !a.validCommentReferer(r, redirectTo) {
 		http.Redirect(w, r, redirectTo+"?comment_error=referer", http.StatusSeeOther)
 		return
 	}
@@ -1322,11 +1404,24 @@ func (a *App) frontComment(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, redirectTo+"?comment_error=closed", http.StatusSeeOther)
 		return
 	}
-	ip := clientIP(r)
-	recent, _ := a.Comments.CountRecentByIP(r.Context(), ip, time.Now().Add(-30*time.Second).Unix())
-	if recent > 0 {
-		http.Redirect(w, r, redirectTo+"?comment_error=frequent", http.StatusSeeOther)
+	if closeDays := optionInt(a.option(r.Context(), "comments_auto_close", "0"), 0); closeDays > 0 && time.Since(time.Unix(post.Created, 0)) > time.Duration(closeDays)*24*time.Hour {
+		http.Redirect(w, r, redirectTo+"?comment_error=closed", http.StatusSeeOther)
 		return
+	}
+	ip := clientIP(r)
+	if optionBool(a.option(r.Context(), "comments_antispam", "1")) {
+		if matchList(ip, a.option(r.Context(), "comments_ip_blacklist", "")) {
+			http.Redirect(w, r, redirectTo+"?comment_error=blocked", http.StatusSeeOther)
+			return
+		}
+		if optionBool(a.option(r.Context(), "comments_post_interval_enable", "1")) {
+			interval := optionInt(a.option(r.Context(), "comments_post_interval", "30"), 30)
+			recent, _ := a.Comments.CountRecentByIP(r.Context(), ip, time.Now().Add(-time.Duration(interval)*time.Second).Unix())
+			if recent > 0 {
+				http.Redirect(w, r, redirectTo+"?comment_error=frequent", http.StatusSeeOther)
+				return
+			}
+		}
 	}
 	if r.FormValue("website") != "" {
 		http.Redirect(w, r, redirectTo+"?comment_error=spam", http.StatusSeeOther)
@@ -1335,21 +1430,61 @@ func (a *App) frontComment(w http.ResponseWriter, r *http.Request) {
 	author := strings.TrimSpace(r.FormValue("author"))
 	mail := strings.TrimSpace(r.FormValue("mail"))
 	text := strings.TrimSpace(r.FormValue("text"))
-	if author == "" || text == "" || (a.option(r.Context(), "comments_require_mail", "1") == "1" && mail == "") {
+	urlValue := normalizeCommentURL(r.FormValue("url"))
+	user, loggedIn := a.currentUser(r)
+	if loggedIn {
+		author = user.ScreenName
+		if author == "" {
+			author = user.Name
+		}
+		mail = user.Mail
+		urlValue = normalizeCommentURL(user.URL)
+	}
+	if author == "" || text == "" || (optionBool(a.option(r.Context(), "comments_require_mail", "1")) && mail == "") || (optionBool(a.option(r.Context(), "comments_require_url", "0")) && urlValue == "") {
 		http.Redirect(w, r, redirectTo+"?comment_error=required", http.StatusSeeOther)
 		return
 	}
-	if registered, err := a.Users.ByName(r.Context(), author); err == nil && registered.UID > 0 {
+	if !loggedIn && a.nameReserved(r.Context(), author) {
 		http.Redirect(w, r, redirectTo+"?comment_error=reserved", http.StatusSeeOther)
 		return
 	}
 	status := "approved"
-	if a.option(r.Context(), "comments_require_moderation", "0") == "1" {
+	if optionBool(a.option(r.Context(), "comments_require_moderation", "0")) && !loggedIn {
 		status = "waiting"
 	}
+	if optionBool(a.option(r.Context(), "comments_whitelist", "0")) && !loggedIn {
+		approved, _ := a.Comments.HasApprovedAuthor(r.Context(), author, mail)
+		if approved {
+			status = "approved"
+		} else {
+			status = "waiting"
+		}
+	}
+	if loggedIn && roleRank(user.Role) >= roleRank("contributor") {
+		status = "approved"
+	}
+	if optionBool(a.option(r.Context(), "comments_antispam", "1")) && containsListItem(text, a.option(r.Context(), "comments_stop_words", "")) {
+		status = "spam"
+	}
 	parent, _ := strconv.ParseInt(r.FormValue("parent"), 10, 64)
-	input := services.SaveCommentInput{CID: cid, Author: author, Mail: mail, URL: strings.TrimSpace(r.FormValue("url")), Text: text, Status: status, Parent: parent, IP: ip, Agent: r.UserAgent()}
-	if errs := validatePublicCommentInput(input, a.option(r.Context(), "comments_require_mail", "1") == "1"); !errs.Empty() {
+	if parent > 0 {
+		depth, err := a.Comments.ParentDepth(r.Context(), cid, parent)
+		if err != nil {
+			http.Redirect(w, r, redirectTo+"?comment_error=parent", http.StatusSeeOther)
+			return
+		}
+		maxDepth := optionInt(a.option(r.Context(), "comments_max_nesting_levels", "3"), 3)
+		if maxDepth > 0 && depth >= maxDepth {
+			http.Redirect(w, r, redirectTo+"?comment_error=depth", http.StatusSeeOther)
+			return
+		}
+	}
+	authorID := int64(0)
+	if loggedIn {
+		authorID = user.UID
+	}
+	input := services.SaveCommentInput{CID: cid, Author: author, AuthorID: authorID, OwnerID: post.AuthorID, Mail: mail, URL: urlValue, Text: text, Status: status, Parent: parent, IP: ip, Agent: r.UserAgent()}
+	if errs := validatePublicCommentInput(input, optionBool(a.option(r.Context(), "comments_require_mail", "1")), optionBool(a.option(r.Context(), "comments_require_url", "0"))); !errs.Empty() {
 		http.Redirect(w, r, redirectTo+"?comment_error=invalid", http.StatusSeeOther)
 		return
 	}
@@ -1425,6 +1560,112 @@ func (a *App) renderPostList(w http.ResponseWriter, r *http.Request, query servi
 	})
 }
 
+func (a *App) commentsForPost(r *http.Request, post models.Content) ([]commentView, commentPagination, error) {
+	pageSize := optionInt(a.option(r.Context(), "comments_page_size", "20"), 20)
+	if pageSize <= 0 {
+		pageSize = 20
+	}
+	order := a.option(r.Context(), "comments_order", "ASC")
+	comments, err := a.Comments.ListForContent(r.Context(), post.CID, order, 0, 0)
+	if err != nil {
+		return nil, commentPagination{}, err
+	}
+	roots := topLevelComments(comments)
+	total := int64(len(roots))
+	totalPages := int((total + int64(pageSize) - 1) / int64(pageSize))
+	if totalPages < 1 {
+		totalPages = 1
+	}
+	page := optionInt(r.URL.Query().Get("comments_page"), 0)
+	if page <= 0 {
+		if a.option(r.Context(), "comments_page_display", "last") == "first" {
+			page = 1
+		} else {
+			page = totalPages
+		}
+	}
+	if page > totalPages {
+		page = totalPages
+	}
+	start := (page - 1) * pageSize
+	end := start + pageSize
+	if start > len(roots) {
+		start = len(roots)
+	}
+	if end > len(roots) {
+		end = len(roots)
+	}
+	maxLevel := optionInt(a.option(r.Context(), "comments_max_nesting_levels", "3"), 3)
+	views := a.commentViews(r, comments, roots[start:end], maxLevel)
+	pager := commentPagination{
+		Page:       page,
+		PageSize:   pageSize,
+		Total:      total,
+		TotalPages: totalPages,
+		PrevURL:    commentPageURL(r, page-1),
+		NextURL:    commentPageURL(r, page+1),
+		HasPrev:    page > 1,
+		HasNext:    page < totalPages,
+	}
+	return views, pager, nil
+}
+
+func (a *App) commentViews(r *http.Request, comments []models.Comment, roots []models.Comment, maxLevel int) []commentView {
+	children := make(map[int64][]models.Comment)
+	byID := make(map[int64]models.Comment)
+	for _, comment := range comments {
+		byID[comment.COID] = comment
+		if comment.Parent > 0 {
+			children[comment.Parent] = append(children[comment.Parent], comment)
+		}
+	}
+	var out []commentView
+	var walk func(parent int64, level int)
+	walk = func(parent int64, level int) {
+		for _, comment := range children[parent] {
+			displayLevel := level
+			if maxLevel > 0 && displayLevel >= maxLevel {
+				displayLevel = maxLevel - 1
+			}
+			out = append(out, a.commentView(r, comment, displayLevel))
+			if _, ok := byID[comment.COID]; ok {
+				walk(comment.COID, level+1)
+			}
+		}
+	}
+	for _, root := range roots {
+		out = append(out, a.commentView(r, root, 0))
+		walk(root.COID, 1)
+	}
+	return out
+}
+
+func (a *App) commentView(r *http.Request, comment models.Comment, level int) commentView {
+	return commentView{
+		Comment:    comment,
+		Level:      level,
+		BodyHTML:   a.renderCommentText(r, comment.Text),
+		AuthorHTML: a.commentAuthorHTML(r, comment),
+		AvatarURL:  a.gravatarURL(r, comment.Mail),
+		ReplyURL:   commentReplyURL(r, comment.COID),
+		Anchor:     fmt.Sprintf("comment-%d", comment.COID),
+	}
+}
+
+func topLevelComments(comments []models.Comment) []models.Comment {
+	byID := make(map[int64]bool, len(comments))
+	for _, comment := range comments {
+		byID[comment.COID] = true
+	}
+	roots := make([]models.Comment, 0, len(comments))
+	for _, comment := range comments {
+		if comment.Parent == 0 || !byID[comment.Parent] {
+			roots = append(roots, comment)
+		}
+	}
+	return roots
+}
+
 func (a *App) saveUpload(src io.Reader, original string) (string, error) {
 	now := time.Now()
 	dir := filepath.Join(a.UploadDir, now.Format("2006"), now.Format("01"))
@@ -1489,6 +1730,27 @@ func (a *App) option(ctx context.Context, key, fallback string) string {
 }
 
 type pagination struct {
+	Page       int
+	PageSize   int
+	Total      int64
+	TotalPages int
+	PrevURL    string
+	NextURL    string
+	HasPrev    bool
+	HasNext    bool
+}
+
+type commentView struct {
+	models.Comment
+	Level      int
+	BodyHTML   template.HTML
+	AuthorHTML template.HTML
+	AvatarURL  string
+	ReplyURL   string
+	Anchor     string
+}
+
+type commentPagination struct {
 	Page       int
 	PageSize   int
 	Total      int64
@@ -1709,6 +1971,94 @@ func (a *App) previewToken(r *http.Request, c models.Content) string {
 	return base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
 }
 
+func (a *App) renderCommentText(r *http.Request, text string) template.HTML {
+	if a.option(r.Context(), "comments_markdown", "0") == "1" {
+		return render.MarkdownHTML(text)
+	}
+	allowedTags := a.option(r.Context(), "comments_html_tag_allowed", "")
+	if strings.TrimSpace(allowedTags) != "" {
+		return sanitizeCommentHTML(text, allowedTags, optionBool(a.option(r.Context(), "comments_url_nofollow", "1")))
+	}
+	return render.PlainTextHTML(text)
+}
+
+func (a *App) commentAuthorHTML(r *http.Request, comment models.Comment) template.HTML {
+	name := template.HTMLEscapeString(comment.Author)
+	if a.option(r.Context(), "comments_show_url", "1") != "1" || strings.TrimSpace(comment.URL) == "" {
+		return template.HTML(name)
+	}
+	rel := ""
+	if a.option(r.Context(), "comments_url_nofollow", "1") == "1" {
+		rel = ` rel="nofollow"`
+	}
+	return template.HTML(`<a href="` + template.HTMLEscapeString(comment.URL) + `"` + rel + `>` + name + `</a>`)
+}
+
+func (a *App) gravatarURL(r *http.Request, mail string) string {
+	if a.option(r.Context(), "comments_avatar", "1") != "1" {
+		return ""
+	}
+	sum := md5.Sum([]byte(strings.ToLower(strings.TrimSpace(mail))))
+	rating := a.option(r.Context(), "comments_avatar_rating", "g")
+	return "https://www.gravatar.com/avatar/" + hex.EncodeToString(sum[:]) + "?s=48&d=mp&r=" + rating
+}
+
+func (a *App) nameReserved(ctx context.Context, name string) bool {
+	name = strings.ToLower(strings.TrimSpace(name))
+	if name == "" {
+		return false
+	}
+	users, err := a.Users.List(ctx, name)
+	if err != nil {
+		return false
+	}
+	for _, user := range users {
+		if strings.ToLower(user.Name) == name || strings.ToLower(user.ScreenName) == name {
+			return true
+		}
+	}
+	return false
+}
+
+func (a *App) validCommentReferer(r *http.Request, targetPath string) bool {
+	ref := strings.TrimSpace(r.Referer())
+	if ref == "" {
+		return false
+	}
+	u, err := neturl.Parse(ref)
+	if err != nil || u.Host == "" {
+		return false
+	}
+	if !a.commentRefererHostAllowed(r, u.Host) {
+		return false
+	}
+	refPath := strings.TrimRight(u.Path, "/")
+	if refPath == "" {
+		refPath = "/"
+	}
+	targetPath = strings.TrimRight(targetPath, "/")
+	if targetPath == "" {
+		targetPath = "/"
+	}
+	return refPath == targetPath || strings.HasPrefix(refPath, targetPath+"/")
+}
+
+func (a *App) commentRefererHostAllowed(r *http.Request, host string) bool {
+	host = strings.ToLower(strings.TrimSpace(host))
+	if host == "" {
+		return false
+	}
+	if sameHost(host, r.Host) {
+		return true
+	}
+	baseURL := a.option(r.Context(), "base_url", "")
+	if baseURL == "" {
+		return false
+	}
+	u, err := neturl.Parse(baseURL)
+	return err == nil && sameHost(host, u.Host)
+}
+
 func (a *App) validPreviewToken(r *http.Request, c models.Content) bool {
 	token := r.URL.Query().Get("token")
 	if token == "" {
@@ -1757,7 +2107,17 @@ func (a *App) renderThemeStatus(w http.ResponseWriter, r *http.Request, page str
 		http.Error(w, "active theme not found", http.StatusInternalServerError)
 		return
 	}
-	funcs := template.FuncMap{"date": formatDate, "excerpt": render.Excerpt, "commentHTML": render.PlainTextHTML}
+	funcs := template.FuncMap{
+		"date":    formatDate,
+		"excerpt": render.Excerpt,
+		"commentDate": func(ts int64) string {
+			layout := a.option(r.Context(), "comment_date_format", "2006-01-02 15:04")
+			if strings.TrimSpace(layout) == "" {
+				layout = "2006-01-02 15:04"
+			}
+			return time.Unix(ts, 0).Format(layout)
+		},
+	}
 	for name, fn := range theme.Funcs {
 		funcs[name] = fn
 	}
@@ -1811,9 +2171,17 @@ func (a *App) enrichThemeData(ctx context.Context, data map[string]any) {
 		}
 	}
 	if _, ok := data["RecentComments"]; !ok {
-		if comments, err := a.Comments.List(ctx, "approved", "", 0); err == nil && len(comments) > 5 {
-			data["RecentComments"] = comments[:5]
-		} else if err == nil {
+		if comments, err := a.Comments.List(ctx, "approved", "", 0); err == nil {
+			size := 10
+			if site, ok := data["Site"].(map[string]string); ok {
+				size = optionInt(site["comments_list_size"], 10)
+			}
+			if size < 1 {
+				size = 10
+			}
+			if len(comments) > size {
+				comments = comments[:size]
+			}
 			data["RecentComments"] = comments
 		}
 	}
@@ -1939,7 +2307,7 @@ func validateCommentInput(input services.SaveCommentInput) validate.Errors {
 	return v.Errors
 }
 
-func validatePublicCommentInput(input services.SaveCommentInput, requireMail bool) validate.Errors {
+func validatePublicCommentInput(input services.SaveCommentInput, requireMail, requireURL bool) validate.Errors {
 	v := validate.New()
 	v.Required("author", input.Author).
 		MaxLength("author", input.Author, 150).
@@ -1948,6 +2316,9 @@ func validatePublicCommentInput(input services.SaveCommentInput, requireMail boo
 		SafeText("text", input.Text)
 	if requireMail {
 		v.Required("mail", input.Mail)
+	}
+	if requireURL {
+		v.Required("url", input.URL)
 	}
 	v.Email("mail", input.Mail)
 	return v.Errors
@@ -2244,6 +2615,182 @@ func optionInt(value string, fallback int) int {
 	return n
 }
 
+func optionBool(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
+}
+
+func splitList(value string) []string {
+	fields := strings.FieldsFunc(value, func(r rune) bool {
+		return r == '\n' || r == '\r' || r == ',' || r == ';'
+	})
+	out := make([]string, 0, len(fields))
+	for _, field := range fields {
+		field = strings.TrimSpace(field)
+		if field != "" {
+			out = append(out, field)
+		}
+	}
+	return out
+}
+
+func matchList(value, list string) bool {
+	value = strings.ToLower(strings.TrimSpace(value))
+	if value == "" {
+		return false
+	}
+	for _, item := range splitList(list) {
+		item = strings.ToLower(item)
+		switch {
+		case item == value:
+			return true
+		case strings.HasSuffix(item, "*") && strings.HasPrefix(value, strings.TrimSuffix(item, "*")):
+			return true
+		}
+	}
+	return false
+}
+
+func containsListItem(text, list string) bool {
+	text = strings.ToLower(text)
+	for _, item := range splitList(list) {
+		if item != "" && strings.Contains(text, strings.ToLower(item)) {
+			return true
+		}
+	}
+	return false
+}
+
+func normalizeCommentURL(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	lower := strings.ToLower(value)
+	if strings.HasPrefix(lower, "javascript:") || strings.HasPrefix(lower, "data:") {
+		return value
+	}
+	if strings.HasPrefix(value, "//") {
+		return "https:" + value
+	}
+	if !strings.Contains(value, "://") {
+		return "https://" + value
+	}
+	return value
+}
+
+var (
+	commentTagPattern  = regexp.MustCompile(`(?is)<\s*(/)?\s*([a-zA-Z0-9]+)([^>]*)>`)
+	commentHrefPattern = regexp.MustCompile(`(?is)\bhref\s*=\s*("([^"]*)"|'([^']*)'|([^\s>]+))`)
+)
+
+func sanitizeCommentHTML(text, allowedList string, nofollow bool) template.HTML {
+	allowed := map[string]bool{}
+	for _, tag := range splitList(allowedList) {
+		tag = strings.ToLower(strings.Trim(tag, "<> /"))
+		if tag != "" {
+			allowed[tag] = true
+		}
+	}
+	if len(allowed) == 0 {
+		return render.PlainTextHTML(text)
+	}
+	var out strings.Builder
+	last := 0
+	matches := commentTagPattern.FindAllStringSubmatchIndex(text, -1)
+	for _, match := range matches {
+		out.WriteString(escapeCommentTextSegment(text[last:match[0]]))
+		full := text[match[0]:match[1]]
+		closing := match[2] >= 0 && strings.TrimSpace(text[match[2]:match[3]]) == "/"
+		tag := strings.ToLower(text[match[4]:match[5]])
+		attrs := ""
+		if match[6] >= 0 && match[7] >= 0 {
+			attrs = full[strings.Index(full, tag)+len(tag):]
+		}
+		if allowed[tag] {
+			out.WriteString(safeCommentTag(tag, attrs, closing, nofollow))
+		} else {
+			out.WriteString(template.HTMLEscapeString(full))
+		}
+		last = match[1]
+	}
+	out.WriteString(escapeCommentTextSegment(text[last:]))
+	return template.HTML(out.String())
+}
+
+func escapeCommentTextSegment(text string) string {
+	return strings.ReplaceAll(template.HTMLEscapeString(text), "\n", "<br>")
+}
+
+func safeCommentTag(tag, attrs string, closing, nofollow bool) string {
+	switch tag {
+	case "a", "b", "strong", "i", "em", "code", "pre", "blockquote", "p", "ul", "ol", "li", "br":
+	default:
+		return ""
+	}
+	if closing {
+		if tag == "br" {
+			return ""
+		}
+		return "</" + tag + ">"
+	}
+	if tag == "br" {
+		return "<br>"
+	}
+	if tag == "a" {
+		href := commentHref(attrs)
+		if href == "" {
+			return "<a>"
+		}
+		rel := ""
+		if nofollow {
+			rel = ` rel="nofollow"`
+		}
+		return `<a href="` + template.HTMLEscapeString(href) + `"` + rel + `>`
+	}
+	return "<" + tag + ">"
+}
+
+func commentHref(attrs string) string {
+	match := commentHrefPattern.FindStringSubmatch(attrs)
+	if len(match) == 0 {
+		return ""
+	}
+	for _, group := range match[2:] {
+		if group != "" {
+			href := normalizeCommentURL(group)
+			u, err := neturl.Parse(href)
+			if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
+				return ""
+			}
+			return href
+		}
+	}
+	return ""
+}
+
+func sameHost(a, b string) bool {
+	a = strings.ToLower(strings.TrimSpace(a))
+	b = strings.ToLower(strings.TrimSpace(b))
+	if a == "" || b == "" {
+		return false
+	}
+	return a == b || stripPort(a) == stripPort(b)
+}
+
+func stripPort(host string) string {
+	if strings.Count(host, ":") == 1 {
+		if i := strings.LastIndex(host, ":"); i > -1 {
+			return host[:i]
+		}
+	}
+	return host
+}
+
 func pageURL(r *http.Request, page int) string {
 	if page < 1 {
 		page = 1
@@ -2254,6 +2801,21 @@ func pageURL(r *http.Request, page int) string {
 		return r.URL.Path
 	}
 	return r.URL.Path + "?" + q.Encode()
+}
+
+func commentPageURL(r *http.Request, page int) string {
+	if page < 1 {
+		page = 1
+	}
+	q := r.URL.Query()
+	q.Set("comments_page", strconv.Itoa(page))
+	return r.URL.Path + "?" + q.Encode() + "#comments"
+}
+
+func commentReplyURL(r *http.Request, id int64) string {
+	q := r.URL.Query()
+	q.Set("reply", strconv.FormatInt(id, 10))
+	return r.URL.Path + "?" + q.Encode() + "#comment-form"
 }
 
 func clientIP(r *http.Request) string {
