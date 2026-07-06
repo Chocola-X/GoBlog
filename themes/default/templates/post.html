@@ -7,6 +7,52 @@
       <div class="meta">{{date .Post.Created}} · {{.Post.CommentsNum}} 条评论</div>
     </div>
   </header>
+  {{if .PasswordRequired}}
+  <form class="password-card" method="get">
+    <mdui-text-field type="password" name="password" label="访问密码"></mdui-text-field>
+    <mdui-button type="submit">查看</mdui-button>
+  </form>
+  {{else}}
   <div class="content">{{.ContentHTML}}</div>
+  {{if or .Categories .Tags}}
+  <footer class="post-taxonomy">
+    {{range .Categories}}<a href="/category/{{.Slug}}">{{.Name}}</a>{{end}}
+    {{range .Tags}}<a href="/tag/{{.Slug}}">#{{.Name}}</a>{{end}}
+  </footer>
+  {{end}}
+  <nav class="post-neighbors">
+    {{if .PrevPost.CID}}<a href="/post/{{.PrevPost.Slug}}"><mdui-icon-chevron-left></mdui-icon-chevron-left>{{.PrevPost.Title}}</a>{{else}}<span></span>{{end}}
+    {{if .NextPost.CID}}<a href="/post/{{.NextPost.Slug}}">{{.NextPost.Title}}<mdui-icon-chevron-right></mdui-icon-chevron-right></a>{{else}}<span></span>{{end}}
+  </nav>
+  {{if eq .Post.AllowComment "1"}}
+  <section id="comments" class="comments">
+    <h2>评论</h2>
+    {{if .CommentOK}}<mdui-card class="notice-card">评论已提交。</mdui-card>{{end}}
+    {{if .CommentError}}<mdui-card class="notice-card">评论提交失败，请检查必填项。</mdui-card>{{end}}
+    <div class="comment-list">
+      {{range .Comments}}
+      <article class="comment-item">
+        <div class="comment-meta"><strong>{{.Author}}</strong><span>{{date .Created}}</span></div>
+        <div class="comment-body">{{commentHTML .Text}}</div>
+      </article>
+      {{else}}
+      <p class="muted">还没有评论。</p>
+      {{end}}
+    </div>
+    <form class="comment-form" method="post" action="/comment">
+      <input type="hidden" name="_csrf" value="{{.CommentCSRF}}">
+      <input type="hidden" name="cid" value="{{.Post.CID}}">
+      <input class="hp-field" type="text" name="website" tabindex="-1" autocomplete="off">
+      <div class="comment-grid">
+        <mdui-text-field name="author" label="称呼" required></mdui-text-field>
+        <mdui-text-field name="mail" label="邮箱" type="email"></mdui-text-field>
+        <mdui-text-field name="url" label="网址"></mdui-text-field>
+      </div>
+      <mdui-text-field name="text" label="评论" rows="5" required></mdui-text-field>
+      <div class="comment-actions"><mdui-button type="submit">提交评论</mdui-button></div>
+    </form>
+  </section>
+  {{end}}
+  {{end}}
 </article>
 {{end}}

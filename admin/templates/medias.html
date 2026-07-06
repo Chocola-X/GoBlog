@@ -1,0 +1,30 @@
+{{define "content"}}
+<div class="page-head"><div><h1>附件</h1><p class="muted">上传后的文件保存在运行时 uploads 目录，可在文章中用 Markdown 引用。</p></div></div>
+{{if .Saved}}<div class="notice">附件已上传。</div>{{end}}
+<form method="post" enctype="multipart/form-data" class="form-panel field-stack">
+  <mdui-text-field type="file" name="file" label="选择文件"></mdui-text-field>
+  <label class="muted" for="cid">关联内容</label>
+  <select id="cid" name="cid">
+    <option value="0">不关联</option>
+    {{range .Posts}}<option value="{{.CID}}">{{.Title}}</option>{{end}}
+  </select>
+  <div class="form-actions"><mdui-button type="submit"><mdui-icon-upload slot="icon"></mdui-icon-upload>上传</mdui-button></div>
+</form>
+<section class="table-panel" style="margin-top:16px">
+  <table>
+    <thead><tr><th>文件</th><th>地址</th><th>时间</th><th></th></tr></thead>
+    <tbody>
+    {{range .Medias}}
+      <tr>
+        <td><a href="{{.Text}}" target="_blank" rel="noreferrer">{{.Title}}</a></td>
+        <td><code>{{.Text}}</code></td>
+        <td>{{date .Created}}</td>
+        <td><div class="row-actions"><form method="post" action="/admin/medias/{{.CID}}/delete"><mdui-button-icon type="submit" title="删除"><mdui-icon-delete></mdui-icon-delete></mdui-button-icon></form></div></td>
+      </tr>
+    {{else}}
+      <tr><td colspan="4" class="muted">暂无附件。</td></tr>
+    {{end}}
+    </tbody>
+  </table>
+</section>
+{{end}}

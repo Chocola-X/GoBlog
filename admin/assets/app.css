@@ -302,7 +302,10 @@ mdui-icon-tag,
 mdui-icon-person,
 mdui-icon-palette,
 mdui-icon-extension,
-mdui-icon-rss-feed {
+mdui-icon-rss-feed,
+mdui-icon-folder,
+mdui-icon-download,
+mdui-icon-upload {
   display: inline-flex;
   width: 20px;
   height: 20px;

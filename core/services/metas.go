@@ -39,11 +39,45 @@ func (s *MetaService) List(ctx context.Context, typ string) ([]models.Meta, erro
 	return scanMetas(rows)
 }
 
+func (s *MetaService) ListCloud(ctx context.Context, typ string, limit int) ([]models.Meta, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT mid, COALESCE(name,''), COALESCE(slug,''), type, COALESCE(description,''), count, sortOrder, parent
+		FROM gb_metas WHERE type = ? AND count > 0 ORDER BY count DESC, name ASC LIMIT ?
+	`, typ, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanMetas(rows)
+}
+
 func (s *MetaService) ByID(ctx context.Context, id int64) (models.Meta, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT mid, COALESCE(name,''), COALESCE(slug,''), type, COALESCE(description,''), count, sortOrder, parent
 		FROM gb_metas WHERE mid = ? LIMIT 1
 	`, id)
+	if err != nil {
+		return models.Meta{}, err
+	}
+	defer rows.Close()
+	metas, err := scanMetas(rows)
+	if err != nil {
+		return models.Meta{}, err
+	}
+	if len(metas) == 0 {
+		return models.Meta{}, sql.ErrNoRows
+	}
+	return metas[0], nil
+}
+
+func (s *MetaService) BySlug(ctx context.Context, typ, slug string) (models.Meta, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT mid, COALESCE(name,''), COALESCE(slug,''), type, COALESCE(description,''), count, sortOrder, parent
+		FROM gb_metas WHERE type = ? AND slug = ? LIMIT 1
+	`, typ, slug)
 	if err != nil {
 		return models.Meta{}, err
 	}

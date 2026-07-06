@@ -41,6 +41,11 @@ type ContentQuery struct {
 	Status   string
 	Keywords string
 	Category int64
+	Tag      int64
+	AuthorID int64
+	Year     int
+	Month    int
+	Day      int
 	Limit    int
 	Offset   int
 }
@@ -73,27 +78,10 @@ func (s *ContentService) ListAll(ctx context.Context, limit, offset int) ([]mode
 }
 
 func (s *ContentService) List(ctx context.Context, q ContentQuery) ([]models.Content, error) {
-	if q.Type == "" {
-		q.Type = models.ContentTypePost
-	}
 	if q.Limit <= 0 {
 		q.Limit = 100
 	}
-	args := []any{q.Type}
-	where := []string{"c.type = ?"}
-	if q.Status != "" && q.Status != "all" {
-		where = append(where, "c.status = ?")
-		args = append(args, q.Status)
-	}
-	if q.Keywords != "" {
-		where = append(where, "(c.title LIKE ? OR c.text LIKE ? OR c.slug LIKE ?)")
-		kw := "%" + q.Keywords + "%"
-		args = append(args, kw, kw, kw)
-	}
-	if q.Category > 0 {
-		where = append(where, `EXISTS (SELECT 1 FROM gb_relationships r JOIN gb_metas m ON m.mid = r.mid WHERE r.cid = c.cid AND m.type = 'category' AND m.mid = ?)`)
-		args = append(args, q.Category)
-	}
+	where, args := buildContentWhere(q)
 	args = append(args, q.Limit, q.Offset)
 
 	orderBy := "c.modified DESC"
@@ -119,6 +107,13 @@ func (s *ContentService) List(ctx context.Context, q ContentQuery) ([]models.Con
 func (s *ContentService) Count(ctx context.Context) (int64, error) {
 	var count int64
 	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM gb_contents WHERE type = ?`, models.ContentTypePost).Scan(&count)
+	return count, err
+}
+
+func (s *ContentService) CountList(ctx context.Context, q ContentQuery) (int64, error) {
+	where, args := buildContentWhere(q)
+	var count int64
+	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM gb_contents c WHERE `+strings.Join(where, " AND "), args...).Scan(&count)
 	return count, err
 }
 
@@ -152,6 +147,10 @@ func (s *ContentService) PageBySlug(ctx context.Context, pageSlug string) (model
 	return s.one(ctx, `WHERE slug = ? AND type = ? AND status = ?`, pageSlug, models.ContentTypePage, models.ContentStatusPost)
 }
 
+func (s *ContentService) AttachmentBySlug(ctx context.Context, attachSlug string) (models.Content, error) {
+	return s.one(ctx, `WHERE slug = ? AND type = ?`, attachSlug, models.ContentTypeAttach)
+}
+
 func (s *ContentService) ByID(ctx context.Context, id int64) (models.Content, error) {
 	return s.one(ctx, `WHERE cid = ?`, id)
 }
@@ -181,6 +180,18 @@ func (s *ContentService) Create(ctx context.Context, input SaveContentInput, aut
 		return 0, err
 	}
 	return id, s.syncRelationships(ctx, id, input)
+}
+
+func (s *ContentService) CreateAttachment(ctx context.Context, title, slugValue, filePath string, authorID, parent int64) (int64, error) {
+	return s.Create(ctx, SaveContentInput{
+		Title:     title,
+		Slug:      slugValue,
+		Text:      filePath,
+		Type:      models.ContentTypeAttach,
+		Status:    models.ContentStatusPost,
+		AllowFeed: true,
+		Parent:    parent,
+	}, authorID)
 }
 
 func (s *ContentService) Update(ctx context.Context, id int64, input SaveContentInput) error {
@@ -222,6 +233,18 @@ func (s *ContentService) Delete(ctx context.Context, id int64) error {
 	return err
 }
 
+func (s *ContentService) Adjacent(ctx context.Context, c models.Content) (prev, next models.Content, err error) {
+	prev, prevErr := s.one(ctx, `WHERE type = ? AND status = ? AND created < ? ORDER BY created DESC`, c.Type, models.ContentStatusPost, c.Created)
+	if prevErr != nil && !errors.Is(prevErr, sql.ErrNoRows) {
+		return models.Content{}, models.Content{}, prevErr
+	}
+	next, nextErr := s.one(ctx, `WHERE type = ? AND status = ? AND created > ? ORDER BY created ASC`, c.Type, models.ContentStatusPost, c.Created)
+	if nextErr != nil && !errors.Is(nextErr, sql.ErrNoRows) {
+		return models.Content{}, models.Content{}, nextErr
+	}
+	return prev, next, nil
+}
+
 func (s *ContentService) one(ctx context.Context, where string, args ...any) (models.Content, error) {
 	query := `
 		SELECT cid, title, slug, created, modified, text, sortOrder, authorId, COALESCE(template,''), type, status,
@@ -240,6 +263,51 @@ func (s *ContentService) one(ctx context.Context, where string, args ...any) (mo
 		return models.Content{}, sql.ErrNoRows
 	}
 	return contents[0], nil
+}
+
+func buildContentWhere(q ContentQuery) ([]string, []any) {
+	if q.Type == "" {
+		q.Type = models.ContentTypePost
+	}
+	if q.Limit <= 0 {
+		q.Limit = 100
+	}
+	args := []any{q.Type}
+	where := []string{"c.type = ?"}
+	if q.Status != "" && q.Status != "all" {
+		where = append(where, "c.status = ?")
+		args = append(args, q.Status)
+	}
+	if q.Keywords != "" {
+		where = append(where, "(c.title LIKE ? OR c.text LIKE ? OR c.slug LIKE ?)")
+		kw := "%" + q.Keywords + "%"
+		args = append(args, kw, kw, kw)
+	}
+	if q.Category > 0 {
+		where = append(where, `EXISTS (SELECT 1 FROM gb_relationships r JOIN gb_metas m ON m.mid = r.mid WHERE r.cid = c.cid AND m.type = 'category' AND m.mid = ?)`)
+		args = append(args, q.Category)
+	}
+	if q.Tag > 0 {
+		where = append(where, `EXISTS (SELECT 1 FROM gb_relationships r JOIN gb_metas m ON m.mid = r.mid WHERE r.cid = c.cid AND m.type = 'tag' AND m.mid = ?)`)
+		args = append(args, q.Tag)
+	}
+	if q.AuthorID > 0 {
+		where = append(where, "c.authorId = ?")
+		args = append(args, q.AuthorID)
+	}
+	if q.Year > 0 {
+		start := time.Date(q.Year, time.Month(maxInt(q.Month, 1)), maxInt(q.Day, 1), 0, 0, 0, 0, time.Local)
+		end := start.AddDate(1, 0, 0)
+		if q.Month > 0 {
+			end = start.AddDate(0, 1, 0)
+		}
+		if q.Day > 0 {
+			end = start.AddDate(0, 0, 1)
+		}
+		where = append(where, "c.created >= ? AND c.created < ?")
+		args = append(args, start.Unix(), end.Unix())
+	}
+	return where, args
 }
 
 func (s *ContentService) syncRelationships(ctx context.Context, cid int64, input SaveContentInput) error {
@@ -368,4 +436,11 @@ func boolChar(v bool) string {
 		return "1"
 	}
 	return "0"
+}
+
+func maxInt(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
 }

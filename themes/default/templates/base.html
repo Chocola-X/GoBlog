@@ -4,7 +4,13 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="csrf-token" content="{{.CSRF}}">
+  <meta name="description" content="{{if .Post}}{{excerpt .Post.Text 160}}{{else}}{{index .Site "site_description"}}{{end}}">
+  <meta name="keywords" content="{{index .Site "site_keywords"}}">
+  <meta name="generator" content="GoBlog">
+  {{if .CurrentURL}}<link rel="canonical" href="{{.CurrentURL}}">{{end}}
   <title>{{if .Post}}{{.Post.Title}} - {{end}}{{index .Site "site_title"}}</title>
+  <link rel="alternate" type="application/rss+xml" title="{{index .Site "site_title"}}" href="/feed.xml">
   <link rel="stylesheet" href="/theme/default/mdui.css">
   <link rel="stylesheet" href="/theme/default/theme.css">
   <script src="/theme/default/mdui.global.js"></script>
@@ -16,7 +22,7 @@
     <a class="icon-button" href="#drawer" aria-label="菜单"><mdui-icon-menu></mdui-icon-menu></a>
     <a href="/" class="appbar-title">{{index .Site "site_title"}}</a>
     <div class="appbar-spacer"></div>
-    <a class="icon-button" href="/sitemap.xml" aria-label="Sitemap"><mdui-icon-rss-feed></mdui-icon-rss-feed></a>
+    <a class="icon-button" href="/feed.xml" aria-label="Feed"><mdui-icon-rss-feed></mdui-icon-rss-feed></a>
   </header>
 
   <aside id="drawer" class="drawer">
@@ -29,7 +35,7 @@
     <nav class="drawer-nav">
       <a href="/"><mdui-icon-home></mdui-icon-home>首页</a>
       {{range .Pages}}<a href="/page/{{.Slug}}"><mdui-icon-article></mdui-icon-article>{{.Title}}</a>{{end}}
-      <a href="/sitemap.xml"><mdui-icon-rss-feed></mdui-icon-rss-feed>Sitemap</a>
+      <a href="/feed.xml"><mdui-icon-rss-feed></mdui-icon-rss-feed>订阅</a>
     </nav>
   </aside>
 
@@ -41,6 +47,13 @@
         <img src="/theme/default/cuckoo-logo.jpg" alt="">
         <h2>{{index .Site "site_title"}}</h2>
         <p>{{index .Site "site_description"}}</p>
+      </section>
+      <section class="sidebar-card">
+        <h3>搜索</h3>
+        <form class="search-form" action="/search" method="get">
+          <mdui-text-field name="q" label="关键字" value="{{.Keywords}}"></mdui-text-field>
+          <mdui-button-icon type="submit" title="搜索"><mdui-icon-search></mdui-icon-search></mdui-button-icon>
+        </form>
       </section>
       <section class="sidebar-card">
         <h3>页面</h3>
@@ -57,7 +70,7 @@
       <section class="sidebar-card">
         <h3>标签云</h3>
         <div class="tag-cloud">
-          {{range .Tags}}<span>{{.Name}}</span>{{else}}<span class="muted">暂无标签</span>{{end}}
+          {{range .Tags}}<a href="/tag/{{.Slug}}">{{.Name}}</a>{{else}}<span class="muted">暂无标签</span>{{end}}
         </div>
       </section>
       <section class="sidebar-card">

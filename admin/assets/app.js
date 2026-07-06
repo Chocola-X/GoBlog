@@ -8,6 +8,19 @@
   }
 
   ready(function () {
+    var csrf = document.querySelector('meta[name="csrf-token"]');
+    if (csrf && csrf.content) {
+      document.querySelectorAll('form[method="post"], form[method="POST"]').forEach(function (form) {
+        if (!form.querySelector('input[name="_csrf"]')) {
+          var input = document.createElement("input");
+          input.type = "hidden";
+          input.name = "_csrf";
+          input.value = csrf.content;
+          form.appendChild(input);
+        }
+      });
+    }
+
     var drawer = document.querySelector(".admin-drawer");
     var toggle = document.querySelector(".drawer-toggle");
     var scrim = document.querySelector(".drawer-scrim");

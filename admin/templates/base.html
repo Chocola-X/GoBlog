@@ -4,6 +4,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="csrf-token" content="{{.CSRF}}">
   <title>{{.Title}} - {{index .Site "site_title"}}</title>
   <link rel="stylesheet" href="/admin/assets/vendor/mdui.css">
   <link rel="stylesheet" href="/admin/assets/app.css">
@@ -38,6 +39,7 @@
         <mdui-list-item href="/admin/posts"><mdui-icon-article slot="icon"></mdui-icon-article>文章</mdui-list-item>
         <mdui-list-item href="/admin/pages"><mdui-icon-article slot="icon"></mdui-icon-article>页面</mdui-list-item>
         <mdui-list-item href="/admin/comments"><mdui-icon-comment slot="icon"></mdui-icon-comment>评论</mdui-list-item>
+        <mdui-list-item href="/admin/medias"><mdui-icon-folder slot="icon"></mdui-icon-folder>附件</mdui-list-item>
         <mdui-list-item href="/admin/categories"><mdui-icon-category slot="icon"></mdui-icon-category>分类</mdui-list-item>
         <mdui-list-item href="/admin/tags"><mdui-icon-tag slot="icon"></mdui-icon-tag>标签</mdui-list-item>
         <div class="nav-section">系统</div>
@@ -45,6 +47,7 @@
         <mdui-list-item href="/admin/themes"><mdui-icon-palette slot="icon"></mdui-icon-palette>主题</mdui-list-item>
         <mdui-list-item href="/admin/plugins"><mdui-icon-extension slot="icon"></mdui-icon-extension>插件</mdui-list-item>
         <mdui-list-item href="/admin/options/general"><mdui-icon-settings slot="icon"></mdui-icon-settings>设置</mdui-list-item>
+        <mdui-list-item href="/admin/backup"><mdui-icon-download slot="icon"></mdui-icon-download>备份</mdui-list-item>
         <mdui-list-item href="/admin/profile"><mdui-icon-person slot="icon"></mdui-icon-person>个人设置</mdui-list-item>
       </mdui-list>
     </mdui-navigation-drawer>

@@ -1,0 +1,8 @@
+{{define "content"}}
+<div class="page-head"><div><h1>备份</h1><p class="muted">导出站点选项、内容、分类标签和评论数据。</p></div></div>
+<form method="post" class="form-panel field-stack">
+  <input type="hidden" name="action" value="export">
+  <p class="muted">导出的 JSON 可用于迁移、审计或后续导入工具处理。上传文件本体请同时备份运行目录中的 uploads 文件夹。</p>
+  <div class="form-actions"><mdui-button type="submit"><mdui-icon-download slot="icon"></mdui-icon-download>导出 JSON</mdui-button></div>
+</form>
+{{end}}

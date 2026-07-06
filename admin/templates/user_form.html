@@ -1,11 +1,11 @@
 {{define "content"}}
 <div class="page-head"><div><h1>{{.Title}}</h1></div><mdui-button variant="outlined" href="/admin/users">返回</mdui-button></div>
 <form method="post" action="{{.Action}}" class="form-panel field-stack">
-  <mdui-text-field name="name" label="用户名" value="{{.User.Name}}" required></mdui-text-field>
-  <mdui-text-field name="screenName" label="昵称" value="{{.User.ScreenName}}"></mdui-text-field>
-  <mdui-text-field name="mail" label="邮箱" value="{{.User.Mail}}"></mdui-text-field>
-  <mdui-text-field name="url" label="个人主页" value="{{.User.URL}}"></mdui-text-field>
-  <mdui-text-field name="password" label="密码" type="password" helper="编辑用户时留空表示不修改"></mdui-text-field>
+  <mdui-text-field name="name" label="用户名" value="{{.User.Name}}" {{if fieldError .Errors "name"}}helper="{{fieldError .Errors "name"}}"{{end}} required></mdui-text-field>
+  <mdui-text-field name="screenName" label="昵称" value="{{.User.ScreenName}}" {{if fieldError .Errors "screenName"}}helper="{{fieldError .Errors "screenName"}}"{{end}}></mdui-text-field>
+  <mdui-text-field name="mail" label="邮箱" value="{{.User.Mail}}" {{if fieldError .Errors "mail"}}helper="{{fieldError .Errors "mail"}}"{{end}}></mdui-text-field>
+  <mdui-text-field name="url" label="个人主页" value="{{.User.URL}}" {{if fieldError .Errors "url"}}helper="{{fieldError .Errors "url"}}"{{end}}></mdui-text-field>
+  <mdui-text-field name="password" label="密码" type="password" helper="{{if fieldError .Errors "password"}}{{fieldError .Errors "password"}}{{else}}编辑用户时留空表示不修改{{end}}"></mdui-text-field>
   <label class="muted" for="role">用户组</label>
   <select id="role" name="role">
     <option value="administrator" {{if eq .User.Role "administrator"}}selected{{end}}>管理员</option>
@@ -14,7 +14,7 @@
     <option value="subscriber" {{if eq .User.Role "subscriber"}}selected{{end}}>关注者</option>
     <option value="visitor" {{if eq .User.Role "visitor"}}selected{{end}}>访问者</option>
   </select>
+  {{if fieldError .Errors "role"}}<div class="notice danger">{{fieldError .Errors "role"}}</div>{{end}}
   <div class="form-actions"><mdui-button type="submit">保存</mdui-button></div>
 </form>
 {{end}}
-

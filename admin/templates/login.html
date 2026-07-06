@@ -4,10 +4,10 @@
   <p class="muted">进入 GoBlog 管理后台</p>
   {{if .Error}}<div class="notice danger">{{.Error}}</div>{{end}}
   <form method="post" class="field-stack">
-    <mdui-text-field name="name" label="用户名" required></mdui-text-field>
+    <input type="hidden" name="next" value="{{.Next}}">
+    <mdui-text-field name="name" label="用户名" value="{{.Name}}" {{if fieldError .Errors "name"}}helper="{{fieldError .Errors "name"}}"{{end}} required></mdui-text-field>
     <mdui-text-field name="password" label="密码" type="password" required></mdui-text-field>
     <mdui-button type="submit" full-width>登录</mdui-button>
   </form>
 </section>
 {{end}}
-
