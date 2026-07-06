@@ -4,10 +4,14 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"encoding/base64"
+	"errors"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -692,6 +696,330 @@ func TestCommentHTMLAllowListSanitizesTags(t *testing.T) {
 	}
 }
 
+func TestMediaUploadStoresMetadataUnderContentIDAndDeleteRemovesFile(t *testing.T) {
+	app, secret, adminID := newSecurityTestApp(t)
+	app.UploadDir = t.TempDir()
+	ctx := context.Background()
+	postID := createPublishedPost(t, app, adminID, "media-parent")
+	png := tinyPNG(t)
+	req := multipartUploadRequestBytes(t, "/admin/medias", map[string]string{"_csrf": adminToken(secret, adminID), "cid": itoa(postID)}, "file", "photo.png", png)
+	setSession(t, req, secret, adminID)
+	rec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("media upload status = %d, want 303: %s", rec.Code, rec.Body.String())
+	}
+	attachments, err := app.Contents.List(ctx, services.ContentQuery{Type: models.ContentTypeAttach, Status: "all", Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(attachments) != 1 {
+		t.Fatalf("attachments = %d, want 1", len(attachments))
+	}
+	meta := parseAttachmentMeta(attachments[0])
+	if !strings.HasPrefix(meta.Path, itoa(postID)+"/") || !strings.HasPrefix(meta.URL, "/uploads/"+itoa(postID)+"/") {
+		t.Fatalf("attachment path/url = %#v, want content-id bucket", meta)
+	}
+	if !meta.IsImage || meta.Width != 1 || meta.Height != 1 || meta.MIME != "image/png" {
+		t.Fatalf("image metadata = %#v, want 1x1 image/png", meta)
+	}
+	fullPath := filepath.Join(app.UploadDir, filepath.FromSlash(meta.Path))
+	if _, err := os.Stat(fullPath); err != nil {
+		t.Fatalf("uploaded file missing: %v", err)
+	}
+
+	form := url.Values{"_csrf": {adminToken(secret, adminID)}}
+	req = httptest.NewRequest(http.MethodPost, "/admin/medias/"+itoa(attachments[0].CID)+"/delete", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	setSession(t, req, secret, adminID)
+	rec = httptest.NewRecorder()
+	app.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("media delete status = %d, want 303", rec.Code)
+	}
+	if _, err := os.Stat(fullPath); !os.IsNotExist(err) {
+		t.Fatalf("uploaded file still exists after delete: %v", err)
+	}
+}
+
+func TestMediaUploadRejectsDangerousExtension(t *testing.T) {
+	app, secret, adminID := newSecurityTestApp(t)
+	app.UploadDir = t.TempDir()
+	postID := createPublishedPost(t, app, adminID, "media-danger")
+	req := multipartUploadRequestBytes(t, "/admin/medias", map[string]string{"_csrf": adminToken(secret, adminID), "cid": itoa(postID)}, "file", "avatar.jpg.php", []byte("<?php echo 1;"))
+	setSession(t, req, secret, adminID)
+	rec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("dangerous upload status = %d, want 400", rec.Code)
+	}
+}
+
+func TestMediaUploadSanitizesTraversalNameAndEnforcesSize(t *testing.T) {
+	app, secret, adminID := newSecurityTestApp(t)
+	app.UploadDir = t.TempDir()
+	ctx := context.Background()
+	postID := createPublishedPost(t, app, adminID, "media-traversal")
+	if err := app.Options.Set(ctx, "upload_max_size", "8"); err != nil {
+		t.Fatal(err)
+	}
+	req := multipartUploadRequestBytes(t, "/admin/medias", map[string]string{"_csrf": adminToken(secret, adminID), "cid": itoa(postID)}, "file", "big.txt", []byte("this is too large"))
+	setSession(t, req, secret, adminID)
+	rec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("oversized upload status = %d, want 400", rec.Code)
+	}
+	if err := app.Options.Set(ctx, "upload_max_size", "10485760"); err != nil {
+		t.Fatal(err)
+	}
+	req = multipartUploadRequestBytes(t, "/admin/medias", map[string]string{"_csrf": adminToken(secret, adminID), "cid": itoa(postID)}, "file", "../../evil.png", tinyPNG(t))
+	setSession(t, req, secret, adminID)
+	rec = httptest.NewRecorder()
+	app.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("traversal upload status = %d, want 303: %s", rec.Code, rec.Body.String())
+	}
+	attachments, err := app.Contents.List(ctx, services.ContentQuery{Type: models.ContentTypeAttach, Status: "all", Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(attachments) != 1 {
+		t.Fatalf("attachments = %d, want 1", len(attachments))
+	}
+	meta := parseAttachmentMeta(attachments[0])
+	if strings.Contains(meta.Path, "..") || !strings.HasPrefix(meta.Path, itoa(postID)+"/") || meta.Name != "evil.png" {
+		t.Fatalf("unsafe sanitized metadata: %#v", meta)
+	}
+}
+
+func TestMediaReplaceSameExtensionPolicy(t *testing.T) {
+	app, secret, adminID := newSecurityTestApp(t)
+	app.UploadDir = t.TempDir()
+	ctx := context.Background()
+	postID := createPublishedPost(t, app, adminID, "media-replace")
+	attachment, meta := uploadMedia(t, app, secret, adminID, postID, "photo.png", tinyPNG(t))
+	oldPath := filepath.Join(app.UploadDir, filepath.FromSlash(meta.Path))
+
+	req := multipartUploadRequestBytes(t, "/admin/medias/"+itoa(attachment.CID)+"/replace", map[string]string{"_csrf": adminToken(secret, adminID)}, "file", "note.txt", []byte("plain text"))
+	setSession(t, req, secret, adminID)
+	rec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("replace different ext status = %d, want 400", rec.Code)
+	}
+	if _, err := os.Stat(oldPath); err != nil {
+		t.Fatalf("old file removed after failed replace: %v", err)
+	}
+
+	req = multipartUploadRequestBytes(t, "/admin/medias/"+itoa(attachment.CID)+"/replace", map[string]string{"_csrf": adminToken(secret, adminID)}, "file", "new.png", tinyPNG(t))
+	setSession(t, req, secret, adminID)
+	rec = httptest.NewRecorder()
+	app.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("replace same ext status = %d, want 303: %s", rec.Code, rec.Body.String())
+	}
+	if _, err := os.Stat(oldPath); !os.IsNotExist(err) {
+		t.Fatalf("old file still exists after successful replace: %v", err)
+	}
+	updated, err := app.Contents.ByID(ctx, attachment.CID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	updatedMeta := parseAttachmentMeta(updated)
+	if updatedMeta.Path == meta.Path || updatedMeta.Type != "png" {
+		t.Fatalf("updated metadata = %#v, old = %#v", updatedMeta, meta)
+	}
+}
+
+func TestContentDeleteAttachmentPolicy(t *testing.T) {
+	t.Run("keep", func(t *testing.T) {
+		app, secret, adminID := newSecurityTestApp(t)
+		app.UploadDir = t.TempDir()
+		ctx := context.Background()
+		postID := createPublishedPost(t, app, adminID, "delete-keep")
+		attachment, meta := uploadMedia(t, app, secret, adminID, postID, "photo.png", tinyPNG(t))
+		deleteContentRequest(t, app, secret, adminID, postID)
+		if _, err := app.Contents.ByID(ctx, attachment.CID); err != nil {
+			t.Fatalf("attachment record should be kept: %v", err)
+		}
+		if _, err := os.Stat(filepath.Join(app.UploadDir, filepath.FromSlash(meta.Path))); err != nil {
+			t.Fatalf("attachment file should be kept: %v", err)
+		}
+	})
+	t.Run("file", func(t *testing.T) {
+		app, secret, adminID := newSecurityTestApp(t)
+		app.UploadDir = t.TempDir()
+		ctx := context.Background()
+		if err := app.Options.Set(ctx, "attachment_delete_policy", "file"); err != nil {
+			t.Fatal(err)
+		}
+		postID := createPublishedPost(t, app, adminID, "delete-file")
+		attachment, meta := uploadMedia(t, app, secret, adminID, postID, "photo.png", tinyPNG(t))
+		deleteContentRequest(t, app, secret, adminID, postID)
+		if _, err := app.Contents.ByID(ctx, attachment.CID); !errors.Is(err, sql.ErrNoRows) {
+			t.Fatalf("attachment record should be deleted, err=%v", err)
+		}
+		if _, err := os.Stat(filepath.Join(app.UploadDir, filepath.FromSlash(meta.Path))); !os.IsNotExist(err) {
+			t.Fatalf("attachment file should be deleted: %v", err)
+		}
+	})
+}
+
+func TestBackupExportImportRoundTrip(t *testing.T) {
+	app, _, adminID := newSecurityTestApp(t)
+	ctx := context.Background()
+	postID, err := app.Contents.Create(ctx, services.SaveContentInput{
+		Title:        "Backup Post",
+		Slug:         "backup-post",
+		Text:         "body",
+		Type:         models.ContentTypePost,
+		Status:       models.ContentStatusPost,
+		AllowComment: true,
+		CategoryIDs:  []int64{1},
+		Fields:       []services.SaveFieldInput{{Name: "source", Type: "str", StrValue: "backup"}},
+	}, adminID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if postID <= 0 {
+		t.Fatal("expected ids")
+	}
+	if err := app.Comments.Save(ctx, services.SaveCommentInput{CID: postID, Author: "Reader", Mail: "r@example.com", Text: "hello", Status: "approved"}, 0); err != nil {
+		t.Fatal(err)
+	}
+	payload, err := app.backupPayload(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if payload.Version != 1 || len(payload.Users) == 0 || len(payload.Relationships) == 0 || len(payload.Fields) == 0 {
+		t.Fatalf("incomplete backup payload")
+	}
+
+	target, _, _ := newSecurityTestApp(t)
+	if err := target.importBackupPayload(ctx, payload, importSectionSet{Options: true, Users: true, Contents: true, Metas: true, Comments: true, Fields: true, Media: true}); err != nil {
+		t.Fatal(err)
+	}
+	imported, err := target.Contents.BySlug(ctx, "backup-post")
+	if err != nil {
+		t.Fatal(err)
+	}
+	fields, err := target.Contents.FieldMap(ctx, imported.CID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fields["source"] != "backup" {
+		t.Fatalf("imported fields = %#v", fields)
+	}
+	comments, err := target.Comments.List(ctx, "approved", "", imported.CID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(comments) != 1 || comments[0].Author != "Reader" {
+		t.Fatalf("imported comments = %#v", comments)
+	}
+}
+
+func TestBackupImportUnsupportedVersionDoesNotWrite(t *testing.T) {
+	app, _, _ := newSecurityTestApp(t)
+	ctx := context.Background()
+	payload := backupData{Version: 99, Options: map[string]string{"site_title": "Broken"}}
+	if err := app.importBackupPayload(ctx, payload, importSectionSet{Options: true}); err == nil {
+		t.Fatal("unsupported backup version should fail")
+	}
+	value, err := app.Options.Get(ctx, "site_title")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if value == "Broken" {
+		t.Fatal("unsupported backup version changed options")
+	}
+}
+
+func TestBackupDryRunCountsAddUpdateSkip(t *testing.T) {
+	app, _, adminID := newSecurityTestApp(t)
+	ctx := context.Background()
+	postID, err := app.Contents.Create(ctx, services.SaveContentInput{
+		Title:        "dry-run-existing",
+		Slug:         "dry-run-existing",
+		Text:         "body",
+		Type:         models.ContentTypePost,
+		Status:       models.ContentStatusPost,
+		AllowComment: true,
+		CategoryIDs:  []int64{1},
+	}, adminID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload := backupData{
+		Version: 1,
+		Options: map[string]string{
+			"site_title": "Updated",
+			"new_option": "New",
+		},
+		Users: []models.User{
+			{UID: adminID, Name: "admin"},
+			{UID: 99, Name: "new", Password: "hash"},
+			{UID: 0, Name: "bad"},
+		},
+		Contents: []models.Content{
+			{CID: postID, Type: models.ContentTypePost, Title: "Existing"},
+			{CID: 99, Type: models.ContentTypePost, Title: "New"},
+			{CID: 100, Type: models.ContentTypeAttach, Title: "Media"},
+		},
+		Metas: []models.Meta{
+			{MID: 1, Type: "category", Name: "默认分类"},
+			{MID: 99, Type: "tag", Name: "new"},
+		},
+		Relationships: []models.Relationship{{CID: postID, MID: 1}, {CID: 99, MID: 99}},
+	}
+	plan, err := app.backupPlan(ctx, payload, importSectionSet{Options: true, Users: true, Contents: true, Metas: true, Media: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.Options.Update != 1 || plan.Options.Add != 1 {
+		t.Fatalf("option plan = %#v", plan.Options)
+	}
+	if plan.Users.Skip != 2 || plan.Users.Add != 1 {
+		t.Fatalf("user plan = %#v", plan.Users)
+	}
+	if plan.Contents.Skip != 1 || plan.Contents.Add != 1 || plan.Media.Add != 1 {
+		t.Fatalf("content/media plan = %#v %#v", plan.Contents, plan.Media)
+	}
+	if plan.Metas.Skip != 1 || plan.Metas.Add != 1 || plan.Relationships.Skip != 1 || plan.Relationships.Add != 1 {
+		t.Fatalf("meta/rel plan = %#v %#v", plan.Metas, plan.Relationships)
+	}
+	title, err := app.Options.Get(ctx, "site_title")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if title == "Updated" {
+		t.Fatal("dry-run changed database")
+	}
+}
+
+func TestBackupImportMidFailureRollsBack(t *testing.T) {
+	app, _, _ := newSecurityTestApp(t)
+	ctx := context.Background()
+	payload := backupData{
+		Version: 1,
+		Options: map[string]string{"site_title": "Should Rollback"},
+		Contents: []models.Content{
+			{CID: 999, Title: "Bad Content"},
+		},
+	}
+	if err := app.importBackupPayload(ctx, payload, importSectionSet{Options: true, Contents: true}); err == nil {
+		t.Fatal("import should fail on content without type")
+	}
+	title, err := app.Options.Get(ctx, "site_title")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if title == "Should Rollback" {
+		t.Fatal("option write was not rolled back")
+	}
+}
+
 func newSecurityTestApp(t *testing.T) (*App, string, int64) {
 	t.Helper()
 	db, err := sql.Open("sqlite3", ":memory:")
@@ -743,6 +1071,39 @@ func createPublishedPost(t *testing.T, app *App, authorID int64, slug string) in
 	return id
 }
 
+func uploadMedia(t *testing.T, app *App, secret string, adminID, parentID int64, filename string, content []byte) (models.Content, models.AttachmentMeta) {
+	t.Helper()
+	req := multipartUploadRequestBytes(t, "/admin/medias", map[string]string{"_csrf": adminToken(secret, adminID), "cid": itoa(parentID)}, "file", filename, content)
+	setSession(t, req, secret, adminID)
+	rec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("media upload status = %d, want 303: %s", rec.Code, rec.Body.String())
+	}
+	attachments, err := app.Contents.List(context.Background(), services.ContentQuery{Type: models.ContentTypeAttach, Status: "all", Parent: parentID, Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(attachments) == 0 {
+		t.Fatal("expected uploaded attachment")
+	}
+	item := attachments[0]
+	return item, parseAttachmentMeta(item)
+}
+
+func deleteContentRequest(t *testing.T, app *App, secret string, adminID, cid int64) {
+	t.Helper()
+	form := url.Values{"_csrf": {adminToken(secret, adminID)}}
+	req := httptest.NewRequest(http.MethodPost, "/admin/posts/"+itoa(cid)+"/delete", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	setSession(t, req, secret, adminID)
+	rec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("delete content status = %d, want 303: %s", rec.Code, rec.Body.String())
+	}
+}
+
 func submitPublicComment(t *testing.T, app *App, cid int64, form url.Values, ip string) *httptest.ResponseRecorder {
 	t.Helper()
 	post, err := app.Contents.ByID(context.Background(), cid)
@@ -792,6 +1153,11 @@ func setSession(t *testing.T, req *http.Request, secret string, uid int64) {
 
 func multipartUploadRequest(t *testing.T, target string, fields map[string]string, fileField, filename, content string) *http.Request {
 	t.Helper()
+	return multipartUploadRequestBytes(t, target, fields, fileField, filename, []byte(content))
+}
+
+func multipartUploadRequestBytes(t *testing.T, target string, fields map[string]string, fileField, filename string, content []byte) *http.Request {
+	t.Helper()
 	var body bytes.Buffer
 	writer := multipart.NewWriter(&body)
 	for key, value := range fields {
@@ -803,7 +1169,7 @@ func multipartUploadRequest(t *testing.T, target string, fields map[string]strin
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := part.Write([]byte(content)); err != nil {
+	if _, err := part.Write(content); err != nil {
 		t.Fatal(err)
 	}
 	if err := writer.Close(); err != nil {
@@ -812,6 +1178,15 @@ func multipartUploadRequest(t *testing.T, target string, fields map[string]strin
 	req := httptest.NewRequest(http.MethodPost, target, &body)
 	req.Header.Set("Content-Type", writer.FormDataContentType())
 	return req
+}
+
+func tinyPNG(t *testing.T) []byte {
+	t.Helper()
+	data, err := base64.StdEncoding.DecodeString("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return data
 }
 
 func adminToken(secret string, uid int64) string {

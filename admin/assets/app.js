@@ -128,6 +128,92 @@
       });
     });
 
+    function appendToEditor(text) {
+      var editor = document.querySelector("#content-text");
+      if (!editor || !text) {
+        return;
+      }
+      var current = editor.value || "";
+      var prefix = current && !/\n$/.test(current) ? "\n\n" : "";
+      editor.value = current + prefix + text + "\n";
+      editor.dispatchEvent(new Event("input", { bubbles: true }));
+      editor.focus();
+    }
+
+    document.querySelectorAll(".media-pick").forEach(function (button) {
+      button.addEventListener("click", function () {
+        appendToEditor(button.dataset.markdown || "");
+      });
+    });
+
+    document.querySelectorAll(".editor-upload").forEach(function (panel) {
+      var fileField = panel.querySelector(".editor-upload-file");
+      var button = panel.querySelector(".editor-upload-button");
+      var cid = document.querySelector('input[name="cid"]');
+      if (!fileField || !button || !csrf || !csrf.content) {
+        return;
+      }
+      function selectedFile() {
+        if (fileField.files && fileField.files.length) {
+          return fileField.files[0];
+        }
+        var input = fileField.querySelector && fileField.querySelector('input[type="file"]');
+        if (input && input.files && input.files.length) {
+          return input.files[0];
+        }
+        if (fileField.shadowRoot) {
+          input = fileField.shadowRoot.querySelector('input[type="file"]');
+          if (input && input.files && input.files.length) {
+            return input.files[0];
+          }
+        }
+        return null;
+      }
+      button.addEventListener("click", function () {
+        var file = selectedFile();
+        if (!file) {
+          button.textContent = "请选择文件";
+          return;
+        }
+        var data = new FormData();
+        data.set("_csrf", csrf.content);
+        data.set("file", file);
+        if (cid && cid.value) {
+          data.set("cid", cid.value);
+        }
+        fetch("/admin/medias", {
+          method: "POST",
+          body: data,
+          headers: { "Accept": "application/json" },
+          credentials: "same-origin"
+        }).then(function (res) {
+          if (!res.ok) {
+            throw new Error("upload failed");
+          }
+          return res.json();
+        }).then(function (payload) {
+          appendToEditor(payload.markdown || payload.url || "");
+          button.textContent = "已插入";
+        }).catch(function () {
+          button.textContent = "上传失败";
+        });
+      });
+    });
+
+    document.querySelectorAll(".copy-text").forEach(function (button) {
+      button.addEventListener("click", function () {
+        var value = button.dataset.copy || "";
+        if (!value) {
+          return;
+        }
+        if (navigator.clipboard) {
+          navigator.clipboard.writeText(value).then(function () {
+            button.textContent = "已复制";
+          }).catch(function () {});
+        }
+      });
+    });
+
     var drawer = document.querySelector(".admin-drawer");
     var toggle = document.querySelector(".drawer-toggle");
     var scrim = document.querySelector(".drawer-scrim");

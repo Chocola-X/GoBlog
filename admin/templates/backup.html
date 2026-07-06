@@ -1,8 +1,40 @@
 {{define "content"}}
-<div class="page-head"><div><h1>备份</h1><p class="muted">导出站点选项、内容、分类标签和评论数据。</p></div></div>
+<div class="page-head"><div><h1>备份</h1><p class="muted">导出或导入站点选项、用户、内容、分类标签、评论、字段和附件元数据。</p></div></div>
+{{if .Imported}}<div class="notice">备份已导入。</div>{{end}}
+{{if .ImportPlan}}
+<div class="notice">
+  导入预览：
+  配置 新增 {{.ImportPlan.Options.Add}} / 更新 {{.ImportPlan.Options.Update}} / 跳过 {{.ImportPlan.Options.Skip}}；
+  用户 新增 {{.ImportPlan.Users.Add}} / 跳过 {{.ImportPlan.Users.Skip}}；
+  内容 新增 {{.ImportPlan.Contents.Add}} / 跳过 {{.ImportPlan.Contents.Skip}}；
+  附件 新增 {{.ImportPlan.Media.Add}} / 跳过 {{.ImportPlan.Media.Skip}}；
+  分类标签 新增 {{.ImportPlan.Metas.Add}} / 跳过 {{.ImportPlan.Metas.Skip}}；
+  关系 新增 {{.ImportPlan.Relationships.Add}} / 跳过 {{.ImportPlan.Relationships.Skip}}；
+  评论 新增 {{.ImportPlan.Comments.Add}} / 跳过 {{.ImportPlan.Comments.Skip}}；
+  字段 新增 {{.ImportPlan.Fields.Add}} / 跳过 {{.ImportPlan.Fields.Skip}}。
+</div>
+{{end}}
 <form method="post" class="form-panel field-stack">
   <input type="hidden" name="action" value="export">
-  <p class="muted">导出的 JSON 可用于迁移、审计或后续导入工具处理。上传文件本体请同时备份运行目录中的 uploads 文件夹。</p>
+  <p class="muted">导出的 JSON 包含附件元数据和 URL。上传文件本体请同时备份 data/uploads 目录。</p>
   <div class="form-actions"><mdui-button type="submit"><mdui-icon-download slot="icon"></mdui-icon-download>导出 JSON</mdui-button></div>
+</form>
+<form method="post" enctype="multipart/form-data" class="form-panel field-stack" style="margin-top:16px">
+  <input type="hidden" name="action" value="import">
+  <mdui-text-field type="file" name="backup" label="备份 JSON"></mdui-text-field>
+  <fieldset class="fieldset">
+    <legend>导入项目</legend>
+    <label><input type="checkbox" name="section" value="options" checked> 配置</label>
+    <label><input type="checkbox" name="section" value="users" checked> 用户</label>
+    <label><input type="checkbox" name="section" value="contents" checked> 内容</label>
+    <label><input type="checkbox" name="section" value="media" checked> 附件元数据</label>
+    <label><input type="checkbox" name="section" value="metas" checked> 分类标签</label>
+    <label><input type="checkbox" name="section" value="comments" checked> 评论</label>
+    <label><input type="checkbox" name="section" value="fields" checked> 自定义字段</label>
+  </fieldset>
+  <div class="form-actions">
+    <mdui-button type="submit" name="dry_run" value="1" variant="outlined">预览导入</mdui-button>
+    <mdui-button type="submit"><mdui-icon-upload slot="icon"></mdui-icon-upload>执行导入</mdui-button>
+  </div>
 </form>
 {{end}}

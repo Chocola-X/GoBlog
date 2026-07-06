@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"bytes"
 	"context"
 	"crypto/hmac"
 	"crypto/md5"
@@ -13,6 +14,10 @@ import (
 	"errors"
 	"fmt"
 	"html/template"
+	"image"
+	_ "image/gif"
+	_ "image/jpeg"
+	_ "image/png"
 	"io"
 	"io/fs"
 	"net/http"
@@ -328,7 +333,7 @@ func (a *App) contentRoutes(w http.ResponseWriter, r *http.Request, prefix, typ 
 		if !a.canEditContent(w, r, id, typ) {
 			return
 		}
-		if err := a.Contents.Delete(r.Context(), id); err != nil {
+		if err := a.deleteContentWithAttachmentPolicy(r.Context(), id); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
@@ -376,6 +381,7 @@ func (a *App) contentForm(w http.ResponseWriter, r *http.Request, typ string, id
 		selectedTags, _ := a.Metas.TagsForContent(r.Context(), id)
 		fields, _ := a.Contents.FieldsForContent(r.Context(), id)
 		revisions, _ := a.Contents.Revisions(r.Context(), id)
+		mediaLibrary, _ := a.editorMediaLibrary(r)
 		a.renderAdmin(w, r, "content_form.html", map[string]any{
 			"Title":              contentFormTitle(typ, id),
 			"Content":            item,
@@ -389,6 +395,7 @@ func (a *App) contentForm(w http.ResponseWriter, r *http.Request, typ string, id
 			"Fields":             fields,
 			"Revisions":          revisions,
 			"PreviewURL":         a.previewURL(r, item),
+			"MediaLibrary":       mediaLibrary,
 		})
 	case http.MethodPost:
 		input, err := parseContentForm(r, typ)
@@ -457,6 +464,7 @@ func (a *App) renderContentForm(w http.ResponseWriter, r *http.Request, typ stri
 		fields, _ = a.Contents.FieldsForContent(r.Context(), id)
 	}
 	revisions, _ := a.Contents.Revisions(r.Context(), id)
+	mediaLibrary, _ := a.editorMediaLibrary(r)
 	a.renderAdmin(w, r, "content_form.html", map[string]any{
 		"Title":              contentFormTitle(typ, id),
 		"Content":            item,
@@ -470,6 +478,7 @@ func (a *App) renderContentForm(w http.ResponseWriter, r *http.Request, typ stri
 		"Fields":             fields,
 		"Revisions":          revisions,
 		"PreviewURL":         a.previewURL(r, item),
+		"MediaLibrary":       mediaLibrary,
 	})
 }
 
@@ -902,7 +911,7 @@ func (a *App) adminOptionsGeneral(w http.ResponseWriter, r *http.Request) {
 	if !a.requireRole(w, r, "administrator") {
 		return
 	}
-	a.optionsForm(w, r, "基本设置", "options_general.html", []string{"site_title", "site_description", "site_keywords", "base_url", "allow_register", "active_theme"})
+	a.optionsForm(w, r, "基本设置", "options_general.html", []string{"site_title", "site_description", "site_keywords", "base_url", "allow_register", "active_theme", "upload_allowed_exts", "upload_max_size", "upload_replace_same_ext_only", "attachment_delete_policy"})
 }
 
 func (a *App) adminOptionsReading(w http.ResponseWriter, r *http.Request) {
@@ -1085,7 +1094,11 @@ func (a *App) adminMedias(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		posts, _ := a.Contents.List(r.Context(), postQuery)
-		a.renderAdmin(w, r, "medias.html", map[string]any{"Title": "附件", "Medias": medias, "Posts": posts, "Saved": r.URL.Query().Get("saved") == "1"})
+		pages, _ := a.Contents.List(r.Context(), services.ContentQuery{Type: models.ContentTypePage, Status: "all", Limit: 200})
+		users, _ := a.Users.List(r.Context(), "")
+		views := a.mediaViews(medias, posts, pages, users)
+		views = filterMediaViews(views, r.URL.Query().Get("kind"), r.URL.Query().Get("author"), r.URL.Query().Get("keywords"))
+		a.renderAdmin(w, r, "medias.html", map[string]any{"Title": "附件", "Medias": views, "Posts": posts, "Saved": r.URL.Query().Get("saved") == "1", "Kind": r.URL.Query().Get("kind"), "Author": r.URL.Query().Get("author"), "Keywords": r.URL.Query().Get("keywords"), "Users": users})
 	case http.MethodPost:
 		if err := r.ParseMultipartForm(32 << 20); err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
@@ -1101,13 +1114,20 @@ func (a *App) adminMedias(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		defer file.Close()
-		relPath, err := a.saveUpload(file, header.Filename)
+		meta, err := a.saveUpload(r.Context(), file, header.Filename, parent)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		text, _ := json.Marshal(meta)
+		id, err := a.Contents.CreateAttachmentMeta(r.Context(), meta.Name, strings.TrimSuffix(filepath.Base(meta.Name), filepath.Ext(meta.Name)), string(text), user.UID, parent)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		if _, err := a.Contents.CreateAttachment(r.Context(), header.Filename, strings.TrimSuffix(filepath.Base(relPath), filepath.Ext(relPath)), "/uploads/"+relPath, user.UID, parent); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+		if wantsJSON(r) {
+			w.Header().Set("Content-Type", "application/json; charset=utf-8")
+			_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "cid": id, "url": meta.URL, "markdown": attachmentMarkdown(meta)})
 			return
 		}
 		http.Redirect(w, r, "/admin/medias?saved=1", http.StatusSeeOther)
@@ -1122,12 +1142,8 @@ func (a *App) adminMediaRoutes(w http.ResponseWriter, r *http.Request) {
 	}
 	clean := strings.Trim(strings.TrimPrefix(r.URL.Path, "/admin/medias/"), "/")
 	parts := strings.Split(clean, "/")
-	if len(parts) < 2 || parts[1] != "delete" {
+	if len(parts) < 2 {
 		http.NotFound(w, r)
-		return
-	}
-	if r.Method != http.MethodPost {
-		methodNotAllowed(w, http.MethodPost)
 		return
 	}
 	id, err := strconv.ParseInt(parts[0], 10, 64)
@@ -1145,14 +1161,86 @@ func (a *App) adminMediaRoutes(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "permission denied", http.StatusForbidden)
 		return
 	}
-	if err := a.Contents.Delete(r.Context(), id); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+	switch parts[1] {
+	case "delete":
+		if r.Method != http.MethodPost {
+			methodNotAllowed(w, http.MethodPost)
+			return
+		}
+		meta := parseAttachmentMeta(item)
+		if err := a.Contents.Delete(r.Context(), id); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		a.removeAttachmentFile(meta)
+		http.Redirect(w, r, "/admin/medias", http.StatusSeeOther)
+	case "replace":
+		if r.Method != http.MethodPost {
+			methodNotAllowed(w, http.MethodPost)
+			return
+		}
+		if err := r.ParseMultipartForm(32 << 20); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		file, header, err := r.FormFile("file")
+		if err != nil {
+			http.Error(w, "请选择要替换的文件", http.StatusBadRequest)
+			return
+		}
+		defer file.Close()
+		meta, err := a.replaceUpload(r.Context(), file, header.Filename, item.Parent, parseAttachmentMeta(item))
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		text, _ := json.Marshal(meta)
+		if err := a.Contents.UpdateAttachmentMeta(r.Context(), item.CID, meta.Name, strings.TrimSuffix(filepath.Base(meta.Name), filepath.Ext(meta.Name)), string(text), item.Parent); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		http.Redirect(w, r, "/admin/medias?saved=1", http.StatusSeeOther)
+	default:
+		http.NotFound(w, r)
+	}
+}
+
+func (a *App) removeAttachmentFile(meta models.AttachmentMeta) {
+	rel := meta.Path
+	if rel == "" && strings.HasPrefix(meta.URL, "/uploads/") {
+		rel = strings.TrimPrefix(meta.URL, "/uploads/")
+	}
+	if rel == "" {
 		return
 	}
-	if strings.HasPrefix(item.Text, "/uploads/") {
-		_ = os.Remove(filepath.Join(a.UploadDir, strings.TrimPrefix(item.Text, "/uploads/")))
+	_ = os.Remove(filepath.Join(a.UploadDir, filepath.FromSlash(rel)))
+}
+
+func (a *App) deleteContentWithAttachmentPolicy(ctx context.Context, cid int64) error {
+	item, err := a.Contents.ByID(ctx, cid)
+	if err != nil {
+		return err
 	}
-	http.Redirect(w, r, "/admin/medias", http.StatusSeeOther)
+	policy := a.option(ctx, "attachment_delete_policy", "keep")
+	var attachments []models.Content
+	if item.Type == models.ContentTypePost || item.Type == models.ContentTypePage {
+		attachments, _ = a.Contents.List(ctx, services.ContentQuery{Type: models.ContentTypeAttach, Status: "all", Parent: cid, Limit: 10000})
+	}
+	if policy == "record" || policy == "file" {
+		for _, attachment := range attachments {
+			meta := parseAttachmentMeta(attachment)
+			if err := a.Contents.Delete(ctx, attachment.CID); err != nil {
+				return err
+			}
+			if policy == "file" {
+				a.removeAttachmentFile(meta)
+			}
+		}
+	}
+	if err := a.Contents.Delete(ctx, cid); err != nil {
+		return err
+	}
+	return nil
 }
 
 func (a *App) validateAttachmentParent(w http.ResponseWriter, r *http.Request, user models.User, rawCID string) (int64, bool) {
@@ -1188,20 +1276,51 @@ func (a *App) adminBackup(w http.ResponseWriter, r *http.Request) {
 	}
 	switch r.Method {
 	case http.MethodGet:
-		a.renderAdmin(w, r, "backup.html", map[string]any{"Title": "备份"})
+		a.renderAdmin(w, r, "backup.html", map[string]any{"Title": "备份", "Imported": r.URL.Query().Get("imported") == "1"})
 	case http.MethodPost:
-		if r.FormValue("action") != "export" {
+		switch r.FormValue("action") {
+		case "export":
+			payload, err := a.backupPayload(r.Context())
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json; charset=utf-8")
+			w.Header().Set("Content-Disposition", `attachment; filename="goblog-backup.json"`)
+			_ = json.NewEncoder(w).Encode(payload)
+		case "import":
+			if err := r.ParseMultipartForm(32 << 20); err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			file, _, err := r.FormFile("backup")
+			if err != nil {
+				http.Error(w, "请选择备份文件", http.StatusBadRequest)
+				return
+			}
+			defer file.Close()
+			var payload backupData
+			if err := json.NewDecoder(io.LimitReader(file, 64<<20)).Decode(&payload); err != nil {
+				http.Error(w, "备份 JSON 格式不正确", http.StatusBadRequest)
+				return
+			}
+			if r.FormValue("dry_run") == "1" {
+				plan, err := a.backupPlan(r.Context(), payload, importSections(r))
+				if err != nil {
+					http.Error(w, err.Error(), http.StatusInternalServerError)
+					return
+				}
+				a.renderAdmin(w, r, "backup.html", map[string]any{"Title": "备份", "ImportPlan": plan})
+				return
+			}
+			if err := a.importBackupPayload(r.Context(), payload, importSections(r)); err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			http.Redirect(w, r, "/admin/backup?imported=1", http.StatusSeeOther)
+		default:
 			http.Error(w, "unsupported backup action", http.StatusBadRequest)
-			return
 		}
-		payload, err := a.backupPayload(r.Context())
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		w.Header().Set("Content-Type", "application/json; charset=utf-8")
-		w.Header().Set("Content-Disposition", `attachment; filename="goblog-backup.json"`)
-		_ = json.NewEncoder(w).Encode(payload)
 	default:
 		methodNotAllowed(w, http.MethodGet+", "+http.MethodPost)
 	}
@@ -1652,6 +1771,161 @@ func (a *App) commentView(r *http.Request, comment models.Comment, level int) co
 	}
 }
 
+func (a *App) mediaViews(items, posts, pages []models.Content, users []models.User) []mediaView {
+	parents := map[int64]string{}
+	for _, post := range posts {
+		parents[post.CID] = post.Title
+	}
+	for _, page := range pages {
+		parents[page.CID] = page.Title
+	}
+	authors := map[int64]string{}
+	for _, user := range users {
+		name := user.ScreenName
+		if name == "" {
+			name = user.Name
+		}
+		authors[user.UID] = name
+	}
+	out := make([]mediaView, 0, len(items))
+	for _, item := range items {
+		meta := parseAttachmentMeta(item)
+		view := mediaView{
+			Content:     item,
+			Meta:        meta,
+			Name:        meta.Name,
+			URL:         meta.URL,
+			Kind:        mediaKind(meta),
+			MIME:        meta.MIME,
+			SizeLabel:   formatBytes(meta.Size),
+			AuthorName:  authors[item.AuthorID],
+			ParentTitle: parents[item.Parent],
+			Markdown:    attachmentMarkdown(meta),
+		}
+		if view.Name == "" {
+			view.Name = item.Title
+		}
+		if view.URL == "" {
+			view.URL = item.Text
+		}
+		out = append(out, view)
+	}
+	return out
+}
+
+func (a *App) editorMediaLibrary(r *http.Request) ([]mediaView, error) {
+	user, _ := a.currentUser(r)
+	query := services.ContentQuery{Type: models.ContentTypeAttach, Status: "all", Limit: 50}
+	if roleRank(user.Role) < roleRank("editor") {
+		query.AuthorID = user.UID
+	}
+	items, err := a.Contents.List(r.Context(), query)
+	if err != nil {
+		return nil, err
+	}
+	posts, _ := a.Contents.List(r.Context(), services.ContentQuery{Type: models.ContentTypePost, Status: "all", Limit: 200})
+	pages, _ := a.Contents.List(r.Context(), services.ContentQuery{Type: models.ContentTypePage, Status: "all", Limit: 200})
+	users, _ := a.Users.List(r.Context(), "")
+	return a.mediaViews(items, posts, pages, users), nil
+}
+
+func filterMediaViews(items []mediaView, kind, author, keywords string) []mediaView {
+	kind = strings.TrimSpace(kind)
+	authorID, _ := strconv.ParseInt(author, 10, 64)
+	keywords = strings.ToLower(strings.TrimSpace(keywords))
+	if kind == "" && authorID <= 0 && keywords == "" {
+		return items
+	}
+	out := make([]mediaView, 0, len(items))
+	for _, item := range items {
+		if kind != "" && item.Kind != kind {
+			continue
+		}
+		if authorID > 0 && item.AuthorID != authorID {
+			continue
+		}
+		if keywords != "" {
+			haystack := strings.ToLower(item.Name + " " + item.URL + " " + item.ParentTitle)
+			if !strings.Contains(haystack, keywords) {
+				continue
+			}
+		}
+		out = append(out, item)
+	}
+	return out
+}
+
+func parseAttachmentMeta(item models.Content) models.AttachmentMeta {
+	var meta models.AttachmentMeta
+	text := strings.TrimSpace(item.Text)
+	if strings.HasPrefix(text, "{") {
+		if err := json.Unmarshal([]byte(text), &meta); err == nil {
+			if meta.Name == "" {
+				meta.Name = item.Title
+			}
+			return meta
+		}
+	}
+	if text != "" {
+		meta.URL = text
+		meta.Path = strings.TrimPrefix(text, "/uploads/")
+		meta.Name = item.Title
+		meta.Type = strings.TrimPrefix(filepath.Ext(text), ".")
+		meta.IsImage = imageExt(meta.Type)
+	}
+	return meta
+}
+
+func mediaKind(meta models.AttachmentMeta) string {
+	if meta.IsImage || strings.HasPrefix(meta.MIME, "image/") {
+		return "image"
+	}
+	if meta.Type == "pdf" {
+		return "document"
+	}
+	if meta.Type == "zip" {
+		return "archive"
+	}
+	return "file"
+}
+
+func attachmentMarkdown(meta models.AttachmentMeta) string {
+	alt := meta.Name
+	if alt == "" {
+		alt = "attachment"
+	}
+	if meta.IsImage {
+		return "![" + alt + "](" + meta.URL + ")"
+	}
+	return "[" + alt + "](" + meta.URL + ")"
+}
+
+func formatBytes(size int64) string {
+	if size <= 0 {
+		return "-"
+	}
+	units := []string{"B", "KB", "MB", "GB"}
+	value := float64(size)
+	unit := units[0]
+	for i := 1; i < len(units) && value >= 1024; i++ {
+		value /= 1024
+		unit = units[i]
+	}
+	if unit == "B" {
+		return fmt.Sprintf("%d B", size)
+	}
+	return fmt.Sprintf("%.1f %s", value, unit)
+}
+
+func imageExt(ext string) bool {
+	switch strings.ToLower(strings.TrimPrefix(ext, ".")) {
+	case "jpg", "jpeg", "png", "gif", "webp", "svg":
+		return true
+	default:
+		return false
+	}
+}
+
 func topLevelComments(comments []models.Comment) []models.Comment {
 	byID := make(map[int64]bool, len(comments))
 	for _, comment := range comments {
@@ -1666,39 +1940,98 @@ func topLevelComments(comments []models.Comment) []models.Comment {
 	return roots
 }
 
-func (a *App) saveUpload(src io.Reader, original string) (string, error) {
-	now := time.Now()
-	dir := filepath.Join(a.UploadDir, now.Format("2006"), now.Format("01"))
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		return "", err
+func (a *App) saveUpload(ctx context.Context, src io.Reader, original string, parent int64) (models.AttachmentMeta, error) {
+	var meta models.AttachmentMeta
+	maxSize := int64(optionInt(a.option(ctx, "upload_max_size", "10485760"), 10485760))
+	if maxSize <= 0 {
+		maxSize = 10 << 20
+	}
+	data, err := io.ReadAll(io.LimitReader(src, maxSize+1))
+	if err != nil {
+		return meta, err
+	}
+	if int64(len(data)) > maxSize {
+		return meta, fmt.Errorf("文件超过大小限制")
 	}
 	name := sanitizeFilename(original)
 	if name == "" {
 		name = "file"
 	}
-	if dangerousUpload(name) {
-		return "", fmt.Errorf("不允许上传该文件类型")
+	if dangerousUpload(name) || !allowedUploadExt(name, a.option(ctx, "upload_allowed_exts", "")) {
+		return meta, fmt.Errorf("不允许上传该文件类型")
 	}
-	targetName := fmt.Sprintf("%d-%s", now.UnixNano(), name)
-	dst, err := os.Create(filepath.Join(dir, targetName))
+	mimeType := http.DetectContentType(data)
+	ext := strings.ToLower(strings.TrimPrefix(filepath.Ext(name), "."))
+	if !mimeAllowedForExt(ext, mimeType) {
+		return meta, fmt.Errorf("文件内容与扩展名不匹配")
+	}
+	bucket := "unattached"
+	if parent > 0 {
+		bucket = strconv.FormatInt(parent, 10)
+	}
+	dir := filepath.Join(a.UploadDir, bucket)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return meta, err
+	}
+	targetName := uniqueUploadName(dir, name)
+	fullPath := filepath.Join(dir, targetName)
+	dst, err := os.OpenFile(fullPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0644)
 	if err != nil {
-		return "", err
+		return meta, err
 	}
 	defer dst.Close()
-	if _, err := io.Copy(dst, src); err != nil {
-		return "", err
+	if _, err := io.Copy(dst, bytes.NewReader(data)); err != nil {
+		return meta, err
 	}
-	return path.Join(now.Format("2006"), now.Format("01"), targetName), nil
+	relPath := path.Join(bucket, targetName)
+	meta = models.AttachmentMeta{
+		Name: name,
+		Path: relPath,
+		URL:  "/uploads/" + relPath,
+		Size: int64(len(data)),
+		Type: ext,
+		MIME: mimeType,
+	}
+	if cfg, _, err := image.DecodeConfig(bytes.NewReader(data)); err == nil {
+		meta.IsImage = true
+		meta.Width = cfg.Width
+		meta.Height = cfg.Height
+	} else if strings.HasPrefix(mimeType, "image/") {
+		meta.IsImage = true
+	}
+	return meta, nil
+}
+
+func (a *App) replaceUpload(ctx context.Context, src io.Reader, original string, parent int64, old models.AttachmentMeta) (models.AttachmentMeta, error) {
+	if optionBool(a.option(ctx, "upload_replace_same_ext_only", "1")) && old.Type != "" {
+		newExt := strings.ToLower(strings.TrimPrefix(filepath.Ext(original), "."))
+		if newExt != "" && !strings.EqualFold(newExt, old.Type) {
+			return models.AttachmentMeta{}, fmt.Errorf("替换文件必须保持相同扩展名")
+		}
+	}
+	meta, err := a.saveUpload(ctx, src, original, parent)
+	if err != nil {
+		return meta, err
+	}
+	if old.Path != "" {
+		_ = os.Remove(filepath.Join(a.UploadDir, filepath.FromSlash(old.Path)))
+	}
+	return meta, nil
 }
 
 func (a *App) backupPayload(ctx context.Context) (backupData, error) {
-	var out backupData
+	out := backupData{Version: 1, Generator: "goblog", Dialect: "portable-json"}
 	out.GeneratedAt = time.Now().Format(time.RFC3339)
 	options, err := a.Options.All(ctx)
 	if err != nil {
 		return out, err
 	}
 	out.Options = options
+	users, err := a.Users.List(ctx, "")
+	if err != nil {
+		return out, err
+	}
+	out.Users = users
 	for _, typ := range []string{models.ContentTypePost, models.ContentTypePage, models.ContentTypeAttach} {
 		items, err := a.Contents.List(ctx, services.ContentQuery{Type: typ, Status: "all", Limit: 10000})
 		if err != nil {
@@ -1713,12 +2046,292 @@ func (a *App) backupPayload(ctx context.Context) (backupData, error) {
 		}
 		out.Metas = append(out.Metas, items...)
 	}
+	relationships, err := a.Contents.AllRelationships(ctx)
+	if err != nil {
+		return out, err
+	}
+	out.Relationships = relationships
 	comments, err := a.Comments.List(ctx, "all", "", 0)
 	if err != nil {
 		return out, err
 	}
 	out.Comments = comments
+	fields, err := a.Contents.AllFields(ctx)
+	if err != nil {
+		return out, err
+	}
+	out.Fields = fields
 	return out, nil
+}
+
+type importSectionSet struct {
+	Options  bool
+	Users    bool
+	Contents bool
+	Metas    bool
+	Comments bool
+	Fields   bool
+	Media    bool
+}
+
+func importSections(r *http.Request) importSectionSet {
+	all := len(r.Form["section"]) == 0
+	has := func(name string) bool {
+		if all {
+			return true
+		}
+		for _, item := range r.Form["section"] {
+			if item == name {
+				return true
+			}
+		}
+		return false
+	}
+	return importSectionSet{
+		Options:  has("options"),
+		Users:    has("users"),
+		Contents: has("contents"),
+		Metas:    has("metas"),
+		Comments: has("comments"),
+		Fields:   has("fields"),
+		Media:    has("media"),
+	}
+}
+
+func (a *App) backupPlan(ctx context.Context, payload backupData, sections importSectionSet) (backupImportPlan, error) {
+	var plan backupImportPlan
+	db := a.Contents.DB()
+	if sections.Options {
+		for key := range payload.Options {
+			if key == "" {
+				plan.Options.Skip++
+				continue
+			}
+			exists, err := dbExists(ctx, db, `SELECT 1 FROM gb_options WHERE name = ? AND user = 0`, key)
+			if err != nil {
+				return plan, err
+			}
+			if exists {
+				plan.Options.Update++
+			} else {
+				plan.Options.Add++
+			}
+		}
+	}
+	if sections.Users {
+		for _, user := range payload.Users {
+			if err := addSkipPlan(ctx, db, &plan.Users, user.UID, `SELECT 1 FROM gb_users WHERE uid = ?`); err != nil {
+				return plan, err
+			}
+		}
+	}
+	if sections.Metas {
+		for _, meta := range payload.Metas {
+			if err := addSkipPlan(ctx, db, &plan.Metas, meta.MID, `SELECT 1 FROM gb_metas WHERE mid = ?`); err != nil {
+				return plan, err
+			}
+		}
+	}
+	for _, content := range payload.Contents {
+		if content.Type == models.ContentTypeAttach {
+			if sections.Media {
+				if err := addSkipPlan(ctx, db, &plan.Media, content.CID, `SELECT 1 FROM gb_contents WHERE cid = ?`); err != nil {
+					return plan, err
+				}
+			}
+			continue
+		}
+		if sections.Contents {
+			if err := addSkipPlan(ctx, db, &plan.Contents, content.CID, `SELECT 1 FROM gb_contents WHERE cid = ?`); err != nil {
+				return plan, err
+			}
+		}
+	}
+	if sections.Metas && (sections.Contents || sections.Media) {
+		for _, rel := range payload.Relationships {
+			if rel.CID <= 0 || rel.MID <= 0 {
+				plan.Relationships.Skip++
+				continue
+			}
+			exists, err := dbExists(ctx, db, `SELECT 1 FROM gb_relationships WHERE cid = ? AND mid = ?`, rel.CID, rel.MID)
+			if err != nil {
+				return plan, err
+			}
+			if exists {
+				plan.Relationships.Skip++
+			} else {
+				plan.Relationships.Add++
+			}
+		}
+	}
+	if sections.Comments {
+		for _, comment := range payload.Comments {
+			if err := addSkipPlan(ctx, db, &plan.Comments, comment.COID, `SELECT 1 FROM gb_comments WHERE coid = ?`); err != nil {
+				return plan, err
+			}
+		}
+	}
+	if sections.Fields {
+		for _, field := range payload.Fields {
+			if err := addSkipPlan(ctx, db, &plan.Fields, field.FID, `SELECT 1 FROM gb_fields WHERE fid = ?`); err != nil {
+				return plan, err
+			}
+		}
+	}
+	return plan, nil
+}
+
+func (a *App) importBackupPayload(ctx context.Context, payload backupData, sections importSectionSet) error {
+	if payload.Version > 1 {
+		return fmt.Errorf("不支持的备份版本")
+	}
+	tx, err := a.Contents.DB().BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if sections.Options {
+		for key, value := range payload.Options {
+			if err := txUpsertOption(ctx, tx, key, value); err != nil {
+				return err
+			}
+		}
+	}
+	if sections.Users {
+		for _, user := range payload.Users {
+			if user.UID <= 0 || strings.TrimSpace(user.Name) == "" {
+				continue
+			}
+			if user.Password == "" {
+				continue
+			}
+			if err := txInsertIgnore(ctx, tx,
+				`INSERT OR IGNORE INTO gb_users (uid, name, password, mail, url, screenName, created, activated, logged, role, authCode) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				`INSERT IGNORE INTO gb_users (uid, name, password, mail, url, screenName, created, activated, logged, role, authCode) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				user.UID, user.Name, user.Password, user.Mail, user.URL, user.ScreenName, user.Created, user.Activated, user.Logged, user.Role, user.AuthCode); err != nil {
+				return err
+			}
+		}
+	}
+	if sections.Metas {
+		for _, meta := range payload.Metas {
+			if meta.MID <= 0 || meta.Type == "" {
+				continue
+			}
+			if err := txInsertIgnore(ctx, tx,
+				`INSERT OR IGNORE INTO gb_metas (mid, name, slug, type, description, count, sortOrder, parent) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+				`INSERT IGNORE INTO gb_metas (mid, name, slug, type, description, count, sortOrder, parent) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+				meta.MID, meta.Name, meta.Slug, meta.Type, meta.Description, meta.Count, meta.SortOrder, meta.Parent); err != nil {
+				return err
+			}
+		}
+	}
+	if sections.Contents || sections.Media {
+		for _, content := range payload.Contents {
+			if content.CID <= 0 {
+				continue
+			}
+			if strings.TrimSpace(content.Type) == "" {
+				return fmt.Errorf("备份内容 %d 缺少 type", content.CID)
+			}
+			if content.Type == models.ContentTypeAttach && !sections.Media {
+				continue
+			}
+			if content.Type != models.ContentTypeAttach && !sections.Contents {
+				continue
+			}
+			if err := txInsertIgnore(ctx, tx,
+				`INSERT OR IGNORE INTO gb_contents (cid, title, slug, created, modified, text, sortOrder, authorId, template, type, status, password, commentsNum, allowComment, allowPing, allowFeed, parent) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				`INSERT IGNORE INTO gb_contents (cid, title, slug, created, modified, text, sortOrder, authorId, template, type, status, password, commentsNum, allowComment, allowPing, allowFeed, parent) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				content.CID, content.Title, content.Slug, content.Created, content.Modified, content.Text, content.SortOrder, content.AuthorID, content.Template, content.Type, content.Status, content.Password, content.CommentsNum, content.AllowComment, content.AllowPing, content.AllowFeed, content.Parent); err != nil {
+				return err
+			}
+		}
+		if sections.Metas {
+			for _, rel := range payload.Relationships {
+				if err := txInsertIgnore(ctx, tx,
+					`INSERT OR IGNORE INTO gb_relationships (cid, mid) VALUES (?, ?)`,
+					`INSERT IGNORE INTO gb_relationships (cid, mid) VALUES (?, ?)`,
+					rel.CID, rel.MID); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	if sections.Comments {
+		for _, comment := range payload.Comments {
+			if err := txInsertIgnore(ctx, tx,
+				`INSERT OR IGNORE INTO gb_comments (coid, cid, created, author, authorId, ownerId, mail, url, ip, agent, text, type, status, parent) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				`INSERT IGNORE INTO gb_comments (coid, cid, created, author, authorId, ownerId, mail, url, ip, agent, text, type, status, parent) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				comment.COID, comment.CID, comment.Created, comment.Author, comment.AuthorID, comment.OwnerID, comment.Mail, comment.URL, comment.IP, comment.Agent, comment.Text, comment.Type, comment.Status, comment.Parent); err != nil {
+				return err
+			}
+		}
+	}
+	if sections.Fields {
+		for _, field := range payload.Fields {
+			if err := txInsertIgnore(ctx, tx,
+				`INSERT OR IGNORE INTO gb_fields (fid, cid, name, type, strValue, intValue, floatValue) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+				`INSERT IGNORE INTO gb_fields (fid, cid, name, type, strValue, intValue, floatValue) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+				field.FID, field.CID, field.Name, field.Type, field.StrValue, field.IntValue, field.FloatValue); err != nil {
+				return err
+			}
+		}
+	}
+	_, _ = tx.ExecContext(ctx, `
+		UPDATE gb_metas SET count = (
+			SELECT COUNT(*) FROM gb_relationships r JOIN gb_contents c ON c.cid = r.cid
+			WHERE r.mid = gb_metas.mid AND c.type = 'post'
+		)
+	`)
+	return tx.Commit()
+}
+
+func txUpsertOption(ctx context.Context, tx *sql.Tx, name, value string) error {
+	_, err := tx.ExecContext(ctx, `INSERT OR REPLACE INTO gb_options (name, user, value) VALUES (?, 0, ?)`, name, value)
+	if err == nil {
+		return nil
+	}
+	_, err = tx.ExecContext(ctx, `INSERT INTO gb_options (name, user, value) VALUES (?, 0, ?) ON DUPLICATE KEY UPDATE value = VALUES(value)`, name, value)
+	return err
+}
+
+func txInsertIgnore(ctx context.Context, tx *sql.Tx, sqliteStmt, mysqlStmt string, args ...any) error {
+	_, err := tx.ExecContext(ctx, sqliteStmt, args...)
+	if err == nil {
+		return nil
+	}
+	_, err = tx.ExecContext(ctx, mysqlStmt, args...)
+	return err
+}
+
+func addSkipPlan(ctx context.Context, db *sql.DB, count *backupPlanCount, id int64, query string) error {
+	if id <= 0 {
+		count.Skip++
+		return nil
+	}
+	exists, err := dbExists(ctx, db, query, id)
+	if err != nil {
+		return err
+	}
+	if exists {
+		count.Skip++
+	} else {
+		count.Add++
+	}
+	return nil
+}
+
+func dbExists(ctx context.Context, db *sql.DB, query string, args ...any) (bool, error) {
+	var one int
+	err := db.QueryRowContext(ctx, query, args...).Scan(&one)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 func (a *App) option(ctx context.Context, key, fallback string) string {
@@ -1761,12 +2374,48 @@ type commentPagination struct {
 	HasNext    bool
 }
 
+type mediaView struct {
+	models.Content
+	Meta        models.AttachmentMeta
+	Name        string
+	URL         string
+	Kind        string
+	MIME        string
+	SizeLabel   string
+	AuthorName  string
+	ParentTitle string
+	Markdown    string
+}
+
 type backupData struct {
-	GeneratedAt string            `json:"generated_at"`
-	Options     map[string]string `json:"options"`
-	Contents    []models.Content  `json:"contents"`
-	Metas       []models.Meta     `json:"metas"`
-	Comments    []models.Comment  `json:"comments"`
+	Version       int                   `json:"version"`
+	Generator     string                `json:"generator"`
+	Dialect       string                `json:"dialect"`
+	GeneratedAt   string                `json:"generated_at"`
+	Options       map[string]string     `json:"options"`
+	Users         []models.User         `json:"users"`
+	Contents      []models.Content      `json:"contents"`
+	Metas         []models.Meta         `json:"metas"`
+	Relationships []models.Relationship `json:"relationships"`
+	Comments      []models.Comment      `json:"comments"`
+	Fields        []models.Field        `json:"fields"`
+}
+
+type backupPlanCount struct {
+	Add    int `json:"add"`
+	Update int `json:"update"`
+	Skip   int `json:"skip"`
+}
+
+type backupImportPlan struct {
+	Options       backupPlanCount `json:"options"`
+	Users         backupPlanCount `json:"users"`
+	Contents      backupPlanCount `json:"contents"`
+	Media         backupPlanCount `json:"media"`
+	Metas         backupPlanCount `json:"metas"`
+	Relationships backupPlanCount `json:"relationships"`
+	Comments      backupPlanCount `json:"comments"`
+	Fields        backupPlanCount `json:"fields"`
 }
 
 type rssFeed struct {
@@ -2570,6 +3219,10 @@ func methodNotAllowed(w http.ResponseWriter, allow string) {
 	http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 }
 
+func wantsJSON(r *http.Request) bool {
+	return strings.Contains(r.Header.Get("Accept"), "application/json") || r.URL.Query().Get("format") == "json"
+}
+
 func fieldError(errors any, field string) string {
 	if errors == nil {
 		return ""
@@ -2860,10 +3513,71 @@ func sanitizeFilename(name string) string {
 }
 
 func dangerousUpload(name string) bool {
-	switch strings.ToLower(filepath.Ext(name)) {
-	case ".php", ".phtml", ".php3", ".php4", ".php5", ".phar", ".cgi", ".pl", ".py", ".rb", ".sh", ".bash", ".zsh", ".fish", ".exe", ".dll", ".so", ".jsp", ".asp", ".aspx":
-		return true
-	default:
+	lower := strings.ToLower(name)
+	parts := strings.Split(lower, ".")
+	for _, part := range parts[1:] {
+		switch "." + part {
+		case ".php", ".phtml", ".php3", ".php4", ".php5", ".phar", ".cgi", ".pl", ".py", ".rb", ".sh", ".bash", ".zsh", ".fish", ".exe", ".dll", ".so", ".jsp", ".asp", ".aspx", ".js", ".html", ".htm":
+			return true
+		}
+	}
+	return false
+}
+
+func allowedUploadExt(name, allowed string) bool {
+	ext := strings.ToLower(strings.TrimPrefix(filepath.Ext(name), "."))
+	if ext == "" {
 		return false
 	}
+	items := splitList(allowed)
+	if len(items) == 0 {
+		return true
+	}
+	for _, item := range items {
+		if strings.EqualFold(strings.TrimPrefix(item, "."), ext) {
+			return true
+		}
+	}
+	return false
+}
+
+func mimeAllowedForExt(ext, mimeType string) bool {
+	ext = strings.ToLower(ext)
+	mimeType = strings.ToLower(mimeType)
+	if ext == "svg" {
+		return strings.Contains(mimeType, "text/plain") || strings.Contains(mimeType, "image/svg") || strings.Contains(mimeType, "xml")
+	}
+	switch ext {
+	case "jpg", "jpeg":
+		return strings.HasPrefix(mimeType, "image/jpeg")
+	case "png":
+		return strings.HasPrefix(mimeType, "image/png")
+	case "gif":
+		return strings.HasPrefix(mimeType, "image/gif")
+	case "webp":
+		return strings.HasPrefix(mimeType, "image/webp") || mimeType == "application/octet-stream"
+	case "pdf":
+		return mimeType == "application/pdf" || strings.HasPrefix(mimeType, "application/octet-stream")
+	case "txt", "md":
+		return strings.HasPrefix(mimeType, "text/plain") || strings.HasPrefix(mimeType, "text/markdown")
+	case "zip":
+		return mimeType == "application/zip" || mimeType == "application/x-zip-compressed" || mimeType == "application/octet-stream"
+	default:
+		return !strings.HasPrefix(mimeType, "text/html") && !strings.Contains(mimeType, "javascript")
+	}
+}
+
+func uniqueUploadName(dir, name string) string {
+	ext := filepath.Ext(name)
+	base := strings.TrimSuffix(name, ext)
+	for i := 0; i < 1000; i++ {
+		candidate := fmt.Sprintf("%d-%s", time.Now().UnixNano(), name)
+		if i > 0 {
+			candidate = fmt.Sprintf("%d-%s-%d%s", time.Now().UnixNano(), base, i, ext)
+		}
+		if _, err := os.Stat(filepath.Join(dir, candidate)); errors.Is(err, os.ErrNotExist) {
+			return candidate
+		}
+	}
+	return fmt.Sprintf("%d-%s", time.Now().UnixNano(), name)
 }

@@ -30,6 +30,23 @@ type Comment struct {
 	Slug     string
 }
 
+type AttachmentMeta struct {
+	Name    string `json:"name"`
+	Path    string `json:"path"`
+	URL     string `json:"url"`
+	Size    int64  `json:"size"`
+	Type    string `json:"type"`
+	MIME    string `json:"mime"`
+	IsImage bool   `json:"isImage"`
+	Width   int    `json:"width"`
+	Height  int    `json:"height"`
+}
+
+type Relationship struct {
+	CID int64 `json:"cid"`
+	MID int64 `json:"mid"`
+}
+
 type Stats struct {
 	Posts      int64
 	Pages      int64

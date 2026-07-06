@@ -44,6 +44,7 @@ type ContentQuery struct {
 	Category      int64
 	Tag           int64
 	AuthorID      int64
+	Parent        int64
 	Year          int
 	Month         int
 	Day           int
@@ -62,6 +63,10 @@ type SaveFieldInput struct {
 
 func NewContentService(db *sql.DB) *ContentService {
 	return &ContentService{db: db}
+}
+
+func (s *ContentService) DB() *sql.DB {
+	return s.db
 }
 
 func (s *ContentService) ListPublished(ctx context.Context, limit, offset int) ([]models.Content, error) {
@@ -217,6 +222,30 @@ func (s *ContentService) CreateAttachment(ctx context.Context, title, slugValue,
 	}, authorID)
 }
 
+func (s *ContentService) CreateAttachmentMeta(ctx context.Context, title, slugValue, text string, authorID, parent int64) (int64, error) {
+	return s.Create(ctx, SaveContentInput{
+		Title:     title,
+		Slug:      slugValue,
+		Text:      text,
+		Type:      models.ContentTypeAttach,
+		Status:    models.ContentStatusPost,
+		AllowFeed: true,
+		Parent:    parent,
+	}, authorID)
+}
+
+func (s *ContentService) UpdateAttachmentMeta(ctx context.Context, id int64, title, slugValue, text string, parent int64) error {
+	return s.Update(ctx, id, SaveContentInput{
+		Title:     title,
+		Slug:      slugValue,
+		Text:      text,
+		Type:      models.ContentTypeAttach,
+		Status:    models.ContentStatusPost,
+		AllowFeed: true,
+		Parent:    parent,
+	})
+}
+
 func (s *ContentService) Update(ctx context.Context, id int64, input SaveContentInput) error {
 	current, err := s.ByID(ctx, id)
 	if err != nil {
@@ -349,6 +378,43 @@ func (s *ContentService) FieldMap(ctx context.Context, cid int64) (map[string]an
 		}
 	}
 	return out, nil
+}
+
+func (s *ContentService) AllFields(ctx context.Context) ([]models.Field, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT fid, cid, COALESCE(name,''), type, COALESCE(strValue,''), intValue, floatValue
+		FROM gb_fields ORDER BY fid ASC
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var fields []models.Field
+	for rows.Next() {
+		var f models.Field
+		if err := rows.Scan(&f.FID, &f.CID, &f.Name, &f.Type, &f.StrValue, &f.IntValue, &f.FloatValue); err != nil {
+			return nil, err
+		}
+		fields = append(fields, f)
+	}
+	return fields, rows.Err()
+}
+
+func (s *ContentService) AllRelationships(ctx context.Context) ([]models.Relationship, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT cid, mid FROM gb_relationships ORDER BY cid ASC, mid ASC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var relationships []models.Relationship
+	for rows.Next() {
+		var rel models.Relationship
+		if err := rows.Scan(&rel.CID, &rel.MID); err != nil {
+			return nil, err
+		}
+		relationships = append(relationships, rel)
+	}
+	return relationships, rows.Err()
 }
 
 func (s *ContentService) SaveRevision(ctx context.Context, c models.Content) error {
@@ -493,6 +559,10 @@ func buildContentWhere(q ContentQuery) ([]string, []any) {
 	if q.AuthorID > 0 {
 		where = append(where, "c.authorId = ?")
 		args = append(args, q.AuthorID)
+	}
+	if q.Parent > 0 {
+		where = append(where, "c.parent = ?")
+		args = append(args, q.Parent)
 	}
 	if q.ExcludeFuture {
 		where = append(where, "c.created <= ?")

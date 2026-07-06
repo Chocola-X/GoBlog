@@ -50,7 +50,26 @@
     <label><input type="checkbox" name="allowPing" value="1" {{if checked .Content.AllowPing}}checked{{end}}> 允许被引用</label>
     <label><input type="checkbox" name="allowFeed" value="1" {{if checked .Content.AllowFeed}}checked{{end}}> 允许在聚合中出现</label>
   </fieldset>
-  <mdui-text-field name="text" label="正文" rows="16" autosize {{if fieldError .Errors "text"}}helper="{{fieldError .Errors "text"}}"{{end}}>{{.Content.Text}}</mdui-text-field>
+  <mdui-text-field id="content-text" name="text" label="正文" rows="16" autosize {{if fieldError .Errors "text"}}helper="{{fieldError .Errors "text"}}"{{end}}>{{.Content.Text}}</mdui-text-field>
+  <section class="editor-media-panel">
+    <div class="revision-summary">
+      <strong>媒体插入</strong>
+      <span class="muted">上传文件会保存到 data/uploads/{{if .Content.CID}}{{.Content.CID}}{{else}}unattached{{end}} 并插入 Markdown。</span>
+    </div>
+    <div class="editor-upload">
+      <mdui-text-field type="file" name="file" class="editor-upload-file" label="上传附件"></mdui-text-field>
+      <mdui-button type="button" variant="outlined" class="editor-upload-button"><mdui-icon-upload slot="icon"></mdui-icon-upload>上传并插入</mdui-button>
+    </div>
+    <div class="media-picker">
+      {{range .MediaLibrary}}
+      <button type="button" class="media-pick" data-markdown="{{.Markdown}}" title="插入 {{.Name}}">
+        {{if .Meta.IsImage}}<img src="{{.URL}}" alt="">{{else}}<span>{{.Name}}</span>{{end}}
+      </button>
+      {{else}}
+      <span class="muted">暂无可插入附件。</span>
+      {{end}}
+    </div>
+  </section>
   <fieldset class="fieldset custom-fields">
     <legend>自定义字段</legend>
     <div class="custom-field-list">
