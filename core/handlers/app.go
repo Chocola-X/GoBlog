@@ -127,7 +127,8 @@ func (a *App) Handler() http.Handler {
 	}
 
 	mux.HandleFunc("/feed.xml", a.frontRSS)
-	mux.HandleFunc("/atom.xml", a.frontRSS)
+	mux.HandleFunc("/atom.xml", a.frontAtom)
+	mux.HandleFunc("/comments/feed.xml", a.frontCommentRSS)
 	mux.HandleFunc("/comment", a.frontComment)
 	mux.HandleFunc("/preview/", a.frontPreview)
 	mux.HandleFunc("/post/", a.frontPost)
@@ -136,8 +137,9 @@ func (a *App) Handler() http.Handler {
 	mux.HandleFunc("/tag/", a.frontTag)
 	mux.HandleFunc("/author/", a.frontAuthor)
 	mux.HandleFunc("/search", a.frontSearch)
+	mux.HandleFunc("/search/", a.frontSearch)
 	mux.HandleFunc("/archive/", a.frontArchive)
-	mux.HandleFunc("/", a.frontIndex)
+	mux.HandleFunc("/", a.frontDynamic)
 	return mux
 }
 
@@ -918,7 +920,7 @@ func (a *App) adminOptionsReading(w http.ResponseWriter, r *http.Request) {
 	if !a.requireRole(w, r, "administrator") {
 		return
 	}
-	a.optionsForm(w, r, "阅读设置", "options_reading.html", []string{"post_date_format", "page_size", "posts_list_size", "content_render_mode", "feed_full_text"})
+	a.optionsForm(w, r, "阅读设置", "options_reading.html", []string{"post_date_format", "page_size", "posts_list_size", "content_render_mode", "feed_full_text", "front_page_type", "front_page_cid", "posts_index_path"})
 }
 
 func (a *App) adminOptionsDiscussion(w http.ResponseWriter, r *http.Request) {
@@ -937,6 +939,20 @@ func (a *App) adminOptionsDiscussion(w http.ResponseWriter, r *http.Request) {
 func (a *App) adminOptionsPermalink(w http.ResponseWriter, r *http.Request) {
 	if !a.requireRole(w, r, "administrator") {
 		return
+	}
+	if r.Method == http.MethodPost {
+		if err := r.ParseForm(); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if err := validatePermalinkOptions(r); err != nil {
+			options, _ := a.Options.All(r.Context())
+			for _, key := range []string{"permalink_post", "permalink_page", "permalink_category"} {
+				options[key] = r.FormValue(key)
+			}
+			a.renderAdmin(w, r, "options_permalink.html", map[string]any{"Title": "永久链接", "Options": options, "Error": err.Error()})
+			return
+		}
 	}
 	a.optionsForm(w, r, "永久链接", "options_permalink.html", []string{"permalink_post", "permalink_page", "permalink_category"})
 }
@@ -1337,7 +1353,38 @@ func (a *App) frontIndex(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
+	if a.option(r.Context(), "front_page_type", "posts") == "page" {
+		cid, _ := strconv.ParseInt(a.option(r.Context(), "front_page_cid", "0"), 10, 64)
+		if cid > 0 {
+			pageData, err := a.Contents.ByID(r.Context(), cid)
+			if err == nil && pageData.Type == models.ContentTypePage && pageData.Status == models.ContentStatusPost {
+				a.renderPageContent(w, r, pageData, map[string]any{"CanonicalPath": "/"})
+				return
+			}
+		}
+	}
 	a.renderPostList(w, r, services.ContentQuery{Type: models.ContentTypePost, Status: models.ContentStatusPost}, "")
+}
+
+func (a *App) frontDynamic(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path == "/" {
+		a.frontIndex(w, r)
+		return
+	}
+	if a.postsIndexPath(r.Context()) != "/" && trimSlashPath(r.URL.Path) == trimSlashPath(a.postsIndexPath(r.Context())) {
+		a.renderPostList(w, r, services.ContentQuery{Type: models.ContentTypePost, Status: models.ContentStatusPost}, "")
+		return
+	}
+	if strings.HasSuffix(strings.TrimSuffix(r.URL.Path, "/"), "/feed.xml") && a.tryDynamicTaxonomyFeed(w, r) {
+		return
+	}
+	if a.tryDynamicPermalink(w, r) {
+		return
+	}
+	if a.tryPrettyArchive(w, r) {
+		return
+	}
+	http.NotFound(w, r)
 }
 
 func (a *App) frontPost(w http.ResponseWriter, r *http.Request) {
@@ -1355,24 +1402,34 @@ func (a *App) frontPost(w http.ResponseWriter, r *http.Request) {
 		a.renderTheme(w, r, "post.html", map[string]any{"Post": post, "PasswordRequired": true})
 		return
 	}
+	if a.redirectCanonical(w, r, a.contentURL(r.Context(), post)) {
+		return
+	}
+	a.renderPostContent(w, r, post)
+}
+
+func (a *App) renderPostContent(w http.ResponseWriter, r *http.Request, post models.Content) {
 	comments, commentPager, _ := a.commentsForPost(r, post)
 	categories, _ := a.Metas.CategoriesForContent(r.Context(), post.CID)
 	tags, _ := a.Metas.TagsForContent(r.Context(), post.CID)
 	fields, _ := a.Contents.FieldMap(r.Context(), post.CID)
 	prev, next, _ := a.Contents.Adjacent(r.Context(), post)
+	related, _ := a.relatedPosts(r.Context(), post, categories, tags, 5)
 	a.renderTheme(w, r, "post.html", map[string]any{
-		"Post":         post,
-		"ContentHTML":  render.ContentHTML(post.Text, a.option(r.Context(), "content_render_mode", "markdown")),
-		"Comments":     comments,
-		"CommentPager": commentPager,
-		"ReplyTo":      r.URL.Query().Get("reply"),
-		"Categories":   categories,
-		"Tags":         tags,
-		"Fields":       fields,
-		"PrevPost":     prev,
-		"NextPost":     next,
-		"CommentError": r.URL.Query().Get("comment_error"),
-		"CommentOK":    r.URL.Query().Get("comment_ok") == "1",
+		"Post":          post,
+		"ContentHTML":   render.ContentHTML(post.Text, a.option(r.Context(), "content_render_mode", "markdown")),
+		"Comments":      comments,
+		"CommentPager":  commentPager,
+		"ReplyTo":       r.URL.Query().Get("reply"),
+		"Categories":    categories,
+		"Tags":          tags,
+		"Fields":        fields,
+		"PrevPost":      prev,
+		"NextPost":      next,
+		"RelatedPosts":  related,
+		"CommentError":  r.URL.Query().Get("comment_error"),
+		"CommentOK":     r.URL.Query().Get("comment_ok") == "1",
+		"CanonicalPath": a.contentURL(r.Context(), post),
 	})
 }
 
@@ -1383,20 +1440,34 @@ func (a *App) frontPage(w http.ResponseWriter, r *http.Request) {
 		a.renderThemeStatus(w, r, "404.html", map[string]any{}, http.StatusNotFound)
 		return
 	}
+	if a.redirectCanonical(w, r, a.contentURL(r.Context(), pageData)) {
+		return
+	}
+	a.renderPageContent(w, r, pageData)
+}
+
+func (a *App) renderPageContent(w http.ResponseWriter, r *http.Request, pageData models.Content, extra ...map[string]any) {
 	comments, commentPager, _ := a.commentsForPost(r, pageData)
 	fields, _ := a.Contents.FieldMap(r.Context(), pageData.CID)
-	a.renderTheme(w, r, "post.html", map[string]any{
-		"Post":         pageData,
-		"ContentHTML":  render.ContentHTML(pageData.Text, a.option(r.Context(), "content_render_mode", "markdown")),
-		"Comments":     comments,
-		"CommentPager": commentPager,
-		"ReplyTo":      r.URL.Query().Get("reply"),
-		"Fields":       fields,
-		"PrevPost":     models.Content{},
-		"NextPost":     models.Content{},
-		"CommentError": r.URL.Query().Get("comment_error"),
-		"CommentOK":    r.URL.Query().Get("comment_ok") == "1",
-	})
+	data := map[string]any{
+		"Post":          pageData,
+		"ContentHTML":   render.ContentHTML(pageData.Text, a.option(r.Context(), "content_render_mode", "markdown")),
+		"Comments":      comments,
+		"CommentPager":  commentPager,
+		"ReplyTo":       r.URL.Query().Get("reply"),
+		"Fields":        fields,
+		"PrevPost":      models.Content{},
+		"NextPost":      models.Content{},
+		"CommentError":  r.URL.Query().Get("comment_error"),
+		"CommentOK":     r.URL.Query().Get("comment_ok") == "1",
+		"CanonicalPath": a.contentURL(r.Context(), pageData),
+	}
+	for _, values := range extra {
+		for key, value := range values {
+			data[key] = value
+		}
+	}
+	a.renderTheme(w, r, "post.html", data)
 }
 
 func (a *App) frontPreview(w http.ResponseWriter, r *http.Request) {
@@ -1431,21 +1502,37 @@ func (a *App) frontPreview(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *App) frontCategory(w http.ResponseWriter, r *http.Request) {
+	if strings.HasSuffix(strings.TrimSuffix(r.URL.Path, "/"), "/feed.xml") {
+		a.frontTaxonomyRSS(w, r, "category")
+		return
+	}
 	meta, err := a.Metas.BySlug(r.Context(), "category", path.Base(strings.TrimSuffix(r.URL.Path, "/")))
 	if err != nil {
 		a.renderThemeStatus(w, r, "404.html", map[string]any{}, http.StatusNotFound)
 		return
 	}
-	a.renderPostList(w, r, services.ContentQuery{Type: models.ContentTypePost, Status: models.ContentStatusPost, Category: meta.MID}, "分类："+meta.Name)
+	canonical := a.metaURL(r.Context(), meta)
+	if a.redirectCanonical(w, r, canonical) {
+		return
+	}
+	a.renderPostListWithData(w, r, services.ContentQuery{Type: models.ContentTypePost, Status: models.ContentStatusPost, Category: meta.MID}, "分类："+meta.Name, map[string]any{"ArchiveMeta": meta, "CanonicalPath": canonical, "FeedPath": canonical + "/feed.xml"})
 }
 
 func (a *App) frontTag(w http.ResponseWriter, r *http.Request) {
+	if strings.HasSuffix(strings.TrimSuffix(r.URL.Path, "/"), "/feed.xml") {
+		a.frontTaxonomyRSS(w, r, "tag")
+		return
+	}
 	meta, err := a.Metas.BySlug(r.Context(), "tag", path.Base(strings.TrimSuffix(r.URL.Path, "/")))
 	if err != nil {
 		a.renderThemeStatus(w, r, "404.html", map[string]any{}, http.StatusNotFound)
 		return
 	}
-	a.renderPostList(w, r, services.ContentQuery{Type: models.ContentTypePost, Status: models.ContentStatusPost, Tag: meta.MID}, "标签："+meta.Name)
+	canonical := "/tag/" + meta.Slug
+	if a.redirectCanonical(w, r, canonical) {
+		return
+	}
+	a.renderPostListWithData(w, r, services.ContentQuery{Type: models.ContentTypePost, Status: models.ContentStatusPost, Tag: meta.MID}, "标签："+meta.Name, map[string]any{"ArchiveMeta": meta, "CanonicalPath": canonical, "FeedPath": canonical + "/feed.xml"})
 }
 
 func (a *App) frontAuthor(w http.ResponseWriter, r *http.Request) {
@@ -1463,12 +1550,23 @@ func (a *App) frontAuthor(w http.ResponseWriter, r *http.Request) {
 	if name == "" {
 		name = user.Name
 	}
-	a.renderPostList(w, r, services.ContentQuery{Type: models.ContentTypePost, Status: models.ContentStatusPost, AuthorID: id}, "作者："+name)
+	canonical := "/author/" + strconv.FormatInt(user.UID, 10)
+	if a.redirectCanonical(w, r, canonical) {
+		return
+	}
+	a.renderPostListWithData(w, r, services.ContentQuery{Type: models.ContentTypePost, Status: models.ContentStatusPost, AuthorID: id}, "作者："+name, map[string]any{"CanonicalPath": canonical})
 }
 
 func (a *App) frontSearch(w http.ResponseWriter, r *http.Request) {
 	keywords := strings.TrimSpace(r.URL.Query().Get("q"))
-	a.renderPostList(w, r, services.ContentQuery{Type: models.ContentTypePost, Status: models.ContentStatusPost, Keywords: keywords}, "搜索："+keywords)
+	if keywords != "" && strings.TrimRight(r.URL.Path, "/") == "/search" {
+		http.Redirect(w, r, searchPath(keywords), http.StatusMovedPermanently)
+		return
+	}
+	if strings.HasPrefix(r.URL.Path, "/search/") {
+		keywords, _ = neturl.PathUnescape(strings.Trim(strings.TrimPrefix(r.URL.Path, "/search/"), "/"))
+	}
+	a.renderPostListWithData(w, r, services.ContentQuery{Type: models.ContentTypePost, Status: models.ContentStatusPost, Keywords: keywords}, "搜索："+keywords, map[string]any{"Keywords": keywords, "CanonicalPath": searchPath(keywords)})
 }
 
 func (a *App) frontArchive(w http.ResponseWriter, r *http.Request) {
@@ -1492,7 +1590,7 @@ func (a *App) frontArchive(w http.ResponseWriter, r *http.Request) {
 		query.Day, _ = strconv.Atoi(parts[2])
 		title = fmt.Sprintf("归档：%04d-%02d-%02d", year, query.Month, query.Day)
 	}
-	a.renderPostList(w, r, query, title)
+	a.renderPostListWithData(w, r, query, title, map[string]any{"CanonicalPath": archivePath(query.Year, query.Month, query.Day)})
 }
 
 func (a *App) frontComment(w http.ResponseWriter, r *http.Request) {
@@ -1514,7 +1612,7 @@ func (a *App) frontComment(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	redirectTo := contentPublicURL(post)
+	redirectTo := a.contentURL(r.Context(), post)
 	if optionBool(a.option(r.Context(), "comments_check_referer", "1")) && !a.validCommentReferer(r, redirectTo) {
 		http.Redirect(w, r, redirectTo+"?comment_error=referer", http.StatusSeeOther)
 		return
@@ -1622,23 +1720,95 @@ func (a *App) frontRSS(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	a.writeRSS(w, r, posts, nil, a.option(r.Context(), "site_title", "GoBlog"), a.option(r.Context(), "site_description", ""), "/feed.xml")
+}
+
+func (a *App) frontTaxonomyRSS(w http.ResponseWriter, r *http.Request, typ string) {
+	clean := strings.TrimSuffix(strings.Trim(r.URL.Path, "/"), "/feed.xml")
+	slug := path.Base(clean)
+	meta, err := a.Metas.BySlug(r.Context(), typ, slug)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	query := services.ContentQuery{Type: models.ContentTypePost, Status: models.ContentStatusPost, ExcludeFuture: true, Limit: optionInt(a.option(r.Context(), "posts_list_size", "10"), 10)}
+	if typ == "category" {
+		query.Category = meta.MID
+	} else {
+		query.Tag = meta.MID
+	}
+	posts, err := a.Contents.List(r.Context(), query)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	a.writeRSS(w, r, posts, nil, meta.Name, meta.Description, a.metaURL(r.Context(), meta)+"/feed.xml")
+}
+
+func (a *App) frontCommentRSS(w http.ResponseWriter, r *http.Request) {
+	comments, err := a.Comments.List(r.Context(), "approved", "", 0)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	a.writeRSS(w, r, nil, comments, a.option(r.Context(), "site_title", "GoBlog")+" 评论", a.option(r.Context(), "site_description", ""), "/comments/feed.xml")
+}
+
+func (a *App) writeRSS(w http.ResponseWriter, r *http.Request, posts []models.Content, comments []models.Comment, title, description, feedPath string) {
 	site, _ := a.Options.All(r.Context())
 	baseURL := strings.TrimRight(site["base_url"], "/")
 	items := make([]rssItem, 0, len(posts))
 	for _, post := range posts {
-		text := render.Excerpt(post.Text, 240)
-		if site["feed_full_text"] == "1" {
-			text = post.Text
-		}
-		items = append(items, rssItem{Title: post.Title, Link: baseURL + "/post/" + post.Slug, GUID: baseURL + "/post/" + post.Slug, PubDate: time.Unix(post.Created, 0).Format(time.RFC1123Z), Description: text})
+		text := feedText(post.Text, site["feed_full_text"] == "1")
+		link := baseURL + a.contentURL(r.Context(), post)
+		items = append(items, rssItem{Title: post.Title, Link: link, GUID: link, PubDate: time.Unix(post.Created, 0).Format(time.RFC1123Z), Description: text})
 	}
-	feed := rssFeed{Version: "2.0", Channel: rssChannel{Title: site["site_title"], Link: baseURL, Description: site["site_description"], Items: items}}
+	for _, comment := range comments {
+		link := baseURL + "#comment-" + strconv.FormatInt(comment.COID, 10)
+		if content, err := a.Contents.ByID(r.Context(), comment.CID); err == nil && (content.Type == models.ContentTypePost || content.Type == models.ContentTypePage) {
+			link = baseURL + a.contentURL(r.Context(), content) + "#comment-" + strconv.FormatInt(comment.COID, 10)
+		}
+		items = append(items, rssItem{Title: comment.Author + " 的评论", Link: link, GUID: link, PubDate: time.Unix(comment.Created, 0).Format(time.RFC1123Z), Description: render.Excerpt(comment.Text, 240)})
+	}
+	feed := rssFeed{Version: "2.0", Channel: rssChannel{Title: title, Link: baseURL + strings.TrimSuffix(feedPath, "/feed.xml"), Description: description, Items: items}}
 	w.Header().Set("Content-Type", "application/rss+xml; charset=utf-8")
 	_, _ = w.Write([]byte(xml.Header))
 	_ = xml.NewEncoder(w).Encode(feed)
 }
 
+func (a *App) frontAtom(w http.ResponseWriter, r *http.Request) {
+	posts, err := a.Contents.ListPublished(r.Context(), optionInt(a.option(r.Context(), "posts_list_size", "10"), 10), 0)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	site, _ := a.Options.All(r.Context())
+	baseURL := strings.TrimRight(site["base_url"], "/")
+	feed := atomFeed{Xmlns: "http://www.w3.org/2005/Atom", ID: baseURL + "/", Title: site["site_title"], Updated: time.Now().Format(time.RFC3339), Links: []atomLink{{Href: baseURL + "/atom.xml", Rel: "self"}, {Href: baseURL + "/", Rel: "alternate"}}}
+	for _, post := range posts {
+		link := baseURL + a.contentURL(r.Context(), post)
+		feed.Entries = append(feed.Entries, atomEntry{ID: link, Title: post.Title, Link: atomLink{Href: link, Rel: "alternate"}, Updated: time.Unix(post.Modified, 0).Format(time.RFC3339), Published: time.Unix(post.Created, 0).Format(time.RFC3339), Content: atomContent{Type: "html", Body: feedText(post.Text, site["feed_full_text"] == "1")}})
+	}
+	w.Header().Set("Content-Type", "application/atom+xml; charset=utf-8")
+	_, _ = w.Write([]byte(xml.Header))
+	_ = xml.NewEncoder(w).Encode(feed)
+}
+
+func feedText(text string, full bool) string {
+	if full {
+		return strings.Replace(text, "<!--more-->", "", 1)
+	}
+	if i := strings.Index(text, "<!--more-->"); i >= 0 {
+		return text[:i]
+	}
+	return render.Excerpt(text, 240)
+}
+
 func (a *App) renderPostList(w http.ResponseWriter, r *http.Request, query services.ContentQuery, title string) {
+	a.renderPostListWithData(w, r, query, title, nil)
+}
+
+func (a *App) renderPostListWithData(w http.ResponseWriter, r *http.Request, query services.ContentQuery, title string, extra map[string]any) {
 	page := optionInt(r.URL.Query().Get("page"), 1)
 	if page < 1 {
 		page = 1
@@ -1661,7 +1831,7 @@ func (a *App) renderPostList(w http.ResponseWriter, r *http.Request, query servi
 		return
 	}
 	totalPages := int((total + int64(size) - 1) / int64(size))
-	a.renderTheme(w, r, "index.html", map[string]any{
+	data := map[string]any{
 		"Title":        title,
 		"ArchiveTitle": title,
 		"Posts":        posts,
@@ -1676,7 +1846,11 @@ func (a *App) renderPostList(w http.ResponseWriter, r *http.Request, query servi
 			HasPrev:    page > 1,
 			HasNext:    totalPages > page,
 		},
-	})
+	}
+	for key, value := range extra {
+		data[key] = value
+	}
+	a.renderTheme(w, r, "index.html", data)
 }
 
 func (a *App) commentsForPost(r *http.Request, post models.Content) ([]commentView, commentPagination, error) {
@@ -1769,6 +1943,45 @@ func (a *App) commentView(r *http.Request, comment models.Comment, level int) co
 		ReplyURL:   commentReplyURL(r, comment.COID),
 		Anchor:     fmt.Sprintf("comment-%d", comment.COID),
 	}
+}
+
+func (a *App) relatedPosts(ctx context.Context, post models.Content, categories, tags []models.Meta, limit int) ([]models.Content, error) {
+	if limit <= 0 {
+		limit = 5
+	}
+	seen := map[int64]bool{post.CID: true}
+	out := make([]models.Content, 0, limit)
+	for _, tag := range tags {
+		items, err := a.Contents.List(ctx, services.ContentQuery{Type: models.ContentTypePost, Status: models.ContentStatusPost, Tag: tag.MID, ExcludeFuture: true, Limit: limit})
+		if err != nil {
+			return out, err
+		}
+		for _, item := range items {
+			if !seen[item.CID] {
+				seen[item.CID] = true
+				out = append(out, item)
+				if len(out) >= limit {
+					return out, nil
+				}
+			}
+		}
+	}
+	for _, category := range categories {
+		items, err := a.Contents.List(ctx, services.ContentQuery{Type: models.ContentTypePost, Status: models.ContentStatusPost, Category: category.MID, ExcludeFuture: true, Limit: limit})
+		if err != nil {
+			return out, err
+		}
+		for _, item := range items {
+			if !seen[item.CID] {
+				seen[item.CID] = true
+				out = append(out, item)
+				if len(out) >= limit {
+					return out, nil
+				}
+			}
+		}
+	}
+	return out, nil
 }
 
 func (a *App) mediaViews(items, posts, pages []models.Content, users []models.User) []mediaView {
@@ -2439,6 +2652,35 @@ type rssItem struct {
 	Description string `xml:"description"`
 }
 
+type atomFeed struct {
+	XMLName xml.Name    `xml:"feed"`
+	Xmlns   string      `xml:"xmlns,attr"`
+	ID      string      `xml:"id"`
+	Title   string      `xml:"title"`
+	Updated string      `xml:"updated"`
+	Links   []atomLink  `xml:"link"`
+	Entries []atomEntry `xml:"entry"`
+}
+
+type atomLink struct {
+	Href string `xml:"href,attr"`
+	Rel  string `xml:"rel,attr,omitempty"`
+}
+
+type atomEntry struct {
+	ID        string      `xml:"id"`
+	Title     string      `xml:"title"`
+	Link      atomLink    `xml:"link"`
+	Updated   string      `xml:"updated"`
+	Published string      `xml:"published"`
+	Content   atomContent `xml:"content"`
+}
+
+type atomContent struct {
+	Type string `xml:"type,attr"`
+	Body string `xml:",chardata"`
+}
+
 func (a *App) requireAdmin(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		uid, ok := a.currentUserID(r)
@@ -2759,6 +3001,22 @@ func (a *App) renderThemeStatus(w http.ResponseWriter, r *http.Request, page str
 	funcs := template.FuncMap{
 		"date":    formatDate,
 		"excerpt": render.Excerpt,
+		"contentURL": func(c models.Content) string {
+			return a.contentURL(r.Context(), c)
+		},
+		"metaURL": func(m models.Meta) string {
+			return a.metaURL(r.Context(), m)
+		},
+		"commentURL": func(c models.Comment) string {
+			if c.CID <= 0 {
+				return "#comment-" + strconv.FormatInt(c.COID, 10)
+			}
+			content, err := a.Contents.ByID(r.Context(), c.CID)
+			if err != nil || (content.Type != models.ContentTypePost && content.Type != models.ContentTypePage) {
+				return "#comment-" + strconv.FormatInt(c.COID, 10)
+			}
+			return a.contentURL(r.Context(), content) + "#comment-" + strconv.FormatInt(c.COID, 10)
+		},
 		"commentDate": func(ts int64) string {
 			layout := a.option(r.Context(), "comment_date_format", "2006-01-02 15:04")
 			if strings.TrimSpace(layout) == "" {
@@ -2780,7 +3038,22 @@ func (a *App) renderThemeStatus(w http.ResponseWriter, r *http.Request, page str
 	data["CSRF"] = a.csrfToken(r)
 	data["CommentCSRF"] = a.csrfTokenFor(r, "comment")
 	if site, ok := data["Site"].(map[string]string); ok {
-		data["CurrentURL"] = strings.TrimRight(site["base_url"], "/") + r.URL.RequestURI()
+		canonicalPath := r.URL.Path
+		if pathValue, ok := data["CanonicalPath"].(string); ok && pathValue != "" {
+			canonicalPath = pathValue
+		}
+		baseURL := strings.TrimRight(site["base_url"], "/")
+		data["CurrentURL"] = baseURL + canonicalPath
+		if _, ok := data["SeoImage"]; !ok {
+			if post, ok := data["Post"].(models.Content); ok {
+				if imageURL := firstContentImage(post.Text); imageURL != "" {
+					data["SeoImage"] = absolutePublicURL(baseURL, imageURL)
+				}
+			}
+		}
+		if _, ok := data["FeedPath"]; !ok {
+			data["FeedPath"] = "/feed.xml"
+		}
 	}
 	w.WriteHeader(status)
 	if err := tmpl.ExecuteTemplate(w, "base", data); err != nil {
@@ -3136,6 +3409,353 @@ func joinMetaNames(items []models.Meta) string {
 	return strings.Join(names, ", ")
 }
 
+func (a *App) contentURL(ctx context.Context, c models.Content) string {
+	switch c.Type {
+	case models.ContentTypePage:
+		pattern := a.option(ctx, "permalink_page", "/page/{slug}")
+		return cleanPublicPath(applyContentPattern(pattern, c, a.pageDirectory(ctx, c)))
+	default:
+		pattern := a.option(ctx, "permalink_post", "/post/{slug}")
+		category, directory := a.primaryCategoryPath(ctx, c.CID)
+		return cleanPublicPath(applyContentPattern(pattern, c, directory, category))
+	}
+}
+
+func (a *App) metaURL(ctx context.Context, m models.Meta) string {
+	if m.Type == "category" {
+		pattern := a.option(ctx, "permalink_category", "/category/{slug}")
+		return cleanPublicPath(applyMetaPattern(pattern, m, a.metaDirectory(ctx, m)))
+	}
+	return cleanPublicPath("/tag/" + m.Slug)
+}
+
+func (a *App) pageDirectory(ctx context.Context, c models.Content) string {
+	parts := []string{c.Slug}
+	parent := c.Parent
+	seen := map[int64]bool{c.CID: true}
+	for parent > 0 && !seen[parent] {
+		seen[parent] = true
+		p, err := a.Contents.ByID(ctx, parent)
+		if err != nil || p.Type != models.ContentTypePage {
+			break
+		}
+		parts = append([]string{p.Slug}, parts...)
+		parent = p.Parent
+	}
+	return strings.Join(parts, "/")
+}
+
+func (a *App) metaDirectory(ctx context.Context, m models.Meta) string {
+	parts := []string{m.Slug}
+	parent := m.Parent
+	seen := map[int64]bool{m.MID: true}
+	for parent > 0 && !seen[parent] {
+		seen[parent] = true
+		p, err := a.Metas.ByID(ctx, parent)
+		if err != nil || p.Type != m.Type {
+			break
+		}
+		parts = append([]string{p.Slug}, parts...)
+		parent = p.Parent
+	}
+	return strings.Join(parts, "/")
+}
+
+func (a *App) primaryCategoryPath(ctx context.Context, cid int64) (slug, directory string) {
+	categories, err := a.Metas.CategoriesForContent(ctx, cid)
+	if err != nil || len(categories) == 0 {
+		return "", ""
+	}
+	return categories[0].Slug, a.metaDirectory(ctx, categories[0])
+}
+
+func applyContentPattern(pattern string, c models.Content, directory string, category ...string) string {
+	cat := ""
+	if len(category) > 0 {
+		cat = category[0]
+	}
+	t := time.Unix(c.Created, 0)
+	replacer := strings.NewReplacer(
+		"{cid}", strconv.FormatInt(c.CID, 10),
+		"{slug}", c.Slug,
+		"{directory}", directory,
+		"{category}", cat,
+		"{year}", t.Format("2006"),
+		"{month}", t.Format("01"),
+		"{day}", t.Format("02"),
+	)
+	return replacer.Replace(pattern)
+}
+
+func applyMetaPattern(pattern string, m models.Meta, directory string) string {
+	return strings.NewReplacer(
+		"{mid}", strconv.FormatInt(m.MID, 10),
+		"{slug}", m.Slug,
+		"{directory}", directory,
+	).Replace(pattern)
+}
+
+func cleanPublicPath(value string) string {
+	value = "/" + strings.Trim(value, "/")
+	value = strings.ReplaceAll(value, "//", "/")
+	if value == "" {
+		return "/"
+	}
+	return value
+}
+
+func trimSlashPath(value string) string {
+	return strings.Trim(value, "/")
+}
+
+func (a *App) postsIndexPath(ctx context.Context) string {
+	value := cleanPublicPath(a.option(ctx, "posts_index_path", "/"))
+	if value == "" {
+		return "/"
+	}
+	return value
+}
+
+func searchPath(keywords string) string {
+	keywords = strings.TrimSpace(keywords)
+	if keywords == "" {
+		return "/search"
+	}
+	return "/search/" + neturl.PathEscape(keywords)
+}
+
+var (
+	markdownImageRE = regexp.MustCompile(`!\[[^\]]*\]\(\s*<?([^)\s>]+)>?(?:\s+["'][^)]*["'])?\s*\)`)
+	htmlImageRE     = regexp.MustCompile(`(?is)<img\b[^>]*\bsrc\s*=\s*(?:"([^"]+)"|'([^']+)'|([^\s>]+))`)
+)
+
+func firstContentImage(text string) string {
+	mdMatch := markdownImageRE.FindStringSubmatchIndex(text)
+	htmlMatch := htmlImageRE.FindStringSubmatchIndex(text)
+	if mdMatch == nil && htmlMatch == nil {
+		return ""
+	}
+	if mdMatch != nil && (htmlMatch == nil || mdMatch[0] <= htmlMatch[0]) {
+		return strings.TrimSpace(text[mdMatch[2]:mdMatch[3]])
+	}
+	if htmlMatch != nil {
+		for i := 2; i+1 < len(htmlMatch); i += 2 {
+			if htmlMatch[i] >= 0 && htmlMatch[i+1] >= 0 {
+				return strings.TrimSpace(text[htmlMatch[i]:htmlMatch[i+1]])
+			}
+		}
+	}
+	return ""
+}
+
+func absolutePublicURL(baseURL, raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	if strings.HasPrefix(raw, "//") {
+		scheme := "https"
+		if u, err := neturl.Parse(baseURL); err == nil && u.Scheme != "" {
+			scheme = u.Scheme
+		}
+		return scheme + ":" + raw
+	}
+	u, err := neturl.Parse(raw)
+	if err == nil && u.IsAbs() {
+		return raw
+	}
+	base, err := neturl.Parse(strings.TrimRight(baseURL, "/") + "/")
+	if err != nil {
+		return raw
+	}
+	ref, err := neturl.Parse(raw)
+	if err != nil {
+		return raw
+	}
+	return base.ResolveReference(ref).String()
+}
+
+func archivePath(year, month, day int) string {
+	if day > 0 {
+		return fmt.Sprintf("/archive/%04d/%02d/%02d", year, month, day)
+	}
+	if month > 0 {
+		return fmt.Sprintf("/archive/%04d/%02d", year, month)
+	}
+	return fmt.Sprintf("/archive/%04d", year)
+}
+
+func (a *App) redirectCanonical(w http.ResponseWriter, r *http.Request, canonical string) bool {
+	if canonical == "" || r.Method != http.MethodGet {
+		return false
+	}
+	if trimSlashPath(r.URL.Path) == trimSlashPath(canonical) {
+		return false
+	}
+	target := canonical
+	if r.URL.RawQuery != "" {
+		target += "?" + r.URL.RawQuery
+	}
+	http.Redirect(w, r, target, http.StatusMovedPermanently)
+	return true
+}
+
+func (a *App) tryDynamicPermalink(w http.ResponseWriter, r *http.Request) bool {
+	ctx := r.Context()
+	if vars, ok := matchPermalink(a.option(ctx, "permalink_post", "/post/{slug}"), r.URL.Path); ok {
+		post, err := a.contentFromPermalinkVars(ctx, vars, models.ContentTypePost)
+		if err == nil && post.Status == models.ContentStatusPost && post.Created <= time.Now().Unix() {
+			if post.Password != "" && r.URL.Query().Get("password") != post.Password {
+				a.renderTheme(w, r, "post.html", map[string]any{"Post": post, "PasswordRequired": true})
+				return true
+			}
+			if a.redirectCanonical(w, r, a.contentURL(ctx, post)) {
+				return true
+			}
+			a.renderPostContent(w, r, post)
+			return true
+		}
+	}
+	if vars, ok := matchPermalink(a.option(ctx, "permalink_page", "/page/{slug}"), r.URL.Path); ok {
+		pageData, err := a.contentFromPermalinkVars(ctx, vars, models.ContentTypePage)
+		if err == nil && pageData.Status == models.ContentStatusPost && pageData.Created <= time.Now().Unix() {
+			if a.redirectCanonical(w, r, a.contentURL(ctx, pageData)) {
+				return true
+			}
+			a.renderPageContent(w, r, pageData)
+			return true
+		}
+	}
+	if vars, ok := matchPermalink(a.option(ctx, "permalink_category", "/category/{slug}"), r.URL.Path); ok {
+		meta, err := a.metaFromPermalinkVars(ctx, vars, "category")
+		if err == nil {
+			if a.redirectCanonical(w, r, a.metaURL(ctx, meta)) {
+				return true
+			}
+			a.renderPostListWithData(w, r, services.ContentQuery{Type: models.ContentTypePost, Status: models.ContentStatusPost, Category: meta.MID}, "分类："+meta.Name, map[string]any{"ArchiveMeta": meta, "CanonicalPath": a.metaURL(ctx, meta), "FeedPath": a.metaURL(ctx, meta) + "/feed.xml"})
+			return true
+		}
+	}
+	return false
+}
+
+func (a *App) tryDynamicTaxonomyFeed(w http.ResponseWriter, r *http.Request) bool {
+	ctx := r.Context()
+	cleanPath := strings.TrimSuffix(strings.TrimSuffix(r.URL.Path, "/"), "/feed.xml")
+	vars, ok := matchPermalink(a.option(ctx, "permalink_category", "/category/{slug}"), cleanPath)
+	if !ok {
+		return false
+	}
+	meta, err := a.metaFromPermalinkVars(ctx, vars, "category")
+	if err != nil {
+		return false
+	}
+	query := services.ContentQuery{Type: models.ContentTypePost, Status: models.ContentStatusPost, Category: meta.MID, ExcludeFuture: true, Limit: optionInt(a.option(ctx, "posts_list_size", "10"), 10)}
+	posts, err := a.Contents.List(ctx, query)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return true
+	}
+	a.writeRSS(w, r, posts, nil, meta.Name, meta.Description, a.metaURL(ctx, meta)+"/feed.xml")
+	return true
+}
+
+func (a *App) tryPrettyArchive(w http.ResponseWriter, r *http.Request) bool {
+	parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
+	if len(parts) == 0 || len(parts[0]) != 4 {
+		return false
+	}
+	year, err := strconv.Atoi(parts[0])
+	if err != nil || year < 1970 {
+		return false
+	}
+	query := services.ContentQuery{Type: models.ContentTypePost, Status: models.ContentStatusPost, Year: year}
+	title := fmt.Sprintf("归档：%04d", year)
+	if len(parts) > 1 {
+		query.Month, _ = strconv.Atoi(parts[1])
+		title = fmt.Sprintf("归档：%04d-%02d", year, query.Month)
+	}
+	if len(parts) > 2 {
+		query.Day, _ = strconv.Atoi(parts[2])
+		title = fmt.Sprintf("归档：%04d-%02d-%02d", year, query.Month, query.Day)
+	}
+	a.renderPostListWithData(w, r, query, title, map[string]any{"CanonicalPath": archivePath(query.Year, query.Month, query.Day)})
+	return true
+}
+
+func (a *App) contentFromPermalinkVars(ctx context.Context, vars map[string]string, typ string) (models.Content, error) {
+	if raw := vars["cid"]; raw != "" {
+		id, _ := strconv.ParseInt(raw, 10, 64)
+		c, err := a.Contents.ByID(ctx, id)
+		if err != nil || c.Type != typ {
+			return models.Content{}, sql.ErrNoRows
+		}
+		return c, nil
+	}
+	slug := vars["slug"]
+	if slug == "" {
+		slug = path.Base(vars["directory"])
+	}
+	if typ == models.ContentTypePage {
+		return a.Contents.PageBySlug(ctx, slug)
+	}
+	return a.Contents.BySlug(ctx, slug)
+}
+
+func (a *App) metaFromPermalinkVars(ctx context.Context, vars map[string]string, typ string) (models.Meta, error) {
+	if raw := vars["mid"]; raw != "" {
+		id, _ := strconv.ParseInt(raw, 10, 64)
+		m, err := a.Metas.ByID(ctx, id)
+		if err != nil || m.Type != typ {
+			return models.Meta{}, sql.ErrNoRows
+		}
+		return m, nil
+	}
+	slug := vars["slug"]
+	if slug == "" {
+		slug = path.Base(vars["directory"])
+	}
+	return a.Metas.BySlug(ctx, typ, slug)
+}
+
+func matchPermalink(pattern, value string) (map[string]string, bool) {
+	pattern = cleanPublicPath(pattern)
+	value = cleanPublicPath(value)
+	var names []string
+	var re strings.Builder
+	re.WriteString("^")
+	for i := 0; i < len(pattern); {
+		if pattern[i] == '{' {
+			end := strings.IndexByte(pattern[i:], '}')
+			if end > 0 {
+				name := pattern[i+1 : i+end]
+				names = append(names, name)
+				if name == "directory" {
+					re.WriteString("(.+)")
+				} else {
+					re.WriteString("([^/]+)")
+				}
+				i += end + 1
+				continue
+			}
+		}
+		re.WriteString(regexp.QuoteMeta(string(pattern[i])))
+		i++
+	}
+	re.WriteString("/?$")
+	match := regexp.MustCompile(re.String()).FindStringSubmatch(value)
+	if match == nil {
+		return nil, false
+	}
+	out := map[string]string{}
+	for i, name := range names {
+		if i+1 < len(match) {
+			out[name] = match[i+1]
+		}
+	}
+	return out, true
+}
+
 func contentPublicURL(c models.Content) string {
 	if c.Type == models.ContentTypePage {
 		return "/page/" + c.Slug
@@ -3217,6 +3837,37 @@ func userTitle(id int64) string {
 func methodNotAllowed(w http.ResponseWriter, allow string) {
 	w.Header().Set("Allow", allow)
 	http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+}
+
+func validatePermalinkOptions(r *http.Request) error {
+	patterns := map[string]string{
+		"文章路径": r.FormValue("permalink_post"),
+		"页面路径": r.FormValue("permalink_page"),
+		"分类路径": r.FormValue("permalink_category"),
+	}
+	seen := map[string]string{}
+	for label, pattern := range patterns {
+		pattern = cleanPublicPath(pattern)
+		if pattern == "/" || !strings.Contains(pattern, "{") {
+			return fmt.Errorf("%s 必须包含至少一个变量", label)
+		}
+		for _, reserved := range []string{"/admin", "/uploads", "/theme", "/feed.xml", "/atom.xml", "/comments", "/comment", "/search", "/archive", "/author", "/preview"} {
+			if pattern == reserved || strings.HasPrefix(pattern, reserved+"/") {
+				return fmt.Errorf("%s 与内置路径 %s 冲突", label, reserved)
+			}
+		}
+		shape := permalinkShape(pattern)
+		if prev := seen[shape]; prev != "" {
+			return fmt.Errorf("%s 与 %s 规则冲突", label, prev)
+		}
+		seen[shape] = label
+	}
+	return nil
+}
+
+func permalinkShape(pattern string) string {
+	re := regexp.MustCompile(`\{[^}]+\}`)
+	return re.ReplaceAllString(cleanPublicPath(pattern), "{}")
 }
 
 func wantsJSON(r *http.Request) bool {

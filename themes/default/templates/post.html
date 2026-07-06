@@ -16,14 +16,20 @@
   <div class="content">{{.ContentHTML}}</div>
   {{if or .Categories .Tags}}
   <footer class="post-taxonomy">
-    {{range .Categories}}<a href="/category/{{.Slug}}">{{.Name}}</a>{{end}}
-    {{range .Tags}}<a href="/tag/{{.Slug}}">#{{.Name}}</a>{{end}}
+    {{range .Categories}}<a href="{{metaURL .}}">{{.Name}}</a>{{end}}
+    {{range .Tags}}<a href="{{metaURL .}}">#{{.Name}}</a>{{end}}
   </footer>
   {{end}}
   <nav class="post-neighbors">
-    {{if .PrevPost.CID}}<a href="/post/{{.PrevPost.Slug}}"><mdui-icon-chevron-left></mdui-icon-chevron-left>{{.PrevPost.Title}}</a>{{else}}<span></span>{{end}}
-    {{if .NextPost.CID}}<a href="/post/{{.NextPost.Slug}}">{{.NextPost.Title}}<mdui-icon-chevron-right></mdui-icon-chevron-right></a>{{else}}<span></span>{{end}}
+    {{if .PrevPost.CID}}<a href="{{contentURL .PrevPost}}"><mdui-icon-chevron-left></mdui-icon-chevron-left>{{.PrevPost.Title}}</a>{{else}}<span></span>{{end}}
+    {{if .NextPost.CID}}<a href="{{contentURL .NextPost}}">{{.NextPost.Title}}<mdui-icon-chevron-right></mdui-icon-chevron-right></a>{{else}}<span></span>{{end}}
   </nav>
+  {{if .RelatedPosts}}
+  <section class="post-related">
+    <h2>相关文章</h2>
+    <div class="sidebar-list">{{range .RelatedPosts}}<a href="{{contentURL .}}">{{.Title}}</a>{{end}}</div>
+  </section>
+  {{end}}
   {{if eq .Post.AllowComment "1"}}
   <section id="comments" class="comments">
     <h2>评论</h2>

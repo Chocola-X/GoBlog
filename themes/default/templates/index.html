@@ -2,7 +2,7 @@
 {{if .ArchiveTitle}}<section class="archive-head"><h1>{{.ArchiveTitle}}</h1></section>{{end}}
 <section class="post-list">
   {{range .Posts}}
-  <a class="post-card" href="/post/{{.Slug}}">
+  <a class="post-card" href="{{contentURL .}}">
     <div class="post-card-media">
       <div class="post-card-filter"></div>
       <div class="post-card-text">

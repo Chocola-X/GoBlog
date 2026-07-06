@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/base64"
+	"encoding/xml"
 	"errors"
 	"mime/multipart"
 	"net/http"
@@ -275,8 +276,15 @@ func TestFuturePostDoesNotLeakInSearchPage(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/search?q=Future", nil)
 	rec := httptest.NewRecorder()
 	app.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusMovedPermanently || rec.Header().Get("Location") != "/search/Future" {
+		t.Fatalf("search redirect = %d %q", rec.Code, rec.Header().Get("Location"))
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/search/Future", nil)
+	rec = httptest.NewRecorder()
+	app.Handler().ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
-		t.Fatalf("search status = %d, want 200", rec.Code)
+		t.Fatalf("pretty search status = %d, want 200", rec.Code)
 	}
 	if strings.Contains(rec.Body.String(), "Future Secret") {
 		t.Fatal("future post leaked in search page")
@@ -1017,6 +1025,227 @@ func TestBackupImportMidFailureRollsBack(t *testing.T) {
 	}
 	if title == "Should Rollback" {
 		t.Fatal("option write was not rolled back")
+	}
+}
+
+func TestPermalinkGeneratesMatchesAndRedirectsCanonical(t *testing.T) {
+	app, _, adminID := newSecurityTestApp(t)
+	ctx := context.Background()
+	if err := app.Options.Set(ctx, "permalink_post", "/{year}/{month}/{slug}"); err != nil {
+		t.Fatal(err)
+	}
+	postID, err := app.Contents.Create(ctx, services.SaveContentInput{
+		Title:   "Permalink Post",
+		Slug:    "permalink-post",
+		Text:    "body",
+		Type:    models.ContentTypePost,
+		Status:  models.ContentStatusPost,
+		Created: time.Date(2026, 7, 6, 9, 0, 0, 0, time.Local).Unix(),
+	}, adminID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	post, err := app.Contents.ByID(ctx, postID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := app.contentURL(ctx, post); got != "/2026/07/permalink-post" {
+		t.Fatalf("contentURL = %q", got)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/2026/07/permalink-post", nil)
+	rec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("dynamic permalink status = %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/post/permalink-post", nil)
+	rec = httptest.NewRecorder()
+	app.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusMovedPermanently || rec.Header().Get("Location") != "/2026/07/permalink-post" {
+		t.Fatalf("canonical redirect = %d %q", rec.Code, rec.Header().Get("Location"))
+	}
+}
+
+func TestCategoryDirectoryPermalink(t *testing.T) {
+	app, _, adminID := newSecurityTestApp(t)
+	ctx := context.Background()
+	if err := app.Options.Set(ctx, "permalink_category", "/category/{directory}"); err != nil {
+		t.Fatal(err)
+	}
+	parentID, err := app.Metas.Save(ctx, services.SaveMetaInput{Name: "Parent", Slug: "parent", Type: "category"}, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	childID, err := app.Metas.Save(ctx, services.SaveMetaInput{Name: "Child", Slug: "child", Type: "category", Parent: parentID}, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := app.Contents.Create(ctx, services.SaveContentInput{Title: "Nested Category", Slug: "nested-category", Text: "body", Type: models.ContentTypePost, Status: models.ContentStatusPost, CategoryIDs: []int64{childID}}, adminID); err != nil {
+		t.Fatal(err)
+	}
+	child, err := app.Metas.ByID(ctx, childID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := app.metaURL(ctx, child); got != "/category/parent/child" {
+		t.Fatalf("category URL = %q", got)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/category/parent/child", nil)
+	rec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("category directory status = %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestAtomFeedIsAtomXML(t *testing.T) {
+	app, _, adminID := newSecurityTestApp(t)
+	createPublishedPost(t, app, adminID, "atom-post")
+	req := httptest.NewRequest(http.MethodGet, "/atom.xml", nil)
+	rec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("atom status = %d, want 200", rec.Code)
+	}
+	var feed atomFeed
+	if err := xml.Unmarshal(rec.Body.Bytes(), &feed); err != nil {
+		t.Fatal(err)
+	}
+	if feed.XMLName.Local != "feed" || feed.Xmlns != "http://www.w3.org/2005/Atom" || len(feed.Entries) == 0 {
+		t.Fatalf("atom feed = %#v", feed)
+	}
+}
+
+func TestSearchQueryRedirectsToPrettyURL(t *testing.T) {
+	app, _, adminID := newSecurityTestApp(t)
+	createPublishedPost(t, app, adminID, "search-post")
+
+	req := httptest.NewRequest(http.MethodGet, "/search?q=hello", nil)
+	rec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusMovedPermanently || rec.Header().Get("Location") != "/search/hello" {
+		t.Fatalf("search query redirect = %d %q", rec.Code, rec.Header().Get("Location"))
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/search/hello", nil)
+	rec = httptest.NewRecorder()
+	app.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("pretty search status = %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestCommentFeedLinksPageCommentsToPageURL(t *testing.T) {
+	app, _, adminID := newSecurityTestApp(t)
+	ctx := context.Background()
+	if err := app.Options.Set(ctx, "permalink_page", "/docs/{slug}"); err != nil {
+		t.Fatal(err)
+	}
+	pageID, err := app.Contents.Create(ctx, services.SaveContentInput{
+		Title:        "About",
+		Slug:         "about",
+		Text:         "page body",
+		Type:         models.ContentTypePage,
+		Status:       models.ContentStatusPost,
+		AllowComment: true,
+	}, adminID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := app.Comments.Save(ctx, services.SaveCommentInput{CID: pageID, Author: "Reader", Mail: "r@example.com", Text: "page comment", Status: "approved"}, 0); err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/comments/feed.xml", nil)
+	rec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("comment feed status = %d, want 200", rec.Code)
+	}
+	var feed rssFeed
+	if err := xml.Unmarshal(rec.Body.Bytes(), &feed); err != nil {
+		t.Fatal(err)
+	}
+	if len(feed.Channel.Items) == 0 {
+		t.Fatal("comment feed has no items")
+	}
+	if link := feed.Channel.Items[0].Link; !strings.HasPrefix(link, "http://localhost:8080/docs/about#comment-") {
+		t.Fatalf("page comment link = %q", link)
+	}
+}
+
+func TestPostSEOImageUsesFirstContentImage(t *testing.T) {
+	app, _, adminID := newSecurityTestApp(t)
+	ctx := context.Background()
+	if _, err := app.Contents.Create(ctx, services.SaveContentInput{
+		Title:  "Image Post",
+		Slug:   "image-post",
+		Text:   "intro\n![cover](/uploads/42/cover.jpg)\n<img src=\"/uploads/42/second.jpg\">",
+		Type:   models.ContentTypePost,
+		Status: models.ContentStatusPost,
+	}, adminID); err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/post/image-post", nil)
+	rec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("post status = %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	for _, want := range []string{
+		`<meta property="og:image" content="http://localhost:8080/uploads/42/cover.jpg">`,
+		`<meta name="twitter:image" content="http://localhost:8080/uploads/42/cover.jpg">`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("missing SEO image meta %q in body: %s", want, body)
+		}
+	}
+}
+
+func TestCustomFrontPageRendersPage(t *testing.T) {
+	app, _, adminID := newSecurityTestApp(t)
+	ctx := context.Background()
+	pageID, err := app.Contents.Create(ctx, services.SaveContentInput{Title: "Landing Page", Slug: "landing", Text: "front body", Type: models.ContentTypePage, Status: models.ContentStatusPost}, adminID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := app.Options.Set(ctx, "front_page_type", "page"); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.Options.Set(ctx, "front_page_cid", itoa(pageID)); err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	rec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("front page status = %d, want 200", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "Landing Page") {
+		t.Fatalf("front page did not render selected page: %s", rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `<link rel="canonical" href="http://localhost:8080/">`) {
+		t.Fatalf("front page canonical should point to site root: %s", rec.Body.String())
+	}
+}
+
+func TestPermalinkConflictValidation(t *testing.T) {
+	form := url.Values{
+		"permalink_post":     {"/archive/{slug}"},
+		"permalink_page":     {"/page/{slug}"},
+		"permalink_category": {"/category/{slug}"},
+	}
+	req := httptest.NewRequest(http.MethodPost, "/admin/options/permalink", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	if err := req.ParseForm(); err != nil {
+		t.Fatal(err)
+	}
+	if err := validatePermalinkOptions(req); err == nil {
+		t.Fatal("expected conflict with archive route")
 	}
 }
 

@@ -9,8 +9,16 @@
   <meta name="keywords" content="{{index .Site "site_keywords"}}">
   <meta name="generator" content="GoBlog">
   {{if .CurrentURL}}<link rel="canonical" href="{{.CurrentURL}}">{{end}}
+  <meta property="og:type" content="{{if .Post}}article{{else}}website{{end}}">
+  <meta property="og:title" content="{{if .Post}}{{.Post.Title}}{{else}}{{if .Title}}{{.Title}}{{else}}{{index .Site "site_title"}}{{end}}{{end}}">
+  <meta property="og:description" content="{{if .Post}}{{excerpt .Post.Text 160}}{{else}}{{index .Site "site_description"}}{{end}}">
+  {{if .CurrentURL}}<meta property="og:url" content="{{.CurrentURL}}">{{end}}
+  {{if .SeoImage}}<meta property="og:image" content="{{.SeoImage}}">{{end}}
+  <meta name="twitter:card" content="summary_large_image">
+  {{if .SeoImage}}<meta name="twitter:image" content="{{.SeoImage}}">{{end}}
   <title>{{if .Post}}{{.Post.Title}} - {{end}}{{index .Site "site_title"}}</title>
-  <link rel="alternate" type="application/rss+xml" title="{{index .Site "site_title"}}" href="/feed.xml">
+  <link rel="alternate" type="application/rss+xml" title="{{index .Site "site_title"}}" href="{{.FeedPath}}">
+  <link rel="alternate" type="application/atom+xml" title="{{index .Site "site_title"}}" href="/atom.xml">
   <link rel="stylesheet" href="/theme/default/mdui.css">
   <link rel="stylesheet" href="/theme/default/theme.css">
   <script src="/theme/default/mdui.global.js"></script>
@@ -34,7 +42,7 @@
     </div>
     <nav class="drawer-nav">
       <a href="/"><mdui-icon-home></mdui-icon-home>首页</a>
-      {{range .Pages}}<a href="/page/{{.Slug}}"><mdui-icon-article></mdui-icon-article>{{.Title}}</a>{{end}}
+      {{range .Pages}}<a href="{{contentURL .}}"><mdui-icon-article></mdui-icon-article>{{.Title}}</a>{{end}}
       <a href="/feed.xml"><mdui-icon-rss-feed></mdui-icon-rss-feed>订阅</a>
     </nav>
   </aside>
@@ -58,25 +66,25 @@
       <section class="sidebar-card">
         <h3>页面</h3>
         <div class="sidebar-list">
-          {{range .Pages}}<a href="/page/{{.Slug}}">{{.Title}}</a>{{else}}<span class="muted">暂无页面</span>{{end}}
+          {{range .Pages}}<a href="{{contentURL .}}">{{.Title}}</a>{{else}}<span class="muted">暂无页面</span>{{end}}
         </div>
       </section>
       <section class="sidebar-card">
         <h3>最新文章</h3>
         <div class="sidebar-list">
-          {{range .RecentPosts}}<a href="/post/{{.Slug}}">{{.Title}}</a>{{else}}<span class="muted">暂无文章</span>{{end}}
+          {{range .RecentPosts}}<a href="{{contentURL .}}">{{.Title}}</a>{{else}}<span class="muted">暂无文章</span>{{end}}
         </div>
       </section>
       <section class="sidebar-card">
         <h3>标签云</h3>
         <div class="tag-cloud">
-          {{range .Tags}}<a href="/tag/{{.Slug}}">{{.Name}}</a>{{else}}<span class="muted">暂无标签</span>{{end}}
+          {{range .Tags}}<a href="{{metaURL .}}">{{.Name}}</a>{{else}}<span class="muted">暂无标签</span>{{end}}
         </div>
       </section>
       <section class="sidebar-card">
         <h3>最新回复</h3>
         <div class="sidebar-list">
-          {{range .RecentComments}}<a href="/post/{{.Slug}}">{{.Author}}：{{excerpt .Text 28}}</a>{{else}}<span class="muted">暂无回复</span>{{end}}
+          {{range .RecentComments}}<a href="{{commentURL .}}">{{.Author}}：{{excerpt .Text 28}}</a>{{else}}<span class="muted">暂无回复</span>{{end}}
         </div>
       </section>
     </aside>
