@@ -3,6 +3,7 @@ package models
 import (
 	"context"
 	"database/sql"
+	"strings"
 	"testing"
 
 	_ "github.com/mattn/go-sqlite3"
@@ -23,5 +24,31 @@ func TestRunVersionedMigrationsReturnsUnexpectedErrors(t *testing.T) {
 	}
 	if err := RunVersionedMigrations(ctx, db); err == nil {
 		t.Fatal("expected migration error when content/user tables are missing")
+	}
+}
+
+func TestPostgresSchemaSmoke(t *testing.T) {
+	stmts := postgresSchema()
+	if len(stmts) == 0 {
+		t.Fatal("postgres schema is empty")
+	}
+	joined := strings.Join(stmts, "\n")
+	for _, want := range []string{"bigserial PRIMARY KEY", "CREATE TABLE IF NOT EXISTS gb_contents", "CREATE TABLE IF NOT EXISTS gb_comments", "CREATE TABLE IF NOT EXISTS gb_options"} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("postgres schema missing %q", want)
+		}
+	}
+	if strings.Contains(joined, "AUTOINCREMENT") || strings.Contains(joined, "AUTO_INCREMENT") {
+		t.Fatal("postgres schema should not contain sqlite/mysql autoincrement syntax")
+	}
+}
+
+func TestQueryHelperRebindsPostgresPlaceholders(t *testing.T) {
+	query := Rebind(DialectPostgres, `SELECT * FROM gb_options WHERE name = ? AND user = ?`)
+	if query != `SELECT * FROM gb_options WHERE name = $1 AND user = $2` {
+		t.Fatalf("rebind = %q", query)
+	}
+	if got := Rebind(DialectMySQL, `SELECT ?`); got != `SELECT ?` {
+		t.Fatalf("mysql rebind = %q", got)
 	}
 }

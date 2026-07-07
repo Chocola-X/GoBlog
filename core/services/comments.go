@@ -10,7 +10,7 @@ import (
 )
 
 type CommentService struct {
-	db *sql.DB
+	db DB
 }
 
 type SaveCommentInput struct {
@@ -25,13 +25,18 @@ type SaveCommentInput struct {
 	Parent   int64
 	IP       string
 	Agent    string
+	Type     string
 }
 
-func NewCommentService(db *sql.DB) *CommentService {
-	return &CommentService{db: db}
+func NewCommentService(db any) *CommentService {
+	return &CommentService{db: WrapDB(db)}
 }
 
 func (s *CommentService) List(ctx context.Context, status, keywords string, cid int64) ([]models.Comment, error) {
+	return s.ListFiltered(ctx, status, keywords, cid, "")
+}
+
+func (s *CommentService) ListFiltered(ctx context.Context, status, keywords string, cid int64, typ string) ([]models.Comment, error) {
 	if status == "" {
 		status = "approved"
 	}
@@ -44,6 +49,10 @@ func (s *CommentService) List(ctx context.Context, status, keywords string, cid 
 	if cid > 0 {
 		where = append(where, "cm.cid = ?")
 		args = append(args, cid)
+	}
+	if typ != "" && typ != "all" {
+		where = append(where, "cm.type = ?")
+		args = append(args, typ)
 	}
 	if keywords != "" {
 		where = append(where, "(cm.author LIKE ? OR cm.mail LIKE ? OR cm.text LIKE ?)")
@@ -74,6 +83,15 @@ func (s *CommentService) List(ctx context.Context, status, keywords string, cid 
 		comments = append(comments, c)
 	}
 	return comments, rows.Err()
+}
+
+func (s *CommentService) ExistsByURLType(ctx context.Context, cid int64, commentURL, typ string) (bool, error) {
+	if cid <= 0 || commentURL == "" || typ == "" {
+		return false, nil
+	}
+	var count int
+	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM gb_comments WHERE cid = ? AND url = ? AND type = ?`, cid, commentURL, typ).Scan(&count)
+	return count > 0, err
 }
 
 func (s *CommentService) ListForContent(ctx context.Context, cid int64, order string, limit, offset int) ([]models.Comment, error) {
@@ -165,14 +183,19 @@ func (s *CommentService) ParentDepth(ctx context.Context, cid, parent int64) (in
 }
 
 func (s *CommentService) Save(ctx context.Context, input SaveCommentInput, id int64) error {
+	ctx = WithWriter(ctx)
 	status := input.Status
 	if status == "" {
 		status = "approved"
 	}
+	typ := strings.TrimSpace(input.Type)
+	if typ == "" {
+		typ = "comment"
+	}
 	if id > 0 {
 		var cid int64
 		_ = s.db.QueryRowContext(ctx, `SELECT cid FROM gb_comments WHERE coid = ?`, id).Scan(&cid)
-		_, err := s.db.ExecContext(ctx, `UPDATE gb_comments SET author = ?, mail = ?, url = ?, text = ?, status = ? WHERE coid = ?`, input.Author, input.Mail, input.URL, input.Text, status, id)
+		_, err := s.db.ExecContext(ctx, `UPDATE gb_comments SET author = ?, mail = ?, url = ?, text = ?, status = ?, type = ? WHERE coid = ?`, input.Author, input.Mail, input.URL, input.Text, status, typ, id)
 		if err == nil && cid > 0 {
 			err = s.refreshContentCount(ctx, cid)
 		}
@@ -180,8 +203,8 @@ func (s *CommentService) Save(ctx context.Context, input SaveCommentInput, id in
 	}
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO gb_comments (cid, created, author, authorId, ownerId, mail, url, ip, agent, text, type, status, parent)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'comment', ?, ?)
-	`, input.CID, time.Now().Unix(), input.Author, input.AuthorID, input.OwnerID, input.Mail, input.URL, input.IP, input.Agent, input.Text, status, input.Parent)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, input.CID, time.Now().Unix(), input.Author, input.AuthorID, input.OwnerID, input.Mail, input.URL, input.IP, input.Agent, input.Text, typ, status, input.Parent)
 	if err != nil {
 		return err
 	}
@@ -189,6 +212,7 @@ func (s *CommentService) Save(ctx context.Context, input SaveCommentInput, id in
 }
 
 func (s *CommentService) Mark(ctx context.Context, id int64, status string) error {
+	ctx = WithWriter(ctx)
 	var cid int64
 	_ = s.db.QueryRowContext(ctx, `SELECT cid FROM gb_comments WHERE coid = ?`, id).Scan(&cid)
 	_, err := s.db.ExecContext(ctx, `UPDATE gb_comments SET status = ? WHERE coid = ?`, status, id)
@@ -199,6 +223,7 @@ func (s *CommentService) Mark(ctx context.Context, id int64, status string) erro
 }
 
 func (s *CommentService) MarkMany(ctx context.Context, ids []int64, status string) error {
+	ctx = WithWriter(ctx)
 	for _, id := range ids {
 		if id <= 0 {
 			continue
@@ -211,6 +236,7 @@ func (s *CommentService) MarkMany(ctx context.Context, ids []int64, status strin
 }
 
 func (s *CommentService) Delete(ctx context.Context, id int64) error {
+	ctx = WithWriter(ctx)
 	var cid int64
 	_ = s.db.QueryRowContext(ctx, `SELECT cid FROM gb_comments WHERE coid = ?`, id).Scan(&cid)
 	_, err := s.db.ExecContext(ctx, `DELETE FROM gb_comments WHERE coid = ?`, id)
@@ -221,6 +247,7 @@ func (s *CommentService) Delete(ctx context.Context, id int64) error {
 }
 
 func (s *CommentService) DeleteMany(ctx context.Context, ids []int64) error {
+	ctx = WithWriter(ctx)
 	for _, id := range ids {
 		if id <= 0 {
 			continue
@@ -233,6 +260,7 @@ func (s *CommentService) DeleteMany(ctx context.Context, ids []int64) error {
 }
 
 func (s *CommentService) ClearSpam(ctx context.Context) error {
+	ctx = WithWriter(ctx)
 	if _, err := s.db.ExecContext(ctx, `DELETE FROM gb_comments WHERE status = 'spam'`); err != nil {
 		return err
 	}

@@ -15,7 +15,7 @@ import (
 )
 
 type ContentService struct {
-	db *sql.DB
+	db DB
 }
 
 type SaveContentInput struct {
@@ -61,12 +61,16 @@ type SaveFieldInput struct {
 	FloatValue float64
 }
 
-func NewContentService(db *sql.DB) *ContentService {
-	return &ContentService{db: db}
+func NewContentService(db any) *ContentService {
+	return &ContentService{db: WrapDB(db)}
 }
 
 func (s *ContentService) DB() *sql.DB {
-	return s.db
+	return s.db.RawWriter()
+}
+
+func (s *ContentService) Dialect() models.Dialect {
+	return s.db.Dialect()
 }
 
 func (s *ContentService) ListPublished(ctx context.Context, limit, offset int) ([]models.Content, error) {
@@ -171,6 +175,7 @@ func (s *ContentService) ByID(ctx context.Context, id int64) (models.Content, er
 }
 
 func (s *ContentService) Create(ctx context.Context, input SaveContentInput, authorID int64) (int64, error) {
+	ctx = WithWriter(ctx)
 	if input.Type == "" {
 		input.Type = models.ContentTypePost
 	}
@@ -188,14 +193,20 @@ func (s *ContentService) Create(ctx context.Context, input SaveContentInput, aut
 		return 0, err
 	}
 	defer tx.Rollback()
-	res, err := tx.ExecContext(ctx, `
+	var id int64
+	insertSQL := `
 		INSERT INTO gb_contents (title, slug, created, modified, text, sortOrder, authorId, template, type, status, password, commentsNum, allowComment, allowPing, allowFeed, parent)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)
-	`, input.Title, postSlug, created, now, input.Text, input.SortOrder, authorID, input.Template, input.Type, normalizeStatus(input.Status), input.Password, boolChar(input.AllowComment), boolChar(input.AllowPing), boolChar(input.AllowFeed), input.Parent)
-	if err != nil {
-		return 0, err
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)`
+	insertArgs := []any{input.Title, postSlug, created, now, input.Text, input.SortOrder, authorID, input.Template, input.Type, normalizeStatus(input.Status), input.Password, boolChar(input.AllowComment), boolChar(input.AllowPing), boolChar(input.AllowFeed), input.Parent}
+	if s.db.Dialect() == models.DialectPostgres {
+		err = tx.QueryRowContext(ctx, models.Rebind(s.db.Dialect(), insertSQL+" RETURNING cid"), insertArgs...).Scan(&id)
+	} else {
+		var res sql.Result
+		res, err = tx.ExecContext(ctx, insertSQL, insertArgs...)
+		if err == nil {
+			id, err = res.LastInsertId()
+		}
 	}
-	id, err := res.LastInsertId()
 	if err != nil {
 		return 0, err
 	}
@@ -247,6 +258,7 @@ func (s *ContentService) UpdateAttachmentMeta(ctx context.Context, id int64, tit
 }
 
 func (s *ContentService) Update(ctx context.Context, id int64, input SaveContentInput) error {
+	ctx = WithWriter(ctx)
 	current, err := s.ByID(ctx, id)
 	if err != nil {
 		return err
@@ -268,7 +280,7 @@ func (s *ContentService) Update(ctx context.Context, id int64, input SaveContent
 			return err
 		}
 	}
-	_, err = tx.ExecContext(ctx, `
+	_, err = txExec(ctx, tx, s.db.Dialect(), `
 		UPDATE gb_contents
 		SET title = ?, slug = ?, modified = ?, text = ?, status = ?, password = ?, sortOrder = ?, template = ?, parent = ?, allowComment = ?, allowPing = ?, allowFeed = ?
 		WHERE cid = ?
@@ -288,11 +300,13 @@ func (s *ContentService) Update(ctx context.Context, id int64, input SaveContent
 }
 
 func (s *ContentService) MarkStatus(ctx context.Context, id int64, status string) error {
+	ctx = WithWriter(ctx)
 	_, err := s.db.ExecContext(ctx, `UPDATE gb_contents SET status = ?, modified = ? WHERE cid = ?`, normalizeStatus(status), time.Now().Unix(), id)
 	return err
 }
 
 func (s *ContentService) Delete(ctx context.Context, id int64) error {
+	ctx = WithWriter(ctx)
 	if _, err := s.db.ExecContext(ctx, `DELETE FROM gb_relationships WHERE cid = ?`, id); err != nil {
 		return err
 	}
@@ -310,15 +324,29 @@ func (s *ContentService) Delete(ctx context.Context, id int64) error {
 }
 
 func (s *ContentService) SaveFields(ctx context.Context, cid int64, fields []SaveFieldInput) error {
+	ctx = WithWriter(ctx)
 	return s.saveFieldsTxLike(ctx, s.db, cid, fields)
 }
 
 func (s *ContentService) saveFieldsTx(ctx context.Context, tx *sql.Tx, cid int64, fields []SaveFieldInput) error {
-	return s.saveFieldsTxLike(ctx, tx, cid, fields)
+	return s.saveFieldsTxLike(ctx, txExecer{tx: tx, dialect: s.db.Dialect()}, cid, fields)
 }
 
 type execer interface {
 	ExecContext(context.Context, string, ...any) (sql.Result, error)
+}
+
+type txExecer struct {
+	tx      *sql.Tx
+	dialect models.Dialect
+}
+
+func (e txExecer) ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error) {
+	return e.tx.ExecContext(ctx, models.Rebind(e.dialect, query), args...)
+}
+
+func txExec(ctx context.Context, tx *sql.Tx, dialect models.Dialect, query string, args ...any) (sql.Result, error) {
+	return tx.ExecContext(ctx, models.Rebind(dialect, query), args...)
 }
 
 func (s *ContentService) saveFieldsTxLike(ctx context.Context, db execer, cid int64, fields []SaveFieldInput) error {
@@ -418,11 +446,12 @@ func (s *ContentService) AllRelationships(ctx context.Context) ([]models.Relatio
 }
 
 func (s *ContentService) SaveRevision(ctx context.Context, c models.Content) error {
+	ctx = WithWriter(ctx)
 	return s.saveRevisionTxLike(ctx, s.db, c)
 }
 
 func (s *ContentService) saveRevisionTx(ctx context.Context, tx *sql.Tx, c models.Content) error {
-	return s.saveRevisionTxLike(ctx, tx, c)
+	return s.saveRevisionTxLike(ctx, txExecer{tx: tx, dialect: s.db.Dialect()}, c)
 }
 
 func (s *ContentService) saveRevisionTxLike(ctx context.Context, db execer, c models.Content) error {
@@ -475,6 +504,7 @@ func (s *ContentService) RevisionByID(ctx context.Context, rid int64) (models.Re
 }
 
 func (s *ContentService) RestoreRevision(ctx context.Context, cid, rid int64) (int64, error) {
+	ctx = WithWriter(ctx)
 	revision, err := s.RevisionByID(ctx, rid)
 	if err != nil {
 		return 0, err
@@ -588,7 +618,7 @@ func (s *ContentService) syncRelationships(ctx context.Context, cid int64, input
 }
 
 func (s *ContentService) syncRelationshipsTx(ctx context.Context, tx *sql.Tx, cid int64, input SaveContentInput) error {
-	return s.syncRelationshipsTxLike(ctx, tx, cid, input)
+	return s.syncRelationshipsTxLike(ctx, txExecer{tx: tx, dialect: s.db.Dialect()}, cid, input)
 }
 
 func (s *ContentService) syncRelationshipsTxLike(ctx context.Context, db execer, cid int64, input SaveContentInput) error {
@@ -598,7 +628,11 @@ func (s *ContentService) syncRelationshipsTxLike(ctx context.Context, db execer,
 	if input.Type == models.ContentTypePost {
 		for _, mid := range input.CategoryIDs {
 			if mid > 0 {
-				if _, err := db.ExecContext(ctx, `INSERT OR IGNORE INTO gb_relationships (cid, mid) VALUES (?, ?)`, cid, mid); err != nil {
+				if s.db.Dialect() == models.DialectPostgres {
+					if _, err := db.ExecContext(ctx, `INSERT INTO gb_relationships (cid, mid) VALUES (?, ?) ON CONFLICT (cid, mid) DO NOTHING`, cid, mid); err != nil {
+						return err
+					}
+				} else if _, err := db.ExecContext(ctx, `INSERT OR IGNORE INTO gb_relationships (cid, mid) VALUES (?, ?)`, cid, mid); err != nil {
 					if _, err = db.ExecContext(ctx, `INSERT IGNORE INTO gb_relationships (cid, mid) VALUES (?, ?)`, cid, mid); err != nil {
 						return err
 					}
@@ -614,7 +648,11 @@ func (s *ContentService) syncRelationshipsTxLike(ctx context.Context, db execer,
 			if err != nil {
 				return err
 			}
-			if _, err := db.ExecContext(ctx, `INSERT OR IGNORE INTO gb_relationships (cid, mid) VALUES (?, ?)`, cid, mid); err != nil {
+			if s.db.Dialect() == models.DialectPostgres {
+				if _, err := db.ExecContext(ctx, `INSERT INTO gb_relationships (cid, mid) VALUES (?, ?) ON CONFLICT (cid, mid) DO NOTHING`, cid, mid); err != nil {
+					return err
+				}
+			} else if _, err := db.ExecContext(ctx, `INSERT OR IGNORE INTO gb_relationships (cid, mid) VALUES (?, ?)`, cid, mid); err != nil {
 				if _, err = db.ExecContext(ctx, `INSERT IGNORE INTO gb_relationships (cid, mid) VALUES (?, ?)`, cid, mid); err != nil {
 					return err
 				}
@@ -642,6 +680,10 @@ func (s *ContentService) ensureTag(ctx context.Context, name string) (int64, err
 	metaSlug, err := s.uniqueMetaSlug(ctx, name)
 	if err != nil {
 		return 0, err
+	}
+	if s.db.Dialect() == models.DialectPostgres {
+		err = s.db.QueryRowContext(ctx, `INSERT INTO gb_metas (name, slug, type, description, count, sortOrder, parent) VALUES (?, ?, 'tag', '', 0, 0, 0) RETURNING mid`, name, metaSlug).Scan(&id)
+		return id, err
 	}
 	res, err := s.db.ExecContext(ctx, `INSERT INTO gb_metas (name, slug, type, description, count, sortOrder, parent) VALUES (?, ?, 'tag', '', 0, 0, 0)`, name, metaSlug)
 	if err != nil {

@@ -37,20 +37,23 @@ import (
 	"goblog/core/services"
 	"goblog/core/validate"
 	"goblog/pkg/auth"
+	compathttp "goblog/pkg/httpclient"
 	"goblog/pkg/i18n"
 	"goblog/pkg/render"
 )
 
 type App struct {
-	Contents  *services.ContentService
-	Metas     *services.MetaService
-	Comments  *services.CommentService
-	Users     *services.UserService
-	Options   *services.OptionService
-	Plugins   *plugin.Manager
-	UploadDir string
-	loginMu   sync.Mutex
-	loginNext map[string]time.Time
+	Contents   *services.ContentService
+	Metas      *services.MetaService
+	Comments   *services.CommentService
+	Users      *services.UserService
+	Options    *services.OptionService
+	Plugins    *plugin.Manager
+	UploadDir  string
+	HTTPClient *compathttp.Client
+	HTTPFetch  func(context.Context, string) (string, error)
+	loginMu    sync.Mutex
+	loginNext  map[string]time.Time
 }
 
 type contextKey string
@@ -62,7 +65,8 @@ func New(contents *services.ContentService, metas *services.MetaService, comment
 	if uploadDir == "" {
 		uploadDir = filepath.Join("data", "uploads")
 	}
-	return &App{Contents: contents, Metas: metas, Comments: comments, Users: users, Options: options, Plugins: plugins, UploadDir: uploadDir, loginNext: map[string]time.Time{}}
+	httpClient, _ := compathttp.New(compathttp.Config{Timeout: 5 * time.Second, UserAgent: "GoBlog/1.0", Retries: 1})
+	return &App{Contents: contents, Metas: metas, Comments: comments, Users: users, Options: options, Plugins: plugins, UploadDir: uploadDir, HTTPClient: httpClient, loginNext: map[string]time.Time{}}
 }
 
 func (a *App) Handler() http.Handler {
@@ -86,37 +90,40 @@ func (a *App) Handler() http.Handler {
 	mux.HandleFunc("/install", a.installWizard)
 
 	adminRoutes := map[string]http.HandlerFunc{
-		"/admin":                    a.adminDashboard,
-		"/admin/":                   a.adminDashboard,
-		"/admin/posts":              a.adminPosts,
-		"/admin/posts/":             a.adminPostRoutes,
-		"/admin/pages":              a.adminPages,
-		"/admin/pages/":             a.adminPageRoutes,
-		"/admin/categories":         a.adminCategories,
-		"/admin/categories/":        a.adminCategoryRoutes,
-		"/admin/tags":               a.adminTags,
-		"/admin/tags/":              a.adminTagRoutes,
-		"/admin/comments":           a.adminComments,
-		"/admin/comments/":          a.adminCommentRoutes,
-		"/admin/users":              a.adminUsers,
-		"/admin/users/":             a.adminUserRoutes,
-		"/admin/profile":            a.adminProfile,
-		"/admin/options":            a.adminOptionsGeneral,
-		"/admin/options/general":    a.adminOptionsGeneral,
-		"/admin/options/reading":    a.adminOptionsReading,
-		"/admin/options/discussion": a.adminOptionsDiscussion,
-		"/admin/options/permalink":  a.adminOptionsPermalink,
-		"/admin/themes":             a.adminThemes,
-		"/admin/themes/":            a.adminThemeRoutes,
-		"/admin/plugins":            a.adminPlugins,
-		"/admin/plugins/":           a.adminPluginRoutes,
-		"/admin/medias":             a.adminMedias,
-		"/admin/medias/":            a.adminMediaRoutes,
-		"/admin/backup":             a.adminBackup,
-		"/admin/upgrade":            a.adminUpgrade,
-		"/admin/autosave":           a.adminAutosave,
-		"/admin/tags/search":        a.adminTagSearch,
-		"/admin/theme-editor":       a.adminPlaceholder("主题编辑器", "对应 Typecho 的 theme-editor.php。直接编辑文件需要额外权限和审计，当前先保留入口。"),
+		"/admin":                      a.adminDashboard,
+		"/admin/":                     a.adminDashboard,
+		"/admin/posts":                a.adminPosts,
+		"/admin/posts/":               a.adminPostRoutes,
+		"/admin/pages":                a.adminPages,
+		"/admin/pages/":               a.adminPageRoutes,
+		"/admin/categories":           a.adminCategories,
+		"/admin/categories/":          a.adminCategoryRoutes,
+		"/admin/tags":                 a.adminTags,
+		"/admin/tags/":                a.adminTagRoutes,
+		"/admin/comments":             a.adminComments,
+		"/admin/comments/":            a.adminCommentRoutes,
+		"/admin/users":                a.adminUsers,
+		"/admin/users/":               a.adminUserRoutes,
+		"/admin/profile":              a.adminProfile,
+		"/admin/options":              a.adminOptionsGeneral,
+		"/admin/options/general":      a.adminOptionsGeneral,
+		"/admin/options/reading":      a.adminOptionsReading,
+		"/admin/options/discussion":   a.adminOptionsDiscussion,
+		"/admin/options/permalink":    a.adminOptionsPermalink,
+		"/admin/themes":               a.adminThemes,
+		"/admin/themes/":              a.adminThemeRoutes,
+		"/admin/plugins":              a.adminPlugins,
+		"/admin/plugins/":             a.adminPluginRoutes,
+		"/admin/medias":               a.adminMedias,
+		"/admin/medias/":              a.adminMediaRoutes,
+		"/admin/backup":               a.adminBackup,
+		"/admin/upgrade":              a.adminUpgrade,
+		"/admin/autosave":             a.adminAutosave,
+		"/admin/tags/search":          a.adminTagSearch,
+		"/admin/ajax/tags":            a.adminTagSearch,
+		"/admin/ajax/preferences":     a.adminAjaxPreferences,
+		"/admin/ajax/remote-callback": a.adminAjaxRemoteCallback,
+		"/admin/theme-editor":         a.adminPlaceholder("主题编辑器", "对应 Typecho 的 theme-editor.php。直接编辑文件需要额外权限和审计，当前先保留入口。"),
 	}
 	for route, handler := range adminRoutes {
 		mux.HandleFunc(route, a.requireAdmin(handler))
@@ -141,6 +148,12 @@ func (a *App) Handler() http.Handler {
 	mux.HandleFunc("/feed.xml", a.frontRSS)
 	mux.HandleFunc("/atom.xml", a.frontAtom)
 	mux.HandleFunc("/comments/feed.xml", a.frontCommentRSS)
+	mux.HandleFunc("/xmlrpc.php", a.xmlRPC)
+	mux.HandleFunc("/action/xmlrpc", a.xmlRPC)
+	mux.HandleFunc("/action/pingback", a.xmlRPC)
+	mux.HandleFunc("/trackback/", a.trackback)
+	mux.HandleFunc("/rsd.xml", a.rsdXML)
+	mux.HandleFunc("/wlwmanifest.xml", a.wlwManifest)
 	mux.HandleFunc("/comment", a.frontComment)
 	mux.HandleFunc("/preview/", a.frontPreview)
 	mux.HandleFunc("/post/", a.frontPost)
@@ -752,12 +765,13 @@ func (a *App) adminComments(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	cid, _ := strconv.ParseInt(r.URL.Query().Get("cid"), 10, 64)
-	comments, err := a.Comments.List(r.Context(), r.URL.Query().Get("status"), r.URL.Query().Get("keywords"), cid)
+	typ := strings.TrimSpace(r.URL.Query().Get("type"))
+	comments, err := a.Comments.ListFiltered(r.Context(), r.URL.Query().Get("status"), r.URL.Query().Get("keywords"), cid, typ)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	a.renderAdmin(w, r, "comments.html", map[string]any{"Title": "评论", "Comments": comments, "Status": r.URL.Query().Get("status"), "Keywords": r.URL.Query().Get("keywords"), "CID": cid})
+	a.renderAdmin(w, r, "comments.html", map[string]any{"Title": "评论", "Comments": comments, "Status": r.URL.Query().Get("status"), "Keywords": r.URL.Query().Get("keywords"), "CID": cid, "Type": typ})
 }
 
 func (a *App) adminCommentRoutes(w http.ResponseWriter, r *http.Request) {
@@ -1522,6 +1536,67 @@ func (a *App) adminTagSearch(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	_ = json.NewEncoder(w).Encode(out)
+}
+
+func (a *App) adminAjaxPreferences(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w, http.MethodPost)
+		return
+	}
+	if !a.requireRole(w, r, "contributor") {
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	user, ok := a.currentUser(r)
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	allowed := map[string]bool{
+		"editor_mode":       true,
+		"editor_fullscreen": true,
+		"editor_split":      true,
+		"content_form_tab":  true,
+	}
+	for key, values := range r.Form {
+		if strings.HasPrefix(key, "_") || !allowed[key] || len(values) == 0 {
+			continue
+		}
+		if err := a.Options.SetForUser(r.Context(), "pref_"+key, values[len(values)-1], user.UID); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+	}
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	_ = json.NewEncoder(w).Encode(map[string]any{"ok": true})
+}
+
+func (a *App) adminAjaxRemoteCallback(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodPost {
+		methodNotAllowed(w, http.MethodGet+", "+http.MethodPost)
+		return
+	}
+	if !a.requireRole(w, r, "administrator") {
+		return
+	}
+	rawURL := strings.TrimSpace(r.FormValue("url"))
+	if rawURL == "" {
+		rawURL = strings.TrimSpace(r.URL.Query().Get("url"))
+	}
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	if rawURL == "" {
+		_ = json.NewEncoder(w).Encode(map[string]any{"ok": false, "error": "url is required"})
+		return
+	}
+	body, err := a.fetchExternalText(r.Context(), rawURL)
+	if err != nil {
+		_ = json.NewEncoder(w).Encode(map[string]any{"ok": false, "error": "callback unavailable"})
+		return
+	}
+	_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "bytes": len(body)})
 }
 
 func (a *App) adminMedias(w http.ResponseWriter, r *http.Request) {
@@ -2800,13 +2875,18 @@ func importSections(r *http.Request) importSectionSet {
 func (a *App) backupPlan(ctx context.Context, payload backupData, sections importSectionSet) (backupImportPlan, error) {
 	var plan backupImportPlan
 	db := a.Contents.DB()
+	dialect := a.Contents.Dialect()
 	if sections.Options {
+		optionExistsQuery := `SELECT 1 FROM gb_options WHERE name = ? AND user = 0`
+		if dialect == models.DialectPostgres {
+			optionExistsQuery = `SELECT 1 FROM gb_options WHERE name = ? AND "user" = 0`
+		}
 		for key := range payload.Options {
 			if key == "" {
 				plan.Options.Skip++
 				continue
 			}
-			exists, err := dbExists(ctx, db, `SELECT 1 FROM gb_options WHERE name = ? AND user = 0`, key)
+			exists, err := dbExists(ctx, db, dialect, optionExistsQuery, key)
 			if err != nil {
 				return plan, err
 			}
@@ -2819,14 +2899,14 @@ func (a *App) backupPlan(ctx context.Context, payload backupData, sections impor
 	}
 	if sections.Users {
 		for _, user := range payload.Users {
-			if err := addSkipPlan(ctx, db, &plan.Users, user.UID, `SELECT 1 FROM gb_users WHERE uid = ?`); err != nil {
+			if err := addSkipPlan(ctx, db, dialect, &plan.Users, user.UID, `SELECT 1 FROM gb_users WHERE uid = ?`); err != nil {
 				return plan, err
 			}
 		}
 	}
 	if sections.Metas {
 		for _, meta := range payload.Metas {
-			if err := addSkipPlan(ctx, db, &plan.Metas, meta.MID, `SELECT 1 FROM gb_metas WHERE mid = ?`); err != nil {
+			if err := addSkipPlan(ctx, db, dialect, &plan.Metas, meta.MID, `SELECT 1 FROM gb_metas WHERE mid = ?`); err != nil {
 				return plan, err
 			}
 		}
@@ -2834,14 +2914,14 @@ func (a *App) backupPlan(ctx context.Context, payload backupData, sections impor
 	for _, content := range payload.Contents {
 		if content.Type == models.ContentTypeAttach {
 			if sections.Media {
-				if err := addSkipPlan(ctx, db, &plan.Media, content.CID, `SELECT 1 FROM gb_contents WHERE cid = ?`); err != nil {
+				if err := addSkipPlan(ctx, db, dialect, &plan.Media, content.CID, `SELECT 1 FROM gb_contents WHERE cid = ?`); err != nil {
 					return plan, err
 				}
 			}
 			continue
 		}
 		if sections.Contents {
-			if err := addSkipPlan(ctx, db, &plan.Contents, content.CID, `SELECT 1 FROM gb_contents WHERE cid = ?`); err != nil {
+			if err := addSkipPlan(ctx, db, dialect, &plan.Contents, content.CID, `SELECT 1 FROM gb_contents WHERE cid = ?`); err != nil {
 				return plan, err
 			}
 		}
@@ -2852,7 +2932,7 @@ func (a *App) backupPlan(ctx context.Context, payload backupData, sections impor
 				plan.Relationships.Skip++
 				continue
 			}
-			exists, err := dbExists(ctx, db, `SELECT 1 FROM gb_relationships WHERE cid = ? AND mid = ?`, rel.CID, rel.MID)
+			exists, err := dbExists(ctx, db, dialect, `SELECT 1 FROM gb_relationships WHERE cid = ? AND mid = ?`, rel.CID, rel.MID)
 			if err != nil {
 				return plan, err
 			}
@@ -2865,14 +2945,14 @@ func (a *App) backupPlan(ctx context.Context, payload backupData, sections impor
 	}
 	if sections.Comments {
 		for _, comment := range payload.Comments {
-			if err := addSkipPlan(ctx, db, &plan.Comments, comment.COID, `SELECT 1 FROM gb_comments WHERE coid = ?`); err != nil {
+			if err := addSkipPlan(ctx, db, dialect, &plan.Comments, comment.COID, `SELECT 1 FROM gb_comments WHERE coid = ?`); err != nil {
 				return plan, err
 			}
 		}
 	}
 	if sections.Fields {
 		for _, field := range payload.Fields {
-			if err := addSkipPlan(ctx, db, &plan.Fields, field.FID, `SELECT 1 FROM gb_fields WHERE fid = ?`); err != nil {
+			if err := addSkipPlan(ctx, db, dialect, &plan.Fields, field.FID, `SELECT 1 FROM gb_fields WHERE fid = ?`); err != nil {
 				return plan, err
 			}
 		}
@@ -2889,9 +2969,10 @@ func (a *App) importBackupPayload(ctx context.Context, payload backupData, secti
 		return err
 	}
 	defer tx.Rollback()
+	dialect := a.Contents.Dialect()
 	if sections.Options {
 		for key, value := range payload.Options {
-			if err := txUpsertOption(ctx, tx, key, value); err != nil {
+			if err := txUpsertOption(ctx, tx, dialect, key, value); err != nil {
 				return err
 			}
 		}
@@ -2904,9 +2985,10 @@ func (a *App) importBackupPayload(ctx context.Context, payload backupData, secti
 			if user.Password == "" {
 				continue
 			}
-			if err := txInsertIgnore(ctx, tx,
+			if err := txInsertIgnore(ctx, tx, dialect,
 				`INSERT OR IGNORE INTO gb_users (uid, name, password, mail, url, screenName, created, activated, logged, role, authCode) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 				`INSERT IGNORE INTO gb_users (uid, name, password, mail, url, screenName, created, activated, logged, role, authCode) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				`INSERT INTO gb_users (uid, name, password, mail, url, screenName, created, activated, logged, role, authCode) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (uid) DO NOTHING`,
 				user.UID, user.Name, user.Password, user.Mail, user.URL, user.ScreenName, user.Created, user.Activated, user.Logged, user.Role, user.AuthCode); err != nil {
 				return err
 			}
@@ -2917,9 +2999,10 @@ func (a *App) importBackupPayload(ctx context.Context, payload backupData, secti
 			if meta.MID <= 0 || meta.Type == "" {
 				continue
 			}
-			if err := txInsertIgnore(ctx, tx,
+			if err := txInsertIgnore(ctx, tx, dialect,
 				`INSERT OR IGNORE INTO gb_metas (mid, name, slug, type, description, count, sortOrder, parent) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
 				`INSERT IGNORE INTO gb_metas (mid, name, slug, type, description, count, sortOrder, parent) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+				`INSERT INTO gb_metas (mid, name, slug, type, description, count, sortOrder, parent) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (mid) DO NOTHING`,
 				meta.MID, meta.Name, meta.Slug, meta.Type, meta.Description, meta.Count, meta.SortOrder, meta.Parent); err != nil {
 				return err
 			}
@@ -2939,18 +3022,20 @@ func (a *App) importBackupPayload(ctx context.Context, payload backupData, secti
 			if content.Type != models.ContentTypeAttach && !sections.Contents {
 				continue
 			}
-			if err := txInsertIgnore(ctx, tx,
+			if err := txInsertIgnore(ctx, tx, dialect,
 				`INSERT OR IGNORE INTO gb_contents (cid, title, slug, created, modified, text, sortOrder, authorId, template, type, status, password, commentsNum, allowComment, allowPing, allowFeed, parent) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 				`INSERT IGNORE INTO gb_contents (cid, title, slug, created, modified, text, sortOrder, authorId, template, type, status, password, commentsNum, allowComment, allowPing, allowFeed, parent) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				`INSERT INTO gb_contents (cid, title, slug, created, modified, text, sortOrder, authorId, template, type, status, password, commentsNum, allowComment, allowPing, allowFeed, parent) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (cid) DO NOTHING`,
 				content.CID, content.Title, content.Slug, content.Created, content.Modified, content.Text, content.SortOrder, content.AuthorID, content.Template, content.Type, content.Status, content.Password, content.CommentsNum, content.AllowComment, content.AllowPing, content.AllowFeed, content.Parent); err != nil {
 				return err
 			}
 		}
 		if sections.Metas {
 			for _, rel := range payload.Relationships {
-				if err := txInsertIgnore(ctx, tx,
+				if err := txInsertIgnore(ctx, tx, dialect,
 					`INSERT OR IGNORE INTO gb_relationships (cid, mid) VALUES (?, ?)`,
 					`INSERT IGNORE INTO gb_relationships (cid, mid) VALUES (?, ?)`,
+					`INSERT INTO gb_relationships (cid, mid) VALUES (?, ?) ON CONFLICT (cid, mid) DO NOTHING`,
 					rel.CID, rel.MID); err != nil {
 					return err
 				}
@@ -2959,9 +3044,10 @@ func (a *App) importBackupPayload(ctx context.Context, payload backupData, secti
 	}
 	if sections.Comments {
 		for _, comment := range payload.Comments {
-			if err := txInsertIgnore(ctx, tx,
+			if err := txInsertIgnore(ctx, tx, dialect,
 				`INSERT OR IGNORE INTO gb_comments (coid, cid, created, author, authorId, ownerId, mail, url, ip, agent, text, type, status, parent) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 				`INSERT IGNORE INTO gb_comments (coid, cid, created, author, authorId, ownerId, mail, url, ip, agent, text, type, status, parent) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				`INSERT INTO gb_comments (coid, cid, created, author, authorId, ownerId, mail, url, ip, agent, text, type, status, parent) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (coid) DO NOTHING`,
 				comment.COID, comment.CID, comment.Created, comment.Author, comment.AuthorID, comment.OwnerID, comment.Mail, comment.URL, comment.IP, comment.Agent, comment.Text, comment.Type, comment.Status, comment.Parent); err != nil {
 				return err
 			}
@@ -2969,9 +3055,10 @@ func (a *App) importBackupPayload(ctx context.Context, payload backupData, secti
 	}
 	if sections.Fields {
 		for _, field := range payload.Fields {
-			if err := txInsertIgnore(ctx, tx,
+			if err := txInsertIgnore(ctx, tx, dialect,
 				`INSERT OR IGNORE INTO gb_fields (fid, cid, name, type, strValue, intValue, floatValue) VALUES (?, ?, ?, ?, ?, ?, ?)`,
 				`INSERT IGNORE INTO gb_fields (fid, cid, name, type, strValue, intValue, floatValue) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+				`INSERT INTO gb_fields (fid, cid, name, type, strValue, intValue, floatValue) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT (fid) DO NOTHING`,
 				field.FID, field.CID, field.Name, field.Type, field.StrValue, field.IntValue, field.FloatValue); err != nil {
 				return err
 			}
@@ -2986,7 +3073,11 @@ func (a *App) importBackupPayload(ctx context.Context, payload backupData, secti
 	return tx.Commit()
 }
 
-func txUpsertOption(ctx context.Context, tx *sql.Tx, name, value string) error {
+func txUpsertOption(ctx context.Context, tx *sql.Tx, dialect models.Dialect, name, value string) error {
+	if dialect == models.DialectPostgres {
+		_, err := tx.ExecContext(ctx, `INSERT INTO gb_options (name, "user", value) VALUES ($1, 0, $2) ON CONFLICT(name, "user") DO UPDATE SET value = EXCLUDED.value`, name, value)
+		return err
+	}
 	_, err := tx.ExecContext(ctx, `INSERT OR REPLACE INTO gb_options (name, user, value) VALUES (?, 0, ?)`, name, value)
 	if err == nil {
 		return nil
@@ -2995,7 +3086,11 @@ func txUpsertOption(ctx context.Context, tx *sql.Tx, name, value string) error {
 	return err
 }
 
-func txInsertIgnore(ctx context.Context, tx *sql.Tx, sqliteStmt, mysqlStmt string, args ...any) error {
+func txInsertIgnore(ctx context.Context, tx *sql.Tx, dialect models.Dialect, sqliteStmt, mysqlStmt, postgresStmt string, args ...any) error {
+	if dialect == models.DialectPostgres {
+		_, err := tx.ExecContext(ctx, models.Rebind(dialect, postgresStmt), args...)
+		return err
+	}
 	_, err := tx.ExecContext(ctx, sqliteStmt, args...)
 	if err == nil {
 		return nil
@@ -3004,12 +3099,12 @@ func txInsertIgnore(ctx context.Context, tx *sql.Tx, sqliteStmt, mysqlStmt strin
 	return err
 }
 
-func addSkipPlan(ctx context.Context, db *sql.DB, count *backupPlanCount, id int64, query string) error {
+func addSkipPlan(ctx context.Context, db *sql.DB, dialect models.Dialect, count *backupPlanCount, id int64, query string) error {
 	if id <= 0 {
 		count.Skip++
 		return nil
 	}
-	exists, err := dbExists(ctx, db, query, id)
+	exists, err := dbExists(ctx, db, dialect, query, id)
 	if err != nil {
 		return err
 	}
@@ -3021,9 +3116,9 @@ func addSkipPlan(ctx context.Context, db *sql.DB, count *backupPlanCount, id int
 	return nil
 }
 
-func dbExists(ctx context.Context, db *sql.DB, query string, args ...any) (bool, error) {
+func dbExists(ctx context.Context, db *sql.DB, dialect models.Dialect, query string, args ...any) (bool, error) {
 	var one int
-	err := db.QueryRowContext(ctx, query, args...).Scan(&one)
+	err := db.QueryRowContext(ctx, models.Rebind(dialect, query), args...).Scan(&one)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
 	}
@@ -3607,6 +3702,11 @@ func (a *App) renderThemeStatus(w http.ResponseWriter, r *http.Request, page str
 		if _, ok := data["FeedPath"]; !ok {
 			data["FeedPath"] = "/feed.xml"
 		}
+		data["XMLRPCEnabled"] = optionBool(a.option(r.Context(), "enable_xmlrpc", "1"))
+		data["PingbackEnabled"] = optionBool(a.option(r.Context(), "enable_pingback", "1"))
+		data["XMLRPCURL"] = baseURL + "/xmlrpc.php"
+		data["RSDURL"] = baseURL + "/rsd.xml"
+		data["WLWManifestURL"] = baseURL + "/wlwmanifest.xml"
 	}
 	if out, err := a.Plugins.ApplyActive(r.Context(), plugin.HookFrontendHead, ""); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)

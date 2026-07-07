@@ -13,7 +13,7 @@ import (
 )
 
 type UserService struct {
-	db *sql.DB
+	db DB
 }
 
 type SaveUserInput struct {
@@ -25,11 +25,12 @@ type SaveUserInput struct {
 	Role       string
 }
 
-func NewUserService(db *sql.DB) *UserService {
-	return &UserService{db: db}
+func NewUserService(db any) *UserService {
+	return &UserService{db: WrapDB(db)}
 }
 
 func (s *UserService) EnsureDefaultAdmin(ctx context.Context, name, password, mail string) error {
+	ctx = WithWriter(ctx)
 	count, err := s.Count(ctx)
 	if err != nil {
 		return err
@@ -57,6 +58,7 @@ func (s *UserService) Count(ctx context.Context) (int, error) {
 }
 
 func (s *UserService) Authenticate(ctx context.Context, name, password string) (models.User, error) {
+	ctx = WithWriter(ctx)
 	user, err := s.ByName(ctx, name)
 	if err != nil {
 		return models.User{}, err
@@ -142,6 +144,7 @@ func (s *UserService) List(ctx context.Context, keywords string) ([]models.User,
 }
 
 func (s *UserService) Save(ctx context.Context, input SaveUserInput, id int64) (int64, error) {
+	ctx = WithWriter(ctx)
 	input.Name = strings.TrimSpace(input.Name)
 	if input.Name == "" {
 		return 0, errors.New("name is required")
@@ -172,6 +175,14 @@ func (s *UserService) Save(ctx context.Context, input SaveUserInput, id int64) (
 		return 0, err
 	}
 	now := time.Now().Unix()
+	if s.db.Dialect() == models.DialectPostgres {
+		var newID int64
+		err = s.db.QueryRowContext(ctx, `
+			INSERT INTO gb_users (name, password, mail, url, screenName, created, activated, logged, role, authCode)
+			VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, '') RETURNING uid
+		`, input.Name, string(hash), input.Mail, input.URL, input.ScreenName, now, now, input.Role).Scan(&newID)
+		return newID, err
+	}
 	res, err := s.db.ExecContext(ctx, `
 		INSERT INTO gb_users (name, password, mail, url, screenName, created, activated, logged, role, authCode)
 		VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, '')
@@ -183,6 +194,7 @@ func (s *UserService) Save(ctx context.Context, input SaveUserInput, id int64) (
 }
 
 func (s *UserService) Delete(ctx context.Context, id int64) error {
+	ctx = WithWriter(ctx)
 	var count int
 	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM gb_users`).Scan(&count); err != nil {
 		return err
@@ -195,6 +207,7 @@ func (s *UserService) Delete(ctx context.Context, id int64) error {
 }
 
 func (s *UserService) ChangePassword(ctx context.Context, id int64, password string) error {
+	ctx = WithWriter(ctx)
 	if password == "" {
 		return nil
 	}

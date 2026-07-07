@@ -8,6 +8,12 @@
     <mdui-menu-item value="spam">垃圾</mdui-menu-item>
     <mdui-menu-item value="all">全部</mdui-menu-item>
   </mdui-select>
+  <mdui-select name="type" label="类型" value="{{if .Type}}{{.Type}}{{else}}all{{end}}">
+    <mdui-menu-item value="all">全部</mdui-menu-item>
+    <mdui-menu-item value="comment">评论</mdui-menu-item>
+    <mdui-menu-item value="pingback">Pingback</mdui-menu-item>
+    <mdui-menu-item value="trackback">Trackback</mdui-menu-item>
+  </mdui-select>
   {{if .CID}}<input type="hidden" name="cid" value="{{.CID}}">{{end}}
   <mdui-button type="submit" variant="outlined">筛选</mdui-button>
 </form>
@@ -24,7 +30,7 @@
     <tbody>{{range .Comments}}<tr>
       <td><mdui-checkbox name="id" value="{{.COID}}" aria-label="选择评论"></mdui-checkbox></td>
       <td><strong>{{.Author}}</strong><br><span class="muted">{{.Mail}} {{.IP}}</span></td>
-      <td>{{.Text}}<br><span class="muted">于 {{.Title}}</span></td>
+      <td>{{.Text}}<br><span class="muted">{{.Type}} 于 {{.Title}}</span></td>
       <td>{{.Status}}</td><td>{{date .Created}}</td>
       <td><div class="row-actions">
         <mdui-button type="submit" formaction="/admin/comments/{{.COID}}/mark" name="status" value="approved" variant="text">通过</mdui-button>

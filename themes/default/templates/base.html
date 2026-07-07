@@ -19,6 +19,11 @@
   <title>{{if .Post}}{{.Post.Title}} - {{end}}{{index .Site "site_title"}}</title>
   <link rel="alternate" type="application/rss+xml" title="{{index .Site "site_title"}}" href="{{.FeedPath}}">
   <link rel="alternate" type="application/atom+xml" title="{{index .Site "site_title"}}" href="/atom.xml">
+  {{if .XMLRPCEnabled}}
+  <link rel="EditURI" type="application/rsd+xml" title="RSD" href="{{.RSDURL}}">
+  <link rel="wlwmanifest" type="application/wlwmanifest+xml" href="{{.WLWManifestURL}}">
+  {{end}}
+  {{if .PingbackEnabled}}<link rel="pingback" href="{{.XMLRPCURL}}">{{end}}
   <link rel="stylesheet" href="/theme/default/mdui.css">
   <link rel="stylesheet" href="/theme/default/theme.css">
   <script src="/theme/default/mdui.global.js"></script>

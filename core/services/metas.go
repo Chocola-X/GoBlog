@@ -12,7 +12,7 @@ import (
 )
 
 type MetaService struct {
-	db *sql.DB
+	db DB
 }
 
 type SaveMetaInput struct {
@@ -23,8 +23,8 @@ type SaveMetaInput struct {
 	Parent      int64
 }
 
-func NewMetaService(db *sql.DB) *MetaService {
-	return &MetaService{db: db}
+func NewMetaService(db any) *MetaService {
+	return &MetaService{db: WrapDB(db)}
 }
 
 func (s *MetaService) List(ctx context.Context, typ string) ([]models.Meta, error) {
@@ -93,6 +93,7 @@ func (s *MetaService) BySlug(ctx context.Context, typ, slug string) (models.Meta
 }
 
 func (s *MetaService) Save(ctx context.Context, input SaveMetaInput, id int64) (int64, error) {
+	ctx = WithWriter(ctx)
 	name := strings.TrimSpace(input.Name)
 	if name == "" {
 		return 0, errors.New("name is required")
@@ -105,6 +106,14 @@ func (s *MetaService) Save(ctx context.Context, input SaveMetaInput, id int64) (
 		_, err = s.db.ExecContext(ctx, `UPDATE gb_metas SET name = ?, slug = ?, description = ?, parent = ? WHERE mid = ?`, name, metaSlug, input.Description, input.Parent, id)
 		return id, err
 	}
+	if s.db.Dialect() == models.DialectPostgres {
+		var newID int64
+		err = s.db.QueryRowContext(ctx, `
+			INSERT INTO gb_metas (name, slug, type, description, count, sortOrder, parent)
+			VALUES (?, ?, ?, ?, 0, 0, ?) RETURNING mid
+		`, name, metaSlug, input.Type, input.Description, input.Parent).Scan(&newID)
+		return newID, err
+	}
 	res, err := s.db.ExecContext(ctx, `
 		INSERT INTO gb_metas (name, slug, type, description, count, sortOrder, parent)
 		VALUES (?, ?, ?, ?, 0, 0, ?)
@@ -116,6 +125,7 @@ func (s *MetaService) Save(ctx context.Context, input SaveMetaInput, id int64) (
 }
 
 func (s *MetaService) Delete(ctx context.Context, id int64) error {
+	ctx = WithWriter(ctx)
 	if _, err := s.db.ExecContext(ctx, `DELETE FROM gb_relationships WHERE mid = ?`, id); err != nil {
 		return err
 	}
@@ -127,6 +137,7 @@ func (s *MetaService) Delete(ctx context.Context, id int64) error {
 }
 
 func (s *MetaService) EnsureDefaultCategory(ctx context.Context) error {
+	ctx = WithWriter(ctx)
 	var count int
 	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM gb_metas WHERE type = 'category'`).Scan(&count); err != nil {
 		return err
@@ -139,6 +150,7 @@ func (s *MetaService) EnsureDefaultCategory(ctx context.Context) error {
 }
 
 func (s *MetaService) RefreshCounts(ctx context.Context) error {
+	ctx = WithWriter(ctx)
 	_, err := s.db.ExecContext(ctx, `
 		UPDATE gb_metas SET count = (
 			SELECT COUNT(*) FROM gb_relationships r

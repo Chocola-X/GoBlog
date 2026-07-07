@@ -9,11 +9,11 @@ import (
 )
 
 type OptionService struct {
-	db *sql.DB
+	db DB
 }
 
-func NewOptionService(db *sql.DB) *OptionService {
-	return &OptionService{db: db}
+func NewOptionService(db any) *OptionService {
+	return &OptionService{db: WrapDB(db)}
 }
 
 func (s *OptionService) Get(ctx context.Context, name string) (string, error) {
@@ -23,6 +23,9 @@ func (s *OptionService) Get(ctx context.Context, name string) (string, error) {
 func (s *OptionService) GetForUser(ctx context.Context, name string, userID int64) (string, error) {
 	var value string
 	err := s.db.QueryRowContext(ctx, `SELECT value FROM gb_options WHERE name = ? AND user = ?`, name, userID).Scan(&value)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		err = s.db.QueryRowContext(ctx, `SELECT value FROM gb_options WHERE name = $1 AND "user" = $2`, name, userID).Scan(&value)
+	}
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", nil
 	}
@@ -34,6 +37,7 @@ func (s *OptionService) Set(ctx context.Context, name, value string) error {
 }
 
 func (s *OptionService) SetForUser(ctx context.Context, name, value string, userID int64) error {
+	ctx = WithWriter(ctx)
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO gb_options (name, user, value) VALUES (?, ?, ?)
 		ON CONFLICT(name, user) DO UPDATE SET value = excluded.value
@@ -45,6 +49,13 @@ func (s *OptionService) SetForUser(ctx context.Context, name, value string, user
 	_, err = s.db.ExecContext(ctx, `
 		INSERT INTO gb_options (name, user, value) VALUES (?, ?, ?)
 		ON DUPLICATE KEY UPDATE value = VALUES(value)
+	`, name, userID, value)
+	if err == nil {
+		return nil
+	}
+	_, err = s.db.ExecContext(ctx, `
+		INSERT INTO gb_options (name, "user", value) VALUES ($1, $2, $3)
+		ON CONFLICT(name, "user") DO UPDATE SET value = EXCLUDED.value
 	`, name, userID, value)
 	return err
 }
@@ -99,6 +110,15 @@ func (s *OptionService) EnsureDefaults(ctx context.Context) error {
 		"upload_max_size":               "10485760",
 		"upload_replace_same_ext_only":  "1",
 		"attachment_delete_policy":      "keep",
+		"enable_xmlrpc":                 "1",
+		"enable_pingback":               "1",
+		"enable_trackback":              "1",
+		"http_client_timeout":           "5",
+		"http_client_user_agent":        "GoBlog/1.0",
+		"http_client_proxy":             "",
+		"http_client_retries":           "1",
+		"db_read_dsn":                   "",
+		"db_write_dsn":                  "",
 		"permalink_post":                "/post/{slug}",
 		"permalink_page":                "/page/{slug}",
 		"permalink_category":            "/category/{slug}",
@@ -133,6 +153,9 @@ func (s *OptionService) EnsureDefaults(ctx context.Context) error {
 
 func (s *OptionService) All(ctx context.Context) (map[string]string, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT name, value FROM gb_options WHERE user = 0`)
+	if err != nil {
+		rows, err = s.db.QueryContext(ctx, `SELECT name, value FROM gb_options WHERE "user" = 0`)
+	}
 	if err != nil {
 		return nil, err
 	}
