@@ -109,6 +109,7 @@
     initEditorUpload(root);
     initCopyButtons(root);
     initSchemaForm(root);
+    initAdminNotices(root);
   }
 
   function ensureCSRF(root) {
@@ -435,6 +436,31 @@
     });
   }
 
+  function initAdminNotices(root) {
+    if (!document.body.classList.contains("admin-page")) {
+      return;
+    }
+    query(root, ".notice").forEach(function (notice) {
+      if (notice.dataset.adminNoticeHandled || !isToastNotice(notice)) {
+        return;
+      }
+      notice.dataset.adminNoticeHandled = "1";
+      showMessage(notice.textContent.trim(), { type: notice.classList.contains("danger") ? "error" : "info" });
+      notice.remove();
+    });
+  }
+
+  function isToastNotice(notice) {
+    if (!notice || notice.querySelector("form, table, mdui-button, button, a")) {
+      return false;
+    }
+    var text = notice.textContent.trim();
+    if (!text || text.length > 140 || text.indexOf("导入预览") !== -1) {
+      return false;
+    }
+    return true;
+  }
+
   function initAdminPjax() {
     if (pjaxReady) {
       return;
@@ -567,7 +593,8 @@
     pjaxVisit(url.href, {
       method: method.toUpperCase(),
       body: params,
-      submitter: submitter
+      submitter: submitter,
+      preserveMainScroll: shouldPreserveFormScroll(form, url)
     });
   }
 
@@ -582,6 +609,9 @@
     }
     pjaxAbort = new AbortController();
     document.body.classList.add("admin-pjax-loading");
+    if (options.preserveMainScroll) {
+      options.mainScrollTop = adminMainScrollTop();
+    }
     setSubmitterLoading(options.submitter, true);
 
     fetch(url, {
@@ -630,7 +660,11 @@
     replaceChildren(currentMain, nextMain);
     updateDocumentMeta(doc);
     updateHistory(finalURL, options);
-    scrollAdminMainToTop();
+    if (options && options.preserveMainScroll) {
+      restoreAdminMainScroll(options.mainScrollTop || 0);
+    } else {
+      scrollAdminMainToTop();
+    }
     applyAdminAppearance();
     initAdminChrome();
     ensureCSRF(document);
@@ -734,6 +768,23 @@
     }
   }
 
+  function adminMainScrollTop() {
+    var scroller = document.querySelector(".admin-layout-main");
+    return scroller ? scroller.scrollTop : window.scrollY || 0;
+  }
+
+  function restoreAdminMainScroll(scrollTop) {
+    var scroller = document.querySelector(".admin-layout-main");
+    if (scroller) {
+      scroller.scrollTop = scrollTop;
+      window.requestAnimationFrame(function () {
+        scroller.scrollTop = scrollTop;
+      });
+      return;
+    }
+    window.scrollTo(0, scrollTop);
+  }
+
   function confirmNavigation() {
     if (!adminDirty) {
       return true;
@@ -784,6 +835,14 @@
       return;
     }
     data.append(name, submitter.getAttribute("value") || "");
+  }
+
+  function shouldPreserveFormScroll(form, url) {
+    if (!form || !url) {
+      return false;
+    }
+    var current = new URL(window.location.href);
+    return url.pathname === current.pathname && url.search === current.search;
   }
 
   function formParams(data) {
@@ -875,12 +934,47 @@
     return csrf && csrf.content ? csrf.content : "";
   }
 
-  function showMessage(message) {
+  function showMessage(message, options) {
+    options = options || {};
+    var type = options.type || "error";
     if (window.mdui && typeof window.mdui.snackbar === "function") {
-      window.mdui.snackbar({ message: message });
+      var snackbar = window.mdui.snackbar({
+        message: escapeHTML(message),
+        className: "admin-snackbar admin-snackbar-" + type,
+        closeable: true,
+        messageLine: message.length > 44 ? 2 : 1,
+        autoCloseDelay: type === "error" ? 6000 : 3600,
+        queue: "admin-notices"
+      });
+      applySnackbarTheme(snackbar, type);
       return;
     }
     window.alert(message);
+  }
+
+  function applySnackbarTheme(snackbar, type) {
+    if (!snackbar || !snackbar.style) {
+      return;
+    }
+    var error = type === "error";
+    snackbar.classList.add("admin-snackbar", error ? "admin-snackbar-error" : "admin-snackbar-info");
+    snackbar.style.setProperty("color", "rgb(var(--mdui-color-on-" + (error ? "error" : "primary") + "-container))");
+    snackbar.style.setProperty("background", "rgba(var(--mdui-color-" + (error ? "error" : "primary") + "-container), var(--admin-topbar-opacity))");
+    snackbar.style.setProperty("border", "1px solid rgba(var(--mdui-color-" + (error ? "error" : "primary") + "), " + (error ? "0.3" : "0.22") + ")");
+    snackbar.style.setProperty("border-radius", "8px");
+    snackbar.style.setProperty("box-shadow", "0 6px 20px rgba(var(--mdui-color-shadow), 0.16)");
+  }
+
+  function escapeHTML(value) {
+    return String(value).replace(/[&<>"']/g, function (char) {
+      return {
+        "&": "&amp;",
+        "<": "&lt;",
+        ">": "&gt;",
+        '"': "&quot;",
+        "'": "&#39;"
+      }[char];
+    });
   }
 
   function cssURL(value) {

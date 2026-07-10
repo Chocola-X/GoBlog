@@ -454,6 +454,33 @@ tbody tr:hover {
   color: rgb(var(--mdui-color-error));
 }
 
+.notice.danger {
+  border-color: rgba(var(--mdui-color-error), 0.3);
+  color: rgb(var(--mdui-color-on-error-container));
+  background: rgba(var(--mdui-color-error-container), var(--admin-topbar-opacity));
+}
+
+mdui-snackbar.admin-snackbar {
+  border: 1px solid rgba(var(--mdui-color-primary), 0.22);
+  border-radius: 8px;
+  color: rgb(var(--mdui-color-on-primary-container));
+  background: rgba(var(--mdui-color-primary-container), var(--admin-topbar-opacity));
+  box-shadow: 0 6px 20px rgba(var(--mdui-color-shadow), 0.16);
+}
+
+mdui-snackbar.admin-snackbar::part(message),
+mdui-snackbar.admin-snackbar::part(action),
+mdui-snackbar.admin-snackbar::part(close-button),
+mdui-snackbar.admin-snackbar::part(close-icon) {
+  color: inherit;
+}
+
+mdui-snackbar.admin-snackbar-error {
+  border-color: rgba(var(--mdui-color-error), 0.3);
+  color: rgb(var(--mdui-color-on-error-container));
+  background: rgba(var(--mdui-color-error-container), var(--admin-topbar-opacity));
+}
+
 mdui-icon {
   vertical-align: middle;
 }
