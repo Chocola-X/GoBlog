@@ -1,7 +1,8 @@
 :root {
   --cuckoo-accent: #ff4081;
-  --cuckoo-card-light: rgba(255, 255, 255, 0.8);
-  --cuckoo-card-dark: rgba(66, 66, 66, 0.8);
+  --cuckoo-card-opacity: 0.8;
+  --cuckoo-input-opacity: 0.42;
+  --cuckoo-bg-mask-opacity: 0.46;
   --cuckoo-text-shadow: 1px 1px 1px rgba(0, 0, 0, 0.45);
 }
 
@@ -59,18 +60,7 @@ input {
 .index-filter {
   position: absolute;
   inset: 0;
-  background: rgba(248, 250, 252, 0.46);
-}
-
-body.mdui-theme-layout-dark .index-filter,
-html.mdui-theme-dark .index-filter {
-  background: rgba(0, 0, 0, 0.32);
-}
-
-@media (prefers-color-scheme: dark) {
-  html.mdui-theme-auto .index-filter {
-    background: rgba(0, 0, 0, 0.32);
-  }
+  background: rgba(var(--mdui-color-background), var(--cuckoo-bg-mask-opacity));
 }
 
 .pjax-progress {
@@ -217,14 +207,14 @@ html.mdui-theme-dark .index-filter {
 }
 
 mdui-text-field::part(container) {
-  background-color: rgba(var(--mdui-color-surface), 0.42);
+  background-color: rgba(var(--mdui-color-surface-container-highest), var(--cuckoo-input-opacity));
 }
 
 mdui-text-field:hover::part(container),
 mdui-text-field:focus-within::part(container),
 mdui-text-field[focused]::part(container),
 mdui-text-field[focused-style]::part(container) {
-  background-color: rgba(var(--mdui-color-surface), 0.56);
+  background-color: rgba(var(--mdui-color-surface-container-highest), var(--cuckoo-input-opacity));
 }
 
 .drawer-overlay {
@@ -442,34 +432,10 @@ html.mdui-theme-dark .drawer-bottom {
 .pagination,
 .notice-card {
   border-radius: 7px;
-  background: var(--cuckoo-card-light);
+  color: rgb(var(--mdui-color-on-surface));
+  background: rgba(var(--mdui-color-surface), var(--cuckoo-card-opacity));
   box-shadow: 0 3px 1px -2px rgba(0, 0, 0, 0.2), 0 2px 2px 0 rgba(0, 0, 0, 0.14), 0 1px 5px 0 rgba(0, 0, 0, 0.12);
   transition: background-color 0.3s ease, box-shadow 0.3s ease, transform 0.3s ease;
-}
-
-body.mdui-theme-layout-dark .mdui-card,
-body.mdui-theme-layout-dark .page-card,
-body.mdui-theme-layout-dark .archive-card,
-body.mdui-theme-layout-dark .pagination,
-body.mdui-theme-layout-dark .notice-card,
-html.mdui-theme-dark .mdui-card,
-html.mdui-theme-dark .page-card,
-html.mdui-theme-dark .archive-card,
-html.mdui-theme-dark .pagination,
-html.mdui-theme-dark .notice-card {
-  color: #fff;
-  background: var(--cuckoo-card-dark);
-}
-
-@media (prefers-color-scheme: dark) {
-  html.mdui-theme-auto .mdui-card,
-  html.mdui-theme-auto .page-card,
-  html.mdui-theme-auto .archive-card,
-  html.mdui-theme-auto .pagination,
-  html.mdui-theme-auto .notice-card {
-    color: #fff;
-    background: var(--cuckoo-card-dark);
-  }
 }
 
 .index-card {
@@ -615,7 +581,7 @@ html.mdui-theme-dark .notice-card {
   padding-top: 9px;
   color: inherit;
   border-radius: 5px;
-  background: var(--cuckoo-card-light);
+  background: rgba(var(--mdui-color-surface), var(--cuckoo-card-opacity));
   text-align: center;
   transition: transform 0.2s ease, background 0.3s ease;
 }
@@ -758,23 +724,31 @@ html.mdui-theme-dark .sidebar-tag span {
 }
 
 .post-card {
-  overflow: visible;
+  position: relative;
+  overflow: hidden;
+  isolation: isolate;
+}
+
+.post-card > :not(.post-end-image) {
+  position: relative;
+  z-index: 1;
 }
 
 .post-end-image {
-  display: flex;
-  justify-content: flex-end;
-  margin-top: -8px;
-  padding: 0;
-  overflow: hidden;
-  border-radius: 0 0 7px 7px;
+  position: absolute;
+  right: -1px;
+  bottom: -1px;
+  z-index: 0;
+  display: block;
+  width: min(46%, 340px);
+  max-height: 320px;
   pointer-events: none;
 }
 
 .post-end-image img {
-  width: min(46%, 340px);
-  max-height: 320px;
-  margin: 0 -1px -1px auto;
+  display: block;
+  width: 100%;
+  max-height: inherit;
   object-fit: contain;
   object-position: right bottom;
   opacity: 0.85;
@@ -1183,6 +1157,7 @@ html.mdui-theme-dark .post-content table tr:nth-child(even) td {
   margin-top: 20px;
   padding: 16px;
   overflow: hidden;
+  isolation: isolate;
 }
 
 .comment-bg-image {
@@ -1322,8 +1297,8 @@ footer {
   width: 100%;
   margin-top: 20px;
   padding: 14px;
-  color: #666;
-  background: var(--cuckoo-card-light);
+  color: rgb(var(--mdui-color-on-surface-variant));
+  background: rgba(var(--mdui-color-surface), var(--cuckoo-card-opacity));
   text-align: center;
   transition: background-color 0.3s ease, color 0.3s ease;
 }
@@ -1334,8 +1309,8 @@ footer a {
 
 body.mdui-theme-layout-dark footer,
 html.mdui-theme-dark footer {
-  color: #fff;
-  background: var(--cuckoo-card-dark);
+  color: rgb(var(--mdui-color-on-surface));
+  background: rgba(var(--mdui-color-surface), var(--cuckoo-card-opacity));
 }
 
 .muted {
@@ -1456,6 +1431,10 @@ mdui-icon {
   }
 
   .post-end-image img {
+    max-height: 260px;
+  }
+
+  .post-end-image {
     width: min(70%, 280px);
     max-height: 260px;
   }

@@ -7,6 +7,7 @@ import (
 	"html/template"
 	"io/fs"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -41,13 +42,14 @@ func init() {
 		Static:       static,
 		Embedded:     true,
 		Funcs: template.FuncMap{
-			"themeValue":  themeValue,
-			"gravatar":    gravatarURL,
-			"avatarURL":   avatarURL,
-			"safeHTML":    func(value string) template.HTML { return template.HTML(value) },
-			"readingTime": readingTime,
-			"daysSince":   daysSince,
-			"staleDays":   staleDays,
+			"themeValue":   themeValue,
+			"themeOpacity": themeOpacity,
+			"gravatar":     gravatarURL,
+			"avatarURL":    avatarURL,
+			"safeHTML":     func(value string) template.HTML { return template.HTML(value) },
+			"readingTime":  readingTime,
+			"daysSince":    daysSince,
+			"staleDays":    staleDays,
 			"fieldString": func(fields map[string]any, name string) string {
 				if fields == nil {
 					return ""
@@ -63,6 +65,9 @@ func init() {
 			{Name: "primary_preset", Label: "常用主题色", Type: plugin.FieldSelect, Default: "#ff4081", Options: colorOptions},
 			{Name: "custom_primary", Label: "自定义主题色", Type: plugin.FieldColor, Description: "填写 #RRGGBB 后优先于常用主题色", Options: colorOptions},
 			{Name: "theme_mode", Label: "明暗模式", Type: plugin.FieldSelect, Default: "auto", Options: []plugin.FieldOption{{Label: "跟随系统", Value: "auto"}, {Label: "浅色", Value: "light"}, {Label: "深色", Value: "dark"}}},
+			{Name: "card_opacity", Label: "卡片背景透明度", Type: plugin.FieldNumber, Default: "0.8", Description: "0 到 1；仅调整卡片背景透明度，不改变 MDUI 主题配色"},
+			{Name: "input_opacity", Label: "输入框背景透明度", Type: plugin.FieldNumber, Default: "0.42", Description: "0 到 1；保留 MDUI 输入框背景色，仅调整透明度"},
+			{Name: "background_mask_opacity", Label: "背景遮罩透明度", Type: plugin.FieldNumber, Default: "0.46", Description: "0 到 1；控制页面背景上方遮罩层透明度"},
 			{Name: "enable_decor", Label: "启用装饰图片", Type: plugin.FieldCheckbox, Default: "1", Description: "关闭后隐藏默认封面类装饰；手动配置的背景、评论和文章底部图片仍会显示"},
 			{Name: "background_image", Label: "桌面背景图 URL", Type: plugin.FieldImage, Description: "可输入 URL 或上传图片；留空时使用 MDUI 主题色背景"},
 			{Name: "mobile_background_image", Label: "移动端背景图 URL", Type: plugin.FieldImage, Description: "留空时沿用桌面背景图"},
@@ -96,6 +101,20 @@ func themeValue(values map[string]string, key string, fallback ...string) string
 		return fallback[0]
 	}
 	return ""
+}
+
+func themeOpacity(values map[string]string, key, fallback string) string {
+	value, err := strconv.ParseFloat(themeValue(values, key, fallback), 64)
+	if err != nil {
+		value, _ = strconv.ParseFloat(fallback, 64)
+	}
+	if value < 0 {
+		value = 0
+	}
+	if value > 1 {
+		value = 1
+	}
+	return strconv.FormatFloat(value, 'f', -1, 64)
 }
 
 func gravatarURL(email string, size int) string {
