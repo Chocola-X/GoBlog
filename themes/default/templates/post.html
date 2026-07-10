@@ -33,7 +33,7 @@
   </form>
   {{else}}
   <div class="post-content mdui-prose">{{.ContentHTML}}</div>
-  {{if and (eq $decor "1") $postEndImg}}
+  {{if $postEndImg}}
   <div class="post-end-image"><img src="{{$postEndImg}}" alt=""></div>
   {{end}}
   {{end}}
@@ -94,7 +94,7 @@
     </div>
     <mdui-text-field class="comment-textarea" name="text" label="评论" rows="5" required></mdui-text-field>
     <div class="comment-form-button"><mdui-button type="submit">提交评论</mdui-button></div>
-    {{if and (eq $decor "1") $commentBgImg}}
+    {{if $commentBgImg}}
     <img class="comment-bg-image" src="{{$commentBgImg}}" alt="">
     {{end}}
   </form>

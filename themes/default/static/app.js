@@ -99,6 +99,18 @@
     });
   }
 
+  function closeSearch(form, clear = false) {
+    if (!form) return;
+    const input = form.querySelector("input");
+    if (clear && input) input.value = "";
+    if (!input?.value.trim()) form.classList.remove("is-expanded");
+    if (document.activeElement && form.contains(document.activeElement)) document.activeElement.blur();
+  }
+
+  function closeEmptySearches() {
+    document.querySelectorAll(".appbar-search").forEach((form) => closeSearch(form));
+  }
+
   function copyText(text) {
     if (navigator.clipboard && window.isSecureContext) {
       return navigator.clipboard.writeText(text);
@@ -248,6 +260,10 @@
       const target = event.target instanceof Element ? event.target : event.target.parentElement;
       if (!target) return;
 
+      if (!target.closest(".appbar-search")) {
+        closeEmptySearches();
+      }
+
       if (target.closest(".drawer-toggle")) {
         event.preventDefault();
         openDrawer();
@@ -272,9 +288,7 @@
       if (searchClose) {
         event.preventDefault();
         const form = searchClose.closest(".appbar-search");
-        const input = form?.querySelector("input");
-        if (input) input.value = "";
-        form?.classList.remove("is-expanded");
+        closeSearch(form, true);
         return;
       }
       const searchIcon = target.closest(".appbar-search-icon");
@@ -310,7 +324,14 @@
     document.addEventListener("keydown", (event) => {
       if (event.key === "Escape") {
         closeDrawer();
+        closeEmptySearches();
       }
+    });
+
+    document.addEventListener("focusin", (event) => {
+      const target = event.target instanceof Element ? event.target : null;
+      const form = target?.closest(".appbar-search");
+      form?.classList.add("is-expanded");
     });
 
     window.addEventListener("scroll", () => {

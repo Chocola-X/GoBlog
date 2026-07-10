@@ -1,7 +1,7 @@
 :root {
   --cuckoo-accent: #ff4081;
-  --cuckoo-card-light: rgba(255, 255, 255, 0.82);
-  --cuckoo-card-dark: rgba(66, 66, 66, 0.86);
+  --cuckoo-card-light: rgba(255, 255, 255, 0.8);
+  --cuckoo-card-dark: rgba(66, 66, 66, 0.8);
   --cuckoo-text-shadow: 1px 1px 1px rgba(0, 0, 0, 0.45);
 }
 
@@ -36,8 +36,9 @@ input {
 .background {
   position: fixed;
   inset: 0;
-  z-index: -1;
+  z-index: 0;
   overflow: hidden;
+  pointer-events: none;
   background:
     radial-gradient(circle at 12% 8%, rgba(var(--mdui-color-primary), 0.28), transparent 30rem),
     radial-gradient(circle at 90% 88%, rgba(var(--mdui-color-tertiary), 0.18), transparent 28rem),
@@ -59,7 +60,6 @@ input {
   position: absolute;
   inset: 0;
   background: rgba(248, 250, 252, 0.46);
-  backdrop-filter: blur(2px);
 }
 
 body.mdui-theme-layout-dark .index-filter,
@@ -165,8 +165,7 @@ html.mdui-theme-dark .index-filter {
   transition: width 0.22s ease, background-color 0.22s ease;
 }
 
-.appbar-search.is-expanded,
-.appbar-search:focus-within {
+.appbar-search.is-expanded {
   width: min(34vw, 320px);
   background: rgba(var(--mdui-color-on-primary), 0.14);
 }
@@ -203,8 +202,7 @@ html.mdui-theme-dark .index-filter {
   color: rgba(var(--mdui-color-on-primary), 0.74);
 }
 
-.appbar-search.is-expanded input,
-.appbar-search:focus-within input {
+.appbar-search.is-expanded input {
   opacity: 1;
 }
 
@@ -213,10 +211,20 @@ html.mdui-theme-dark .index-filter {
   pointer-events: none;
 }
 
-.appbar-search.is-expanded .appbar-search-close,
-.appbar-search:focus-within .appbar-search-close {
+.appbar-search.is-expanded .appbar-search-close {
   opacity: 1;
   pointer-events: auto;
+}
+
+mdui-text-field::part(container) {
+  background-color: rgba(var(--mdui-color-surface), 0.42);
+}
+
+mdui-text-field:hover::part(container),
+mdui-text-field:focus-within::part(container),
+mdui-text-field[focused]::part(container),
+mdui-text-field[focused-style]::part(container) {
+  background-color: rgba(var(--mdui-color-surface), 0.56);
 }
 
 .drawer-overlay {
@@ -407,6 +415,8 @@ html.mdui-theme-dark .drawer-bottom {
 }
 
 .index-container {
+  position: relative;
+  z-index: 1;
   display: grid;
   grid-template-columns: minmax(0, 1fr) 330px;
   gap: 35px;
@@ -435,7 +445,6 @@ html.mdui-theme-dark .drawer-bottom {
   background: var(--cuckoo-card-light);
   box-shadow: 0 3px 1px -2px rgba(0, 0, 0, 0.2), 0 2px 2px 0 rgba(0, 0, 0, 0.14), 0 1px 5px 0 rgba(0, 0, 0, 0.12);
   transition: background-color 0.3s ease, box-shadow 0.3s ease, transform 0.3s ease;
-  backdrop-filter: blur(10px);
 }
 
 body.mdui-theme-layout-dark .mdui-card,
@@ -490,7 +499,7 @@ html.mdui-theme-dark .notice-card {
 .index-card-filter {
   position: absolute;
   inset: 0;
-  transition: backdrop-filter 0.3s ease, background 0.3s ease;
+  transition: background 0.3s ease;
 }
 
 .mdui-card-media-covered {
@@ -510,11 +519,6 @@ html.mdui-theme-dark .notice-card {
 .index-card:hover .index-img,
 .post-card-media:hover .index-img {
   transform: scale(1.05);
-}
-
-.index-card:hover .index-card-filter,
-.post-card-media:hover .index-card-filter {
-  backdrop-filter: blur(7px);
 }
 
 .mdui-card-primary,
@@ -642,9 +646,8 @@ html.mdui-theme-dark .notice-card {
 
 .sidebar-info-bg {
   height: 120px;
-  background:
-    linear-gradient(135deg, rgba(var(--mdui-color-primary), 0.9), rgba(var(--mdui-color-tertiary), 0.68)),
-    rgb(var(--mdui-color-primary-container));
+  background-color: rgb(var(--mdui-color-primary-container));
+  background-image: var(--sidebar-bg-image, linear-gradient(135deg, rgba(var(--mdui-color-primary), 0.9), rgba(var(--mdui-color-tertiary), 0.68)));
   background-position: center center;
   background-size: cover;
   background-repeat: no-repeat;
@@ -761,13 +764,19 @@ html.mdui-theme-dark .sidebar-tag span {
 .post-end-image {
   display: flex;
   justify-content: flex-end;
-  padding: 0 24px 16px;
+  margin-top: -8px;
+  padding: 0;
+  overflow: hidden;
+  border-radius: 0 0 7px 7px;
+  pointer-events: none;
 }
 
 .post-end-image img {
-  max-width: 200px;
-  max-height: 200px;
+  width: min(46%, 340px);
+  max-height: 320px;
+  margin: 0 -1px -1px auto;
   object-fit: contain;
+  object-position: right bottom;
   opacity: 0.85;
 }
 
@@ -1178,13 +1187,20 @@ html.mdui-theme-dark .post-content table tr:nth-child(even) td {
 
 .comment-bg-image {
   position: absolute;
-  right: 0;
-  bottom: 0;
-  max-width: 200px;
-  max-height: 200px;
+  right: -1px;
+  bottom: -1px;
+  z-index: 0;
+  width: min(44%, 340px);
+  max-height: 320px;
   object-fit: contain;
+  object-position: right bottom;
   pointer-events: none;
-  opacity: 0.85;
+  opacity: 0.82;
+}
+
+.comment-respond > :not(.comment-bg-image) {
+  position: relative;
+  z-index: 1;
 }
 
 .comment-web {
@@ -1300,6 +1316,8 @@ html.mdui-theme-dark .toc a.toc-link {
 }
 
 footer {
+  position: relative;
+  z-index: 1;
   flex: 0 0 auto;
   width: 100%;
   margin-top: 20px;
@@ -1354,8 +1372,7 @@ mdui-icon {
     display: grid;
   }
 
-  .appbar-search.is-expanded,
-  .appbar-search:focus-within {
+  .appbar-search.is-expanded {
     width: min(52vw, 240px);
   }
 
@@ -1436,6 +1453,17 @@ mdui-icon {
   .comment-content,
   .comment-reply {
     margin-left: 0;
+  }
+
+  .post-end-image img {
+    width: min(70%, 280px);
+    max-height: 260px;
+  }
+
+  .comment-bg-image {
+    width: min(72%, 260px);
+    max-height: 240px;
+    opacity: 0.42;
   }
 
   .top {

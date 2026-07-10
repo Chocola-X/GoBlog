@@ -63,7 +63,7 @@ func init() {
 			{Name: "primary_preset", Label: "常用主题色", Type: plugin.FieldSelect, Default: "#ff4081", Options: colorOptions},
 			{Name: "custom_primary", Label: "自定义主题色", Type: plugin.FieldColor, Description: "填写 #RRGGBB 后优先于常用主题色", Options: colorOptions},
 			{Name: "theme_mode", Label: "明暗模式", Type: plugin.FieldSelect, Default: "auto", Options: []plugin.FieldOption{{Label: "跟随系统", Value: "auto"}, {Label: "浅色", Value: "light"}, {Label: "深色", Value: "dark"}}},
-			{Name: "enable_decor", Label: "启用装饰图片", Type: plugin.FieldCheckbox, Default: "1", Description: "关闭后只使用 MDUI 主题色生成简洁外观"},
+			{Name: "enable_decor", Label: "启用装饰图片", Type: plugin.FieldCheckbox, Default: "1", Description: "关闭后隐藏默认封面类装饰；手动配置的背景、评论和文章底部图片仍会显示"},
 			{Name: "background_image", Label: "桌面背景图 URL", Type: plugin.FieldImage, Description: "可输入 URL 或上传图片；留空时使用 MDUI 主题色背景"},
 			{Name: "mobile_background_image", Label: "移动端背景图 URL", Type: plugin.FieldImage, Description: "留空时沿用桌面背景图"},
 			{Name: "sidebar_image", Label: "侧栏封面图 URL", Type: plugin.FieldImage, Description: "资料卡顶部封面；留空时使用主题色"},
