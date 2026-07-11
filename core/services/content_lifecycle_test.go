@@ -124,6 +124,190 @@ func TestRestoreRevisionRequiresMatchingContentID(t *testing.T) {
 	}
 }
 
+func TestEditingDraftLifecyclePreservesPublishedUntilPublish(t *testing.T) {
+	service := newContentTestService(t)
+	ctx := context.Background()
+	publishedID, err := service.Create(ctx, SaveContentInput{
+		Title:        "Original",
+		Slug:         "same-slug",
+		Text:         "published body",
+		Type:         models.ContentTypePost,
+		Status:       models.ContentStatusPost,
+		AllowComment: true,
+		AllowFeed:    true,
+	}, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	draftID, err := service.SaveEditingDraft(ctx, publishedID, SaveContentInput{
+		Title:        "Edited",
+		Slug:         "same-slug",
+		Text:         "draft body",
+		Type:         models.ContentTypePost,
+		Status:       models.ContentStatusDraft,
+		AllowComment: true,
+		AllowFeed:    true,
+	}, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	draft, err := service.ByID(ctx, draftID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if draft.DraftOf != publishedID || draft.Slug != "same-slug" || draft.Text != "draft body" {
+		t.Fatalf("editing draft mismatch: %#v", draft)
+	}
+	published, err := service.BySlug(ctx, "same-slug")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if published.CID != publishedID || published.Text != "published body" {
+		t.Fatalf("published content changed before publish: %#v", published)
+	}
+	draftMap, err := service.DraftMapForContents(ctx, []int64{publishedID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !draftMap[publishedID] {
+		t.Fatalf("editing draft not reported for published content: %#v", draftMap)
+	}
+
+	if err := service.DeleteDraft(ctx, draftID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.DraftForContent(ctx, publishedID); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("DraftForContent after delete err = %v, want sql.ErrNoRows", err)
+	}
+	published, err = service.ByID(ctx, publishedID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if published.Text != "published body" {
+		t.Fatalf("DeleteDraft changed published content: %#v", published)
+	}
+
+	draftID, err = service.SaveEditingDraft(ctx, publishedID, SaveContentInput{
+		Title:        "Final",
+		Slug:         "same-slug",
+		Text:         "final body",
+		Type:         models.ContentTypePost,
+		Status:       models.ContentStatusDraft,
+		AllowComment: true,
+		AllowFeed:    true,
+		Tags:         []string{"alpha", "beta"},
+	}, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := service.PublishDraft(ctx, draftID); err != nil {
+		t.Fatal(err)
+	}
+	published, err = service.ByID(ctx, publishedID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if published.Title != "Final" || published.Text != "final body" || published.Slug != "same-slug" || published.DraftOf != 0 {
+		t.Fatalf("published content not updated from draft: %#v", published)
+	}
+	tags, err := service.TagsForContentNames(ctx, publishedID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tagSet := map[string]bool{}
+	for _, tag := range tags {
+		tagSet[tag] = true
+	}
+	if len(tagSet) != 2 || !tagSet["alpha"] || !tagSet["beta"] {
+		t.Fatalf("published tags not copied from draft: %#v", tags)
+	}
+	if _, err := service.DraftForContent(ctx, publishedID); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("DraftForContent after publish err = %v, want sql.ErrNoRows", err)
+	}
+	revisions, err := service.Revisions(ctx, publishedID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(revisions) == 0 || revisions[0].Title != "Original" || revisions[0].Text != "published body" {
+		t.Fatalf("published snapshot missing before draft publish: %#v", revisions)
+	}
+}
+
+func TestDeleteDraftRejectsPublishedContent(t *testing.T) {
+	service := newContentTestService(t)
+	ctx := context.Background()
+	publishedID, err := service.Create(ctx, SaveContentInput{Title: "Published", Slug: "published", Text: "body", Type: models.ContentTypePost, Status: models.ContentStatusPost}, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := service.DeleteDraft(ctx, publishedID); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("DeleteDraft published err = %v, want sql.ErrNoRows", err)
+	}
+	if _, err := service.ByID(ctx, publishedID); err != nil {
+		t.Fatalf("published content deleted by DeleteDraft: %v", err)
+	}
+}
+
+func TestRepairOrphanEditingDraftsFoldsSlugCopies(t *testing.T) {
+	service := newContentTestService(t)
+	ctx := context.Background()
+	publishedID, err := service.Create(ctx, SaveContentInput{
+		Title:  "Repair",
+		Slug:   "repair-post",
+		Text:   "published",
+		Type:   models.ContentTypePost,
+		Status: models.ContentStatusPost,
+	}, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Create(ctx, SaveContentInput{Title: "Repair", Slug: "repair-post", Text: "old draft", Type: models.ContentTypePost, Status: models.ContentStatusDraft}, 1); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Create(ctx, SaveContentInput{Title: "Repair", Slug: "repair-post", Text: "new draft", Type: models.ContentTypePost, Status: models.ContentStatusDraft}, 1); err != nil {
+		t.Fatal(err)
+	}
+	before, err := service.List(ctx, ContentQuery{Type: models.ContentTypePost, Status: "all", Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(before) != 3 {
+		t.Fatalf("before repair list length = %d, want 3", len(before))
+	}
+	if err := service.RepairOrphanEditingDrafts(ctx); err != nil {
+		t.Fatal(err)
+	}
+	after, err := service.List(ctx, ContentQuery{Type: models.ContentTypePost, Status: "all", Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(after) != 1 || after[0].CID != publishedID {
+		t.Fatalf("after repair list = %#v, want only published post", after)
+	}
+	draft, err := service.DraftForContent(ctx, publishedID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if draft.DraftOf != publishedID || draft.Slug != "repair-post" || draft.Text != "new draft" {
+		t.Fatalf("repaired draft mismatch: %#v", draft)
+	}
+	all, err := service.List(ctx, ContentQuery{Type: models.ContentTypePost, Status: "all", IncludeDrafts: true, Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(all) != 2 {
+		t.Fatalf("all contents after repair = %d, want published + one draft: %#v", len(all), all)
+	}
+	count, err := service.Count(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatalf("Count = %d, want 1 published post", count)
+	}
+}
+
 func TestCustomFields(t *testing.T) {
 	service := newContentTestService(t)
 	ctx := context.Background()

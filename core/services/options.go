@@ -119,7 +119,7 @@ func (s *OptionService) EnsureDefaults(ctx context.Context) error {
 		"http_client_retries":           "1",
 		"db_read_dsn":                   "",
 		"db_write_dsn":                  "",
-		"permalink_post":                "/post/{slug}",
+		"permalink_post":                "/post/{slug}.html",
 		"permalink_page":                "/page/{slug}",
 		"permalink_category":            "/category/{slug}",
 		"active_plugins":                `["sitemap"]`,

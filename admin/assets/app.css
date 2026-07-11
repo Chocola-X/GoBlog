@@ -421,6 +421,17 @@ tbody tr:hover {
   justify-content: flex-end;
 }
 
+.draft-badge {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 0.75rem;
+  background: rgba(var(--mdui-color-tertiary), 0.15);
+  color: rgb(var(--mdui-color-on-tertiary-container));
+  border: 1px solid rgba(var(--mdui-color-tertiary), 0.3);
+}
+
 .media-cell {
   display: flex;
   align-items: center;

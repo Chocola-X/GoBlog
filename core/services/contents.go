@@ -35,6 +35,7 @@ type SaveContentInput struct {
 	CategoryIDs  []int64
 	Tags         []string
 	Fields       []SaveFieldInput
+	DraftOf      int64
 }
 
 type ContentQuery struct {
@@ -49,6 +50,7 @@ type ContentQuery struct {
 	Month         int
 	Day           int
 	ExcludeFuture bool
+	IncludeDrafts bool
 	Limit         int
 	Offset        int
 }
@@ -92,7 +94,7 @@ func (s *ContentService) ArchiveMonths(ctx context.Context, loc *time.Location, 
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT created
 		FROM gb_contents
-		WHERE type = ? AND status = ? AND created <= ?
+		WHERE type = ? AND status = ? AND created <= ? AND COALESCE(draftOf, 0) = 0
 		ORDER BY created DESC
 	`, models.ContentTypePost, models.ContentStatusPost, time.Now().Unix())
 	if err != nil {
@@ -160,7 +162,7 @@ func (s *ContentService) List(ctx context.Context, q ContentQuery) ([]models.Con
 
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT c.cid, c.title, c.slug, c.created, c.modified, c.text, c.sortOrder, c.authorId, COALESCE(c.template,''), c.type, c.status,
-			COALESCE(c.password,''), c.commentsNum, c.allowComment, c.allowPing, c.allowFeed, c.parent
+			COALESCE(c.password,''), c.commentsNum, c.allowComment, c.allowPing, c.allowFeed, c.parent, COALESCE(c.draftOf,0)
 		FROM gb_contents c
 		WHERE `+strings.Join(where, " AND ")+`
 		ORDER BY `+orderBy+`
@@ -175,7 +177,7 @@ func (s *ContentService) List(ctx context.Context, q ContentQuery) ([]models.Con
 
 func (s *ContentService) Count(ctx context.Context) (int64, error) {
 	var count int64
-	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM gb_contents WHERE type = ?`, models.ContentTypePost).Scan(&count)
+	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM gb_contents WHERE type = ? AND status = ? AND COALESCE(draftOf, 0) = 0`, models.ContentTypePost, models.ContentStatusPost).Scan(&count)
 	return count, err
 }
 
@@ -192,8 +194,8 @@ func (s *ContentService) Stats(ctx context.Context) (models.Stats, error) {
 		sql string
 		dst *int64
 	}{
-		{`SELECT COUNT(*) FROM gb_contents WHERE type = 'post'`, &stats.Posts},
-		{`SELECT COUNT(*) FROM gb_contents WHERE type = 'page'`, &stats.Pages},
+		{`SELECT COUNT(*) FROM gb_contents WHERE type = 'post' AND status = 'publish' AND COALESCE(draftOf, 0) = 0`, &stats.Posts},
+		{`SELECT COUNT(*) FROM gb_contents WHERE type = 'page' AND status = 'publish' AND COALESCE(draftOf, 0) = 0`, &stats.Pages},
 		{`SELECT COUNT(*) FROM gb_comments`, &stats.Comments},
 		{`SELECT COUNT(*) FROM gb_metas WHERE type = 'category'`, &stats.Categories},
 		{`SELECT COUNT(*) FROM gb_metas WHERE type = 'tag'`, &stats.Tags},
@@ -209,11 +211,11 @@ func (s *ContentService) Stats(ctx context.Context) (models.Stats, error) {
 }
 
 func (s *ContentService) BySlug(ctx context.Context, postSlug string) (models.Content, error) {
-	return s.one(ctx, `WHERE slug = ? AND type = ? AND status = ? AND created <= ?`, postSlug, models.ContentTypePost, models.ContentStatusPost, time.Now().Unix())
+	return s.one(ctx, `WHERE slug = ? AND type = ? AND status = ? AND created <= ? AND COALESCE(draftOf, 0) = 0`, postSlug, models.ContentTypePost, models.ContentStatusPost, time.Now().Unix())
 }
 
 func (s *ContentService) PageBySlug(ctx context.Context, pageSlug string) (models.Content, error) {
-	return s.one(ctx, `WHERE slug = ? AND type = ? AND status = ? AND created <= ?`, pageSlug, models.ContentTypePage, models.ContentStatusPost, time.Now().Unix())
+	return s.one(ctx, `WHERE slug = ? AND type = ? AND status = ? AND created <= ? AND COALESCE(draftOf, 0) = 0`, pageSlug, models.ContentTypePage, models.ContentStatusPost, time.Now().Unix())
 }
 
 func (s *ContentService) AttachmentBySlug(ctx context.Context, attachSlug string) (models.Content, error) {
@@ -234,7 +236,7 @@ func (s *ContentService) Create(ctx context.Context, input SaveContentInput, aut
 	if created <= 0 {
 		created = now
 	}
-	postSlug, err := s.uniqueSlug(ctx, input.Slug, input.Title, input.Type, 0)
+	postSlug, err := s.contentSlug(ctx, input, 0)
 	if err != nil {
 		return 0, err
 	}
@@ -245,9 +247,9 @@ func (s *ContentService) Create(ctx context.Context, input SaveContentInput, aut
 	defer tx.Rollback()
 	var id int64
 	insertSQL := `
-		INSERT INTO gb_contents (title, slug, created, modified, text, sortOrder, authorId, template, type, status, password, commentsNum, allowComment, allowPing, allowFeed, parent)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)`
-	insertArgs := []any{input.Title, postSlug, created, now, input.Text, input.SortOrder, authorID, input.Template, input.Type, normalizeStatus(input.Status), input.Password, boolChar(input.AllowComment), boolChar(input.AllowPing), boolChar(input.AllowFeed), input.Parent}
+		INSERT INTO gb_contents (title, slug, created, modified, text, sortOrder, authorId, template, type, status, password, commentsNum, allowComment, allowPing, allowFeed, parent, draftOf)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?)`
+	insertArgs := []any{input.Title, postSlug, created, now, input.Text, input.SortOrder, authorID, input.Template, input.Type, normalizeStatus(input.Status), input.Password, boolChar(input.AllowComment), boolChar(input.AllowPing), boolChar(input.AllowFeed), input.Parent, input.DraftOf}
 	if s.db.Dialect() == models.DialectPostgres {
 		err = tx.QueryRowContext(ctx, models.Rebind(s.db.Dialect(), insertSQL+" RETURNING cid"), insertArgs...).Scan(&id)
 	} else {
@@ -316,25 +318,29 @@ func (s *ContentService) Update(ctx context.Context, id int64, input SaveContent
 	if input.Type == "" {
 		input.Type = current.Type
 	}
-	postSlug, err := s.uniqueSlug(ctx, input.Slug, input.Title, input.Type, id)
+	postSlug, err := s.contentSlug(ctx, input, id)
 	if err != nil {
 		return err
+	}
+	created := input.Created
+	if created <= 0 {
+		created = current.Created
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
-	if current.Type == models.ContentTypePost || current.Type == models.ContentTypePage {
+	if shouldSnapshotOnUpdate(current, input) {
 		if err := s.saveRevisionTx(ctx, tx, current); err != nil {
 			return err
 		}
 	}
 	_, err = txExec(ctx, tx, s.db.Dialect(), `
 		UPDATE gb_contents
-		SET title = ?, slug = ?, modified = ?, text = ?, status = ?, password = ?, sortOrder = ?, template = ?, parent = ?, allowComment = ?, allowPing = ?, allowFeed = ?
+		SET title = ?, slug = ?, created = ?, modified = ?, text = ?, status = ?, password = ?, sortOrder = ?, template = ?, parent = ?, allowComment = ?, allowPing = ?, allowFeed = ?, draftOf = ?
 		WHERE cid = ?
-	`, input.Title, postSlug, time.Now().Unix(), input.Text, normalizeStatus(input.Status), input.Password, input.SortOrder, input.Template, input.Parent, boolChar(input.AllowComment), boolChar(input.AllowPing), boolChar(input.AllowFeed), id)
+	`, input.Title, postSlug, created, time.Now().Unix(), input.Text, normalizeStatus(input.Status), input.Password, input.SortOrder, input.Template, input.Parent, boolChar(input.AllowComment), boolChar(input.AllowPing), boolChar(input.AllowFeed), input.DraftOf, id)
 	if err != nil {
 		return err
 	}
@@ -357,6 +363,13 @@ func (s *ContentService) MarkStatus(ctx context.Context, id int64, status string
 
 func (s *ContentService) Delete(ctx context.Context, id int64) error {
 	ctx = WithWriter(ctx)
+	if draft, err := s.DraftForContent(ctx, id); err == nil && draft.CID > 0 {
+		if err := s.DeleteDraft(ctx, draft.CID); err != nil {
+			return err
+		}
+	} else if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
 	if _, err := s.db.ExecContext(ctx, `DELETE FROM gb_relationships WHERE cid = ?`, id); err != nil {
 		return err
 	}
@@ -373,6 +386,332 @@ func (s *ContentService) Delete(ctx context.Context, id int64) error {
 	return err
 }
 
+// DraftForContent returns the editing draft for a given published content ID.
+// Returns sql.ErrNoRows if no draft exists.
+func (s *ContentService) DraftForContent(ctx context.Context, contentID int64) (models.Content, error) {
+	return s.one(ctx, `WHERE draftOf = ? AND status = ? ORDER BY modified DESC, cid DESC`, contentID, models.ContentStatusDraft)
+}
+
+// DraftMapForContents returns a map of contentID -> true for published contents that have editing drafts.
+func (s *ContentService) DraftMapForContents(ctx context.Context, contentIDs []int64) (map[int64]bool, error) {
+	if len(contentIDs) == 0 {
+		return map[int64]bool{}, nil
+	}
+	placeholders := make([]string, len(contentIDs))
+	args := make([]any, len(contentIDs))
+	for i, id := range contentIDs {
+		placeholders[i] = "?"
+		args[i] = id
+	}
+	query := `SELECT DISTINCT draftOf FROM gb_contents WHERE draftOf IN (` + strings.Join(placeholders, ",") + `) AND draftOf > 0 AND status = ?`
+	args = append(args, models.ContentStatusDraft)
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	result := map[int64]bool{}
+	for rows.Next() {
+		var draftOf int64
+		if err := rows.Scan(&draftOf); err != nil {
+			return nil, err
+		}
+		result[draftOf] = true
+	}
+	return result, rows.Err()
+}
+
+// DeleteDraft deletes an editing draft (draftOf > 0) without affecting the published content.
+func (s *ContentService) DeleteDraft(ctx context.Context, draftID int64) error {
+	ctx = WithWriter(ctx)
+	draft, err := s.ByID(ctx, draftID)
+	if err != nil {
+		return err
+	}
+	if draft.DraftOf <= 0 {
+		return sql.ErrNoRows
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if err := s.deleteDraftTx(ctx, tx, draftID); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func (s *ContentService) SaveEditingDraft(ctx context.Context, publishedID int64, input SaveContentInput, authorID int64) (int64, error) {
+	ctx = WithWriter(ctx)
+	published, err := s.ByID(ctx, publishedID)
+	if err != nil {
+		return 0, err
+	}
+	if published.DraftOf > 0 {
+		return 0, sql.ErrNoRows
+	}
+	input.Type = published.Type
+	input.Status = models.ContentStatusDraft
+	input.DraftOf = publishedID
+	if input.Created <= 0 {
+		input.Created = published.Created
+	}
+	if draft, err := s.DraftForContent(ctx, publishedID); err == nil {
+		if err := s.Update(ctx, draft.CID, input); err != nil {
+			return 0, err
+		}
+		if err := s.PruneEditingDrafts(ctx, publishedID, draft.CID); err != nil {
+			return 0, err
+		}
+		return draft.CID, nil
+	} else if !errors.Is(err, sql.ErrNoRows) {
+		return 0, err
+	}
+	id, err := s.Create(ctx, input, authorID)
+	if err != nil {
+		return 0, err
+	}
+	if err := s.PruneEditingDrafts(ctx, publishedID, id); err != nil {
+		return 0, err
+	}
+	return id, nil
+}
+
+func (s *ContentService) deleteDraftTx(ctx context.Context, tx *sql.Tx, draftID int64) error {
+	if _, err := txExec(ctx, tx, s.db.Dialect(), `DELETE FROM gb_relationships WHERE cid = ?`, draftID); err != nil {
+		return err
+	}
+	if _, err := txExec(ctx, tx, s.db.Dialect(), `DELETE FROM gb_fields WHERE cid = ?`, draftID); err != nil {
+		return err
+	}
+	if _, err := txExec(ctx, tx, s.db.Dialect(), `DELETE FROM gb_revisions WHERE cid = ?`, draftID); err != nil {
+		return err
+	}
+	_, err := txExec(ctx, tx, s.db.Dialect(), `DELETE FROM gb_contents WHERE cid = ?`, draftID)
+	return err
+}
+
+func (s *ContentService) PruneEditingDrafts(ctx context.Context, publishedID, keepID int64) error {
+	ctx = WithWriter(ctx)
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT cid FROM gb_contents
+		WHERE draftOf = ? AND status = ? AND cid <> ?
+		ORDER BY modified DESC
+	`, publishedID, models.ContentStatusDraft, keepID)
+	if err != nil {
+		return err
+	}
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return err
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	rows.Close()
+	for _, id := range ids {
+		if err := s.DeleteDraft(ctx, id); err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *ContentService) RepairOrphanEditingDrafts(ctx context.Context) error {
+	ctx = WithWriter(ctx)
+	for _, typ := range []string{models.ContentTypePost, models.ContentTypePage} {
+		items, err := s.List(ctx, ContentQuery{Type: typ, Status: "all", IncludeDrafts: true, Limit: 10000})
+		if err != nil {
+			return err
+		}
+		publishedBySlug := make(map[string]models.Content)
+		for _, item := range items {
+			if item.DraftOf == 0 && item.Status == models.ContentStatusPost {
+				publishedBySlug[item.Slug] = item
+			}
+		}
+		touched := map[int64]bool{}
+		for _, item := range items {
+			if item.DraftOf != 0 || item.Status != models.ContentStatusDraft {
+				continue
+			}
+			base, ok := stripNumericSlugSuffix(item.Slug)
+			if !ok {
+				continue
+			}
+			published, ok := publishedBySlug[base]
+			if !ok || published.AuthorID != item.AuthorID {
+				continue
+			}
+			if _, err := s.db.ExecContext(ctx, `
+				UPDATE gb_contents
+				SET draftOf = ?, slug = ?, modified = ?
+				WHERE cid = ?
+			`, published.CID, published.Slug, time.Now().Unix(), item.CID); err != nil {
+				return err
+			}
+			touched[published.CID] = true
+		}
+		for _, item := range items {
+			if item.DraftOf == 0 && item.Status == models.ContentStatusPost {
+				touched[item.CID] = true
+			}
+		}
+		for publishedID := range touched {
+			draft, err := s.DraftForContent(ctx, publishedID)
+			if errors.Is(err, sql.ErrNoRows) {
+				continue
+			}
+			if err != nil {
+				return err
+			}
+			if err := s.PruneEditingDrafts(ctx, publishedID, draft.CID); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// PublishDraft merges the editing draft content into the published article and deletes the draft.
+func (s *ContentService) PublishDraft(ctx context.Context, draftID int64) error {
+	ctx = WithWriter(ctx)
+	draft, err := s.ByID(ctx, draftID)
+	if err != nil {
+		return err
+	}
+	if draft.DraftOf <= 0 {
+		return sql.ErrNoRows
+	}
+	publishedID := draft.DraftOf
+	published, err := s.ByID(ctx, publishedID)
+	if err != nil {
+		return err
+	}
+	draftMetaIDs, err := s.MetaIDsForContent(ctx, draftID)
+	if err != nil {
+		return err
+	}
+	draftFields, err := s.FieldsForContent(ctx, draftID)
+	if err != nil {
+		return err
+	}
+	postSlug, err := s.uniqueSlug(ctx, draft.Slug, draft.Title, published.Type, publishedID)
+	if err != nil {
+		return err
+	}
+	created := draft.Created
+	if created <= 0 {
+		created = published.Created
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if err := s.saveRevisionTx(ctx, tx, published); err != nil {
+		return err
+	}
+	_, err = txExec(ctx, tx, s.db.Dialect(), `
+		UPDATE gb_contents
+		SET title = ?, slug = ?, created = ?, modified = ?, text = ?, status = ?, password = ?, sortOrder = ?, template = ?, parent = ?, allowComment = ?, allowPing = ?, allowFeed = ?, draftOf = 0
+		WHERE cid = ?
+	`, draft.Title, postSlug, created, time.Now().Unix(), draft.Text, models.ContentStatusPost, draft.Password, draft.SortOrder, draft.Template, draft.Parent, draft.AllowComment, draft.AllowPing, draft.AllowFeed, publishedID)
+	if err != nil {
+		return err
+	}
+	relInput := SaveContentInput{
+		Type:        published.Type,
+		CategoryIDs: draftMetaIDs,
+	}
+	if err := s.syncRelationshipsTx(ctx, tx, publishedID, relInput); err != nil {
+		return err
+	}
+	if _, err := txExec(ctx, tx, s.db.Dialect(), `DELETE FROM gb_fields WHERE cid = ?`, publishedID); err != nil {
+		return err
+	}
+	for _, f := range draftFields {
+		if _, err := txExec(ctx, tx, s.db.Dialect(), `
+			INSERT INTO gb_fields (cid, name, type, strValue, intValue, floatValue)
+			VALUES (?, ?, ?, ?, ?, ?)
+		`, publishedID, f.Name, f.Type, f.StrValue, f.IntValue, f.FloatValue); err != nil {
+			return err
+		}
+	}
+	if err := s.deleteDraftTx(ctx, tx, draftID); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// CategoriesForContentIDs returns category IDs for a content item.
+func (s *ContentService) CategoriesForContentIDs(ctx context.Context, cid int64) ([]int64, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT r.mid FROM gb_relationships r
+		JOIN gb_metas m ON m.mid = r.mid
+		WHERE r.cid = ? AND m.type = 'category'
+	`, cid)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
+// TagsForContentNames returns tag names for a content item.
+func (s *ContentService) TagsForContentNames(ctx context.Context, cid int64) ([]string, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT m.name FROM gb_relationships r
+		JOIN gb_metas m ON m.mid = r.mid
+		WHERE r.cid = ? AND m.type = 'tag'
+	`, cid)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var names []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return nil, err
+		}
+		names = append(names, name)
+	}
+	return names, rows.Err()
+}
+
+func (s *ContentService) MetaIDsForContent(ctx context.Context, cid int64) ([]int64, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT mid FROM gb_relationships WHERE cid = ?`, cid)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
 func (s *ContentService) SaveFields(ctx context.Context, cid int64, fields []SaveFieldInput) error {
 	ctx = WithWriter(ctx)
 	return s.saveFieldsTxLike(ctx, s.db, cid, fields)
@@ -384,6 +723,7 @@ func (s *ContentService) saveFieldsTx(ctx context.Context, tx *sql.Tx, cid int64
 
 type execer interface {
 	ExecContext(context.Context, string, ...any) (sql.Result, error)
+	QueryRowContext(context.Context, string, ...any) *sql.Row
 }
 
 type txExecer struct {
@@ -393,6 +733,10 @@ type txExecer struct {
 
 func (e txExecer) ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error) {
 	return e.tx.ExecContext(ctx, models.Rebind(e.dialect, query), args...)
+}
+
+func (e txExecer) QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row {
+	return e.tx.QueryRowContext(ctx, models.Rebind(e.dialect, query), args...)
 }
 
 func txExec(ctx context.Context, tx *sql.Tx, dialect models.Dialect, query string, args ...any) (sql.Result, error) {
@@ -579,11 +923,11 @@ func (s *ContentService) RestoreRevision(ctx context.Context, cid, rid int64) (i
 
 func (s *ContentService) Adjacent(ctx context.Context, c models.Content) (prev, next models.Content, err error) {
 	now := time.Now().Unix()
-	prev, prevErr := s.one(ctx, `WHERE type = ? AND status = ? AND created < ? AND created <= ? ORDER BY created DESC`, c.Type, models.ContentStatusPost, c.Created, now)
+	prev, prevErr := s.one(ctx, `WHERE type = ? AND status = ? AND created < ? AND created <= ? AND COALESCE(draftOf, 0) = 0 ORDER BY created DESC`, c.Type, models.ContentStatusPost, c.Created, now)
 	if prevErr != nil && !errors.Is(prevErr, sql.ErrNoRows) {
 		return models.Content{}, models.Content{}, prevErr
 	}
-	next, nextErr := s.one(ctx, `WHERE type = ? AND status = ? AND created > ? AND created <= ? ORDER BY created ASC`, c.Type, models.ContentStatusPost, c.Created, now)
+	next, nextErr := s.one(ctx, `WHERE type = ? AND status = ? AND created > ? AND created <= ? AND COALESCE(draftOf, 0) = 0 ORDER BY created ASC`, c.Type, models.ContentStatusPost, c.Created, now)
 	if nextErr != nil && !errors.Is(nextErr, sql.ErrNoRows) {
 		return models.Content{}, models.Content{}, nextErr
 	}
@@ -593,7 +937,7 @@ func (s *ContentService) Adjacent(ctx context.Context, c models.Content) (prev, 
 func (s *ContentService) one(ctx context.Context, where string, args ...any) (models.Content, error) {
 	query := `
 		SELECT cid, title, slug, created, modified, text, sortOrder, authorId, COALESCE(template,''), type, status,
-			COALESCE(password,''), commentsNum, allowComment, allowPing, allowFeed, parent
+			COALESCE(password,''), commentsNum, allowComment, allowPing, allowFeed, parent, COALESCE(draftOf,0)
 		FROM gb_contents ` + where + ` LIMIT 1`
 	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
@@ -619,6 +963,9 @@ func buildContentWhere(q ContentQuery) ([]string, []any) {
 	}
 	args := []any{q.Type}
 	where := []string{"c.type = ?"}
+	if !q.IncludeDrafts {
+		where = append(where, "COALESCE(c.draftOf, 0) = 0")
+	}
 	if q.Status != "" && q.Status != "all" {
 		where = append(where, "c.status = ?")
 		args = append(args, q.Status)
@@ -694,7 +1041,7 @@ func (s *ContentService) syncRelationshipsTxLike(ctx context.Context, db execer,
 			if tagName == "" {
 				continue
 			}
-			mid, err := s.ensureTag(ctx, tagName)
+			mid, err := s.ensureTagTxLike(ctx, db, tagName)
 			if err != nil {
 				return err
 			}
@@ -712,30 +1059,34 @@ func (s *ContentService) syncRelationshipsTxLike(ctx context.Context, db execer,
 	_, _ = db.ExecContext(ctx, `
 		UPDATE gb_metas SET count = (
 			SELECT COUNT(*) FROM gb_relationships r JOIN gb_contents c ON c.cid = r.cid
-			WHERE r.mid = gb_metas.mid AND c.type = 'post'
+			WHERE r.mid = gb_metas.mid AND c.type = 'post' AND c.status = 'publish' AND COALESCE(c.draftOf, 0) = 0
 		)
 	`)
 	return nil
 }
 
 func (s *ContentService) ensureTag(ctx context.Context, name string) (int64, error) {
+	return s.ensureTagTxLike(ctx, s.db, name)
+}
+
+func (s *ContentService) ensureTagTxLike(ctx context.Context, db execer, name string) (int64, error) {
 	var id int64
-	err := s.db.QueryRowContext(ctx, `SELECT mid FROM gb_metas WHERE type = 'tag' AND name = ? LIMIT 1`, name).Scan(&id)
+	err := db.QueryRowContext(ctx, `SELECT mid FROM gb_metas WHERE type = 'tag' AND name = ? LIMIT 1`, name).Scan(&id)
 	if err == nil {
 		return id, nil
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
 		return 0, err
 	}
-	metaSlug, err := s.uniqueMetaSlug(ctx, name)
+	metaSlug, err := s.uniqueMetaSlugTxLike(ctx, db, name)
 	if err != nil {
 		return 0, err
 	}
 	if s.db.Dialect() == models.DialectPostgres {
-		err = s.db.QueryRowContext(ctx, `INSERT INTO gb_metas (name, slug, type, description, count, sortOrder, parent) VALUES (?, ?, 'tag', '', 0, 0, 0) RETURNING mid`, name, metaSlug).Scan(&id)
+		err = db.QueryRowContext(ctx, `INSERT INTO gb_metas (name, slug, type, description, count, sortOrder, parent) VALUES (?, ?, 'tag', '', 0, 0, 0) RETURNING mid`, name, metaSlug).Scan(&id)
 		return id, err
 	}
-	res, err := s.db.ExecContext(ctx, `INSERT INTO gb_metas (name, slug, type, description, count, sortOrder, parent) VALUES (?, ?, 'tag', '', 0, 0, 0)`, name, metaSlug)
+	res, err := db.ExecContext(ctx, `INSERT INTO gb_metas (name, slug, type, description, count, sortOrder, parent) VALUES (?, ?, 'tag', '', 0, 0, 0)`, name, metaSlug)
 	if err != nil {
 		return 0, err
 	}
@@ -744,8 +1095,11 @@ func (s *ContentService) ensureTag(ctx context.Context, name string) (int64, err
 
 func (s *ContentService) uniqueSlug(ctx context.Context, raw, title, typ string, exceptID int64) (string, error) {
 	base := slug.Make(raw)
-	if raw == "" {
+	if base == "" {
 		base = slug.Make(title)
+	}
+	if base == "" {
+		base = "post"
 	}
 	for i := 0; i < 1000; i++ {
 		candidate := base
@@ -753,8 +1107,8 @@ func (s *ContentService) uniqueSlug(ctx context.Context, raw, title, typ string,
 			candidate = fmt.Sprintf("%s-%d", base, i+1)
 		}
 		var id int64
-		err := s.db.QueryRowContext(ctx, `SELECT cid FROM gb_contents WHERE slug = ? AND type = ? LIMIT 1`, candidate, typ).Scan(&id)
-		if errors.Is(err, sql.ErrNoRows) || (err == nil && id == exceptID) {
+		err := s.db.QueryRowContext(ctx, `SELECT cid FROM gb_contents WHERE slug = ? AND type = ? AND COALESCE(draftOf, 0) = 0 AND cid <> ? LIMIT 1`, candidate, typ, exceptID).Scan(&id)
+		if errors.Is(err, sql.ErrNoRows) {
 			return candidate, nil
 		}
 		if err != nil {
@@ -764,15 +1118,57 @@ func (s *ContentService) uniqueSlug(ctx context.Context, raw, title, typ string,
 	return "", errors.New("cannot allocate unique slug")
 }
 
+func (s *ContentService) contentSlug(ctx context.Context, input SaveContentInput, exceptID int64) (string, error) {
+	if input.DraftOf > 0 {
+		base := slug.Make(input.Slug)
+		if base == "" {
+			base = slug.Make(input.Title)
+		}
+		if base == "" {
+			base = "post"
+		}
+		return base, nil
+	}
+	return s.uniqueSlug(ctx, input.Slug, input.Title, input.Type, exceptID)
+}
+
+func stripNumericSlugSuffix(value string) (string, bool) {
+	idx := strings.LastIndex(value, "-")
+	if idx <= 0 || idx == len(value)-1 {
+		return "", false
+	}
+	if _, err := strconv.Atoi(value[idx+1:]); err != nil {
+		return "", false
+	}
+	return value[:idx], true
+}
+
+func shouldSnapshotOnUpdate(current models.Content, input SaveContentInput) bool {
+	if current.Type != models.ContentTypePost && current.Type != models.ContentTypePage {
+		return false
+	}
+	if current.DraftOf > 0 || input.DraftOf > 0 {
+		return false
+	}
+	return current.Status == models.ContentStatusPost
+}
+
 func (s *ContentService) uniqueMetaSlug(ctx context.Context, name string) (string, error) {
+	return s.uniqueMetaSlugTxLike(ctx, s.db, name)
+}
+
+func (s *ContentService) uniqueMetaSlugTxLike(ctx context.Context, db execer, name string) (string, error) {
 	base := slug.Make(name)
+	if base == "" {
+		base = "tag"
+	}
 	for i := 0; i < 1000; i++ {
 		candidate := base
 		if i > 0 {
 			candidate = base + "-" + strconv.Itoa(i+1)
 		}
 		var id int64
-		err := s.db.QueryRowContext(ctx, `SELECT mid FROM gb_metas WHERE slug = ? AND type = 'tag' LIMIT 1`, candidate).Scan(&id)
+		err := db.QueryRowContext(ctx, `SELECT mid FROM gb_metas WHERE slug = ? AND type = 'tag' LIMIT 1`, candidate).Scan(&id)
 		if errors.Is(err, sql.ErrNoRows) {
 			return candidate, nil
 		}
@@ -787,7 +1183,7 @@ func scanContents(rows *sql.Rows) ([]models.Content, error) {
 	var contents []models.Content
 	for rows.Next() {
 		var c models.Content
-		if err := rows.Scan(&c.CID, &c.Title, &c.Slug, &c.Created, &c.Modified, &c.Text, &c.SortOrder, &c.AuthorID, &c.Template, &c.Type, &c.Status, &c.Password, &c.CommentsNum, &c.AllowComment, &c.AllowPing, &c.AllowFeed, &c.Parent); err != nil {
+		if err := rows.Scan(&c.CID, &c.Title, &c.Slug, &c.Created, &c.Modified, &c.Text, &c.SortOrder, &c.AuthorID, &c.Template, &c.Type, &c.Status, &c.Password, &c.CommentsNum, &c.AllowComment, &c.AllowPing, &c.AllowFeed, &c.Parent, &c.DraftOf); err != nil {
 			return nil, err
 		}
 		contents = append(contents, c)

@@ -338,6 +338,10 @@ func (a *App) adminDashboard(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
+	if err := a.Contents.RepairOrphanEditingDrafts(r.Context()); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 	stats, err := a.Contents.Stats(r.Context())
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -357,6 +361,10 @@ func (a *App) adminPosts(w http.ResponseWriter, r *http.Request) {
 		methodNotAllowed(w, http.MethodGet)
 		return
 	}
+	if err := a.Contents.RepairOrphanEditingDrafts(r.Context()); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 	user, _ := a.currentUser(r)
 	category, _ := strconv.ParseInt(r.URL.Query().Get("category"), 10, 64)
 	query := services.ContentQuery{
@@ -374,8 +382,19 @@ func (a *App) adminPosts(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	// Batch check which published posts have editing drafts
+	publishedIDs := make([]int64, 0)
+	for _, p := range posts {
+		if p.Status == models.ContentStatusPost && p.DraftOf == 0 {
+			publishedIDs = append(publishedIDs, p.CID)
+		}
+	}
+	draftMap, _ := a.Contents.DraftMapForContents(r.Context(), publishedIDs)
+	if draftMap == nil {
+		draftMap = map[int64]bool{}
+	}
 	categories, _ := a.Metas.List(r.Context(), "category")
-	a.renderAdmin(w, r, "posts.html", map[string]any{"Title": "文章", "Posts": posts, "Categories": categories, "Status": r.URL.Query().Get("status"), "Keywords": r.URL.Query().Get("keywords"), "Category": category})
+	a.renderAdmin(w, r, "posts.html", map[string]any{"Title": "文章", "Posts": posts, "Categories": categories, "Status": r.URL.Query().Get("status"), "Keywords": r.URL.Query().Get("keywords"), "Category": category, "DraftMap": draftMap})
 }
 
 func (a *App) adminPostRoutes(w http.ResponseWriter, r *http.Request) {
@@ -388,6 +407,10 @@ func (a *App) adminPages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !a.requireRole(w, r, "editor") {
+		return
+	}
+	if err := a.Contents.RepairOrphanEditingDrafts(r.Context()); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 	pages, err := a.Contents.List(r.Context(), services.ContentQuery{Type: models.ContentTypePage, Keywords: r.URL.Query().Get("keywords"), Limit: 200})
@@ -479,11 +502,66 @@ func (a *App) contentRoutes(w http.ResponseWriter, r *http.Request, prefix, typ 
 		if !a.canEditContent(w, r, id, typ) {
 			return
 		}
-		if err := a.Contents.MarkStatus(r.Context(), id, r.FormValue("status")); err != nil {
+		newStatus := r.FormValue("status")
+		item, itemErr := a.Contents.ByID(r.Context(), id)
+		if itemErr != nil {
+			http.Error(w, itemErr.Error(), http.StatusInternalServerError)
+			return
+		}
+		// If marking a published article as draft, create an editing draft instead
+		if item.Status == models.ContentStatusPost && item.DraftOf == 0 && newStatus == models.ContentStatusDraft {
+			input := services.SaveContentInput{
+				Title:        item.Title,
+				Slug:         item.Slug,
+				Text:         item.Text,
+				Type:         item.Type,
+				Status:       models.ContentStatusDraft,
+				Password:     item.Password,
+				SortOrder:    item.SortOrder,
+				Template:     item.Template,
+				Parent:       item.Parent,
+				AllowComment: item.AllowComment == "1",
+				AllowPing:    item.AllowPing == "1",
+				AllowFeed:    item.AllowFeed == "1",
+			}
+			uid, _ := a.currentUserID(r)
+			if _, err := a.Contents.SaveEditingDraft(r.Context(), id, input, uid); err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			a.flashRedirect(w, r, contentListURL(typ), http.StatusSeeOther, flashNotice{Type: "success", Message: "已创建编辑草稿。"})
+			return
+		}
+		// If marking a draft (with DraftOf) as published, publish the draft
+		if item.DraftOf > 0 && newStatus == models.ContentStatusPost {
+			if err := a.Contents.PublishDraft(r.Context(), id); err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			a.flashRedirect(w, r, contentListURL(typ), http.StatusSeeOther, flashNotice{Type: "success", Message: "内容已发布。"})
+			return
+		}
+		if err := a.Contents.MarkStatus(r.Context(), id, newStatus); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
 		a.flashRedirect(w, r, contentListURL(typ), http.StatusSeeOther, flashNotice{Type: "success", Message: "状态已更新。"})
+	case "discard":
+		if r.Method != http.MethodPost {
+			methodNotAllowed(w, http.MethodPost)
+			return
+		}
+		if !a.canEditContent(w, r, id, typ) {
+			return
+		}
+		// Discard the editing draft for a published article
+		if draft, err := a.Contents.DraftForContent(r.Context(), id); err == nil && draft.CID > 0 {
+			if err := a.Contents.DeleteDraft(r.Context(), draft.CID); err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+		}
+		a.flashRedirect(w, r, contentListURL(typ), http.StatusSeeOther, flashNotice{Type: "success", Message: "草稿已丢弃。"})
 	default:
 		http.NotFound(w, r)
 	}
@@ -492,6 +570,11 @@ func (a *App) contentRoutes(w http.ResponseWriter, r *http.Request, prefix, typ 
 func (a *App) contentForm(w http.ResponseWriter, r *http.Request, typ string, id int64) {
 	var item models.Content
 	var err error
+	var editingDraft bool
+	var draftExists bool
+	var publishedID int64
+	loadID := id
+	sourcePublished := r.URL.Query().Get("source") == "published"
 	if id > 0 {
 		item, err = a.Contents.ByID(r.Context(), id)
 		if err != nil {
@@ -502,6 +585,27 @@ func (a *App) contentForm(w http.ResponseWriter, r *http.Request, typ string, id
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
+		if item.DraftOf > 0 {
+			publishedID = item.DraftOf
+			editingDraft = true
+			loadID = item.CID
+		} else if item.Status == models.ContentStatusPost {
+			publishedID = item.CID
+			if !sourcePublished {
+				if draft, draftErr := a.Contents.DraftForContent(r.Context(), id); draftErr == nil && draft.CID > 0 {
+					item = draft
+					editingDraft = true
+					draftExists = true
+					loadID = draft.CID
+				}
+			}
+			if !editingDraft {
+				item.Status = models.ContentStatusDraft
+				item.DraftOf = publishedID
+				editingDraft = true
+				loadID = publishedID
+			}
+		}
 	} else {
 		item = models.Content{Type: typ, Status: models.ContentStatusPost, AllowComment: "1", AllowFeed: "1"}
 	}
@@ -510,17 +614,31 @@ func (a *App) contentForm(w http.ResponseWriter, r *http.Request, typ string, id
 	case http.MethodGet:
 		categories, _ := a.Metas.List(r.Context(), "category")
 		pages, _ := a.Contents.List(r.Context(), services.ContentQuery{Type: models.ContentTypePage, Limit: 200})
-		selectedCategories, _ := a.Metas.CategoriesForContent(r.Context(), id)
-		selectedTags, _ := a.Metas.TagsForContent(r.Context(), id)
-		fields, _ := a.Contents.FieldsForContent(r.Context(), id)
+		selectedCategories, _ := a.Metas.CategoriesForContent(r.Context(), loadID)
+		selectedTags, _ := a.Metas.TagsForContent(r.Context(), loadID)
+		fields, _ := a.Contents.FieldsForContent(r.Context(), loadID)
 		fields = mergeThemeFields(a.themeContentFields(r.Context(), typ), fields)
-		revisions, _ := a.Contents.Revisions(r.Context(), id)
+		actionID := id
+		formCID := item.CID
+		revisionID := id
+		if editingDraft && publishedID > 0 {
+			actionID = publishedID
+			formCID = publishedID
+			revisionID = publishedID
+		}
+		revisions, _ := a.Contents.Revisions(r.Context(), revisionID)
 		mediaLibrary, _ := a.editorMediaLibrary(r)
+		preview := a.previewURL(r, item)
+		if editingDraft && !draftExists {
+			preview = ""
+		}
 		a.renderAdmin(w, r, "content_form.html", map[string]any{
 			"Title":              contentFormTitle(typ, id),
 			"Content":            item,
 			"Type":               typ,
-			"Action":             contentActionURL(typ, id),
+			"Action":             contentActionURL(typ, actionID),
+			"FormCID":            formCID,
+			"PublishedID":        publishedID,
 			"Saved":              r.URL.Query().Get("saved") == "1",
 			"Categories":         categories,
 			"Pages":              pages,
@@ -528,8 +646,9 @@ func (a *App) contentForm(w http.ResponseWriter, r *http.Request, typ string, id
 			"SelectedTags":       selectedTags,
 			"Fields":             fields,
 			"Revisions":          revisions,
-			"PreviewURL":         a.previewURL(r, item),
+			"PreviewURL":         preview,
 			"MediaLibrary":       mediaLibrary,
+			"EditingDraft":       editingDraft,
 		})
 	case http.MethodPost:
 		input, err := parseContentForm(r, typ)
@@ -552,6 +671,37 @@ func (a *App) contentForm(w http.ResponseWriter, r *http.Request, typ string, id
 			}
 		}
 		uid, _ := a.currentUserID(r)
+
+		if id > 0 {
+			existing, existErr := a.Contents.ByID(r.Context(), id)
+			if existErr == nil && existing.DraftOf > 0 {
+				publishedID = existing.DraftOf
+			} else if existErr == nil && existing.Status == models.ContentStatusPost && existing.DraftOf == 0 {
+				publishedID = id
+			} else if existErr != nil {
+				http.Error(w, existErr.Error(), http.StatusInternalServerError)
+				return
+			}
+		}
+
+		if publishedID > 0 {
+			draftID, err := a.Contents.SaveEditingDraft(r.Context(), publishedID, input, uid)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			if input.Status == models.ContentStatusPost {
+				if err := a.Contents.PublishDraft(r.Context(), draftID); err != nil {
+					http.Error(w, err.Error(), http.StatusInternalServerError)
+					return
+				}
+				a.flashRedirect(w, r, contentActionURL(typ, publishedID), http.StatusSeeOther, flashNotice{Type: "success", Message: "内容已发布。"})
+			} else {
+				a.flashRedirect(w, r, contentActionURL(typ, publishedID), http.StatusSeeOther, flashNotice{Type: "success", Message: "草稿已保存。"})
+			}
+			return
+		}
+
 		savePayload := plugin.ContentSavePayload{ID: id, AuthorID: uid, Input: input}
 		if payload, err := a.Plugins.ApplyActive(r.Context(), plugin.HookContentBeforeSave, savePayload); err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
@@ -604,23 +754,42 @@ func (a *App) contentRevisions(w http.ResponseWriter, r *http.Request, typ strin
 func (a *App) renderContentForm(w http.ResponseWriter, r *http.Request, typ string, id int64, item models.Content, selectedCategories, selectedTags []models.Meta, fields []models.Field, errs validate.Errors) {
 	categories, _ := a.Metas.List(r.Context(), "category")
 	pages, _ := a.Contents.List(r.Context(), services.ContentQuery{Type: models.ContentTypePage, Limit: 200})
+	publishedID := item.DraftOf
+	formCID := item.CID
+	actionID := id
+	loadID := id
+	if publishedID > 0 {
+		formCID = publishedID
+		actionID = publishedID
+		if item.CID > 0 && item.CID != publishedID {
+			loadID = item.CID
+		} else {
+			loadID = publishedID
+		}
+	}
 	if selectedCategories == nil {
-		selectedCategories, _ = a.Metas.CategoriesForContent(r.Context(), id)
+		selectedCategories, _ = a.Metas.CategoriesForContent(r.Context(), loadID)
 	}
 	if selectedTags == nil {
-		selectedTags, _ = a.Metas.TagsForContent(r.Context(), id)
+		selectedTags, _ = a.Metas.TagsForContent(r.Context(), loadID)
 	}
 	if fields == nil {
-		fields, _ = a.Contents.FieldsForContent(r.Context(), id)
+		fields, _ = a.Contents.FieldsForContent(r.Context(), loadID)
 	}
 	fields = mergeThemeFields(a.themeContentFields(r.Context(), typ), fields)
-	revisions, _ := a.Contents.Revisions(r.Context(), id)
+	revisionID := id
+	if publishedID > 0 {
+		revisionID = publishedID
+	}
+	revisions, _ := a.Contents.Revisions(r.Context(), revisionID)
 	mediaLibrary, _ := a.editorMediaLibrary(r)
 	a.renderAdmin(w, r, "content_form.html", map[string]any{
 		"Title":              contentFormTitle(typ, id),
 		"Content":            item,
 		"Type":               typ,
-		"Action":             contentActionURL(typ, id),
+		"Action":             contentActionURL(typ, actionID),
+		"FormCID":            formCID,
+		"PublishedID":        publishedID,
 		"Categories":         categories,
 		"Pages":              pages,
 		"SelectedCategories": selectedCategories,
@@ -630,6 +799,7 @@ func (a *App) renderContentForm(w http.ResponseWriter, r *http.Request, typ stri
 		"Revisions":          revisions,
 		"PreviewURL":         a.previewURL(r, item),
 		"MediaLibrary":       mediaLibrary,
+		"EditingDraft":       publishedID > 0,
 	})
 }
 
@@ -1619,18 +1789,40 @@ func (a *App) adminAutosave(w http.ResponseWriter, r *http.Request) {
 	}
 	input.Status = models.ContentStatusDraft
 	user, _ := a.currentUser(r)
-	if id == 0 {
-		id, err = a.Contents.Create(r.Context(), input, user.UID)
+
+	responseID := id
+	previewID := id
+	if id > 0 {
+		existing, existErr := a.Contents.ByID(r.Context(), id)
+		if existErr == nil && existing.DraftOf > 0 {
+			var draftID int64
+			draftID, err = a.Contents.SaveEditingDraft(r.Context(), existing.DraftOf, input, user.UID)
+			responseID = existing.DraftOf
+			previewID = draftID
+		} else if existErr == nil && existing.Status == models.ContentStatusPost && existing.DraftOf == 0 {
+			var draftID int64
+			draftID, err = a.Contents.SaveEditingDraft(r.Context(), id, input, user.UID)
+			responseID = id
+			previewID = draftID
+		} else if existErr == nil {
+			err = a.Contents.Update(r.Context(), id, input)
+			responseID = id
+			previewID = id
+		} else {
+			err = existErr
+		}
 	} else {
-		err = a.Contents.Update(r.Context(), id, input)
+		id, err = a.Contents.Create(r.Context(), input, user.UID)
+		responseID = id
+		previewID = id
 	}
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	item, _ := a.Contents.ByID(r.Context(), id)
+	item, _ := a.Contents.ByID(r.Context(), previewID)
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "cid": id, "preview": a.previewURL(r, item)})
+	_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "cid": responseID, "preview": a.previewURL(r, item)})
 }
 
 func (a *App) adminTagSearch(w http.ResponseWriter, r *http.Request) {
@@ -2094,6 +2286,7 @@ func (a *App) frontDynamic(w http.ResponseWriter, r *http.Request) {
 
 func (a *App) frontPost(w http.ResponseWriter, r *http.Request) {
 	postSlug := path.Base(strings.TrimSuffix(r.URL.Path, "/"))
+	postSlug = strings.TrimSuffix(postSlug, ".html")
 	post, err := a.Contents.BySlug(r.Context(), postSlug)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -4468,7 +4661,7 @@ func (a *App) contentURL(ctx context.Context, c models.Content) string {
 		pattern := a.option(ctx, "permalink_page", "/page/{slug}")
 		return cleanPublicPath(applyContentPattern(pattern, c, a.pageDirectory(ctx, c)))
 	default:
-		pattern := a.option(ctx, "permalink_post", "/post/{slug}")
+		pattern := a.option(ctx, "permalink_post", "/post/{slug}.html")
 		category, directory := a.primaryCategoryPath(ctx, c.CID)
 		return cleanPublicPath(applyContentPattern(pattern, c, directory, category))
 	}
@@ -4655,7 +4848,7 @@ func (a *App) redirectCanonical(w http.ResponseWriter, r *http.Request, canonica
 
 func (a *App) tryDynamicPermalink(w http.ResponseWriter, r *http.Request) bool {
 	ctx := r.Context()
-	if vars, ok := matchPermalink(a.option(ctx, "permalink_post", "/post/{slug}"), r.URL.Path); ok {
+	if vars, ok := matchPermalink(a.option(ctx, "permalink_post", "/post/{slug}.html"), r.URL.Path); ok {
 		post, err := a.contentFromPermalinkVars(ctx, vars, models.ContentTypePost)
 		if err == nil && post.Status == models.ContentStatusPost && post.Created <= time.Now().Unix() {
 			if post.Password != "" && r.URL.Query().Get("password") != post.Password {
@@ -4813,7 +5006,7 @@ func contentPublicURL(c models.Content) string {
 	if c.Type == models.ContentTypePage {
 		return "/page/" + c.Slug
 	}
-	return "/post/" + c.Slug
+	return "/post/" + c.Slug + ".html"
 }
 
 func contentListURL(typ string) string {

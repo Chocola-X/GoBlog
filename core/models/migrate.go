@@ -9,7 +9,7 @@ import (
 	"strings"
 )
 
-const CurrentSchemaVersion = 1
+const CurrentSchemaVersion = 4
 
 func Migrate(ctx context.Context, db *sql.DB, driver string) error {
 	var stmts []string
@@ -61,6 +61,9 @@ func RunVersionedMigrations(ctx context.Context, db *sql.DB) error {
 		Run     func(context.Context, *sql.DB) error
 	}{
 		{Version: 1, Run: migrateV1},
+		{Version: 2, Run: migrateV2},
+		{Version: 3, Run: migrateV3},
+		{Version: 4, Run: migrateV4},
 	}
 	for _, migration := range migrations {
 		if version >= migration.Version {
@@ -88,6 +91,51 @@ func migrateV1(ctx context.Context, db *sql.DB) error {
 		return err
 	}
 	return nil
+}
+
+func migrateV2(ctx context.Context, db *sql.DB) error {
+	if err := ensureColumn(ctx, db, `ALTER TABLE gb_contents ADD COLUMN draftOf int(10) default '0'`); err != nil {
+		return err
+	}
+	// Create index for draftOf column (ignore errors if index already exists)
+	_, _ = db.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS gb_contents_draftOf ON gb_contents (draftOf)`)
+	return nil
+}
+
+func migrateV3(ctx context.Context, db *sql.DB) error {
+	return replaceContentSlugIndex(ctx, db)
+}
+
+func migrateV4(ctx context.Context, db *sql.DB) error {
+	_, err := db.ExecContext(ctx, `UPDATE gb_options SET value = ? WHERE name = ? AND user = 0 AND value = ?`, "/post/{slug}.html", "permalink_post", "/post/{slug}")
+	if err == nil {
+		return nil
+	}
+	_, err = db.ExecContext(ctx, `UPDATE gb_options SET value = $1 WHERE name = $2 AND "user" = 0 AND value = $3`, "/post/{slug}.html", "permalink_post", "/post/{slug}")
+	return err
+}
+
+func replaceContentSlugIndex(ctx context.Context, db *sql.DB) error {
+	_, _ = db.ExecContext(ctx, `DROP INDEX IF EXISTS gb_contents_slug`)
+	_, _ = db.ExecContext(ctx, `ALTER TABLE gb_contents DROP INDEX gb_contents_slug`)
+	if _, err := db.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS gb_contents_slug ON gb_contents (slug)`); err == nil || isDuplicateIndexError(err) {
+		return nil
+	}
+	_, err := db.ExecContext(ctx, `CREATE INDEX gb_contents_slug ON gb_contents (slug)`)
+	if err == nil || isDuplicateIndexError(err) {
+		return nil
+	}
+	return err
+}
+
+func isDuplicateIndexError(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "already exists") ||
+		strings.Contains(message, "duplicate key name") ||
+		(strings.Contains(message, "relation") && strings.Contains(message, "already exists"))
 }
 
 func schemaVersion(ctx context.Context, db *sql.DB) (int, error) {
@@ -147,9 +195,10 @@ func sqliteSchema() []string {
 			allowComment char(1) default '1',
 			allowPing char(1) default '0',
 			allowFeed char(1) default '1',
-			parent int(10) default '0'
+			parent int(10) default '0',
+			draftOf int(10) default '0'
 		)`,
-		`CREATE UNIQUE INDEX IF NOT EXISTS gb_contents_slug ON gb_contents (slug)`,
+		`CREATE INDEX IF NOT EXISTS gb_contents_slug ON gb_contents (slug)`,
 		`CREATE INDEX IF NOT EXISTS gb_contents_created ON gb_contents (created)`,
 		`CREATE TABLE IF NOT EXISTS gb_users (
 			uid INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
@@ -256,9 +305,11 @@ func mysqlSchema() []string {
 			allowPing char(1) default '0',
 			allowFeed char(1) default '1',
 			parent int(10) unsigned default '0',
+			draftOf int(10) unsigned default '0',
 			PRIMARY KEY (cid),
-			UNIQUE KEY gb_contents_slug (slug),
-			KEY gb_contents_created (created)
+			KEY gb_contents_slug (slug),
+			KEY gb_contents_created (created),
+			KEY gb_contents_draftOf (draftOf)
 		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
 		`CREATE TABLE IF NOT EXISTS gb_users (
 			uid int(10) unsigned NOT NULL AUTO_INCREMENT,
@@ -369,9 +420,10 @@ func postgresSchema() []string {
 			allowComment char(1) default '1',
 			allowPing char(1) default '0',
 			allowFeed char(1) default '1',
-			parent bigint default 0
+			parent bigint default 0,
+			draftOf bigint default 0
 		)`,
-		`CREATE UNIQUE INDEX IF NOT EXISTS gb_contents_slug ON gb_contents (slug)`,
+		`CREATE INDEX IF NOT EXISTS gb_contents_slug ON gb_contents (slug)`,
 		`CREATE INDEX IF NOT EXISTS gb_contents_created ON gb_contents (created)`,
 		`CREATE TABLE IF NOT EXISTS gb_users (
 			uid bigserial PRIMARY KEY,

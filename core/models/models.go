@@ -29,6 +29,7 @@ type Content struct {
 	AllowPing    string
 	AllowFeed    string
 	Parent       int64
+	DraftOf      int64
 }
 
 func (c Content) CreatedAt() time.Time {

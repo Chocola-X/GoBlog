@@ -382,6 +382,137 @@ func TestAutosaveAllowsOnlyPostOrPageAndChecksAuthor(t *testing.T) {
 	}
 }
 
+func TestPublishedPostEditUsesSeparateDraft(t *testing.T) {
+	app, secret, adminID := newSecurityTestApp(t)
+	ctx := context.Background()
+	postID, err := app.Contents.Create(ctx, services.SaveContentInput{
+		Title:        "Original",
+		Slug:         "published-edit",
+		Text:         "published body",
+		Type:         models.ContentTypePost,
+		Status:       models.ContentStatusPost,
+		AllowComment: true,
+		AllowFeed:    true,
+	}, adminID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	form := url.Values{
+		"_csrf":        {adminToken(secret, adminID)},
+		"type":         {models.ContentTypePost},
+		"cid":          {itoa(postID)},
+		"title":        {"Edited"},
+		"slug":         {"published-edit"},
+		"status":       {models.ContentStatusDraft},
+		"text":         {"draft body"},
+		"allowComment": {"1"},
+		"allowFeed":    {"1"},
+	}
+	req := httptest.NewRequest(http.MethodPost, "/admin/posts/"+itoa(postID)+"/edit", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	setSession(t, req, secret, adminID)
+	rec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("save editing draft status = %d, want 303: %s", rec.Code, rec.Body.String())
+	}
+	published, err := app.Contents.ByID(ctx, postID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if published.Title != "Original" || published.Text != "published body" {
+		t.Fatalf("published content changed after saving draft: %#v", published)
+	}
+	draft, err := app.Contents.DraftForContent(ctx, postID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if draft.Title != "Edited" || draft.Text != "draft body" || draft.DraftOf != postID {
+		t.Fatalf("editing draft mismatch: %#v", draft)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/admin/posts/"+itoa(postID)+"/edit", nil)
+	setSession(t, req, secret, adminID)
+	rec = httptest.NewRecorder()
+	app.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("edit page status = %d, want 200", rec.Code)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, `value="draft body"`) {
+		t.Fatal("edit page did not render editing draft body")
+	}
+	if !strings.Contains(body, `name="cid" value="`+itoa(postID)+`"`) {
+		t.Fatal("edit page did not keep autosave cid on published content")
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/admin/posts", nil)
+	setSession(t, req, secret, adminID)
+	rec = httptest.NewRecorder()
+	app.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("posts list status = %d, want 200", rec.Code)
+	}
+	body = rec.Body.String()
+	if strings.Contains(body, "/admin/posts/"+itoa(draft.CID)+"/edit") {
+		t.Fatal("posts list rendered editing draft as a separate row")
+	}
+	if !strings.Contains(body, "/admin/posts/"+itoa(postID)+"/edit") || !strings.Contains(body, "/admin/posts/"+itoa(postID)+"/edit?source=published") {
+		t.Fatal("posts list did not render both draft and published edit actions")
+	}
+
+	form = url.Values{"_csrf": {adminToken(secret, adminID)}}
+	req = httptest.NewRequest(http.MethodPost, "/admin/posts/"+itoa(postID)+"/discard", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	setSession(t, req, secret, adminID)
+	rec = httptest.NewRecorder()
+	app.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("discard draft status = %d, want 303: %s", rec.Code, rec.Body.String())
+	}
+	if _, err := app.Contents.DraftForContent(ctx, postID); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("DraftForContent after discard err = %v, want sql.ErrNoRows", err)
+	}
+	published, err = app.Contents.ByID(ctx, postID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if published.Text != "published body" {
+		t.Fatalf("discard changed published content: %#v", published)
+	}
+
+	form = url.Values{
+		"_csrf":        {adminToken(secret, adminID)},
+		"type":         {models.ContentTypePost},
+		"cid":          {itoa(postID)},
+		"title":        {"Final"},
+		"slug":         {"published-edit"},
+		"status":       {models.ContentStatusPost},
+		"text":         {"final body"},
+		"allowComment": {"1"},
+		"allowFeed":    {"1"},
+	}
+	req = httptest.NewRequest(http.MethodPost, "/admin/posts/"+itoa(postID)+"/edit", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	setSession(t, req, secret, adminID)
+	rec = httptest.NewRecorder()
+	app.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("publish editing draft status = %d, want 303: %s", rec.Code, rec.Body.String())
+	}
+	published, err = app.Contents.ByID(ctx, postID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if published.Title != "Final" || published.Text != "final body" {
+		t.Fatalf("published content not updated after publishing draft: %#v", published)
+	}
+	if _, err := app.Contents.DraftForContent(ctx, postID); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("DraftForContent after publish err = %v, want sql.ErrNoRows", err)
+	}
+}
+
 func TestPublicCommentWhitelistAndStopWords(t *testing.T) {
 	app, _, adminID := newSecurityTestApp(t)
 	ctx := context.Background()
@@ -467,7 +598,7 @@ func TestPublicCommentRefererCheckRequiresCurrentContent(t *testing.T) {
 		t.Fatalf("wrong path referer response = %d %q", rec.Code, rec.Header().Get("Location"))
 	}
 
-	rec = submitPublicCommentWithReferer(t, app, postID, form, "198.51.100.43", "http://example.com/post/comment-referer?comments_page=1")
+	rec = submitPublicCommentWithReferer(t, app, postID, form, "198.51.100.43", "http://example.com/post/comment-referer.html?comments_page=1")
 	if rec.Code != http.StatusSeeOther || !strings.Contains(rec.Header().Get("Location"), "comment_ok=1") {
 		t.Fatalf("valid referer response = %d %q", rec.Code, rec.Header().Get("Location"))
 	}
@@ -1239,7 +1370,7 @@ func TestPostSEOImageUsesFirstContentImage(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	req := httptest.NewRequest(http.MethodGet, "/post/image-post", nil)
+	req := httptest.NewRequest(http.MethodGet, "/post/image-post.html", nil)
 	rec := httptest.NewRecorder()
 	app.Handler().ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
