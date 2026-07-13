@@ -374,10 +374,11 @@ func (a *App) handleXMLRPCMethod(ctx context.Context, method string, params []xm
 			name = "upload.bin"
 		}
 		data := media["bits"].BytesValue()
-		meta, err := a.saveUpload(ctx, bytes.NewReader(data), name, 0)
+		saved, err := a.saveUpload(ctx, bytes.NewReader(data), name, 0)
 		if err != nil {
 			return nil, &xmlRPCFault{Code: 400, Message: "invalid upload"}
 		}
+		meta := saved.Meta
 		text, _ := json.Marshal(meta)
 		id, err := a.Contents.CreateAttachmentMeta(ctx, meta.Name, strings.TrimSuffix(filepath.Base(meta.Name), filepath.Ext(meta.Name)), string(text), user.UID, 0)
 		if err != nil {

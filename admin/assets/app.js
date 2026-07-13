@@ -113,6 +113,7 @@
     initNativeFileButtons(root);
     initCopyButtons(root);
     initSchemaForm(root);
+    initImageProcessingOptions(root);
     initAdminNotices(root);
   }
 
@@ -510,8 +511,8 @@
   function mediaItemHTML(item) {
     var title = "插入 " + (item.name || item.url || "附件");
     var meta = [item.sizeLabel || "", item.mime || ""].filter(Boolean).join(" · ");
-    var preview = item.isImage && item.url
-      ? '<img src="' + escapeHTML(item.url) + '" alt="">'
+    var preview = item.isImage && (item.thumbnailURL || item.url)
+      ? '<img src="' + escapeHTML(item.thumbnailURL || item.url) + '" alt="">'
       : '<span class="media-file-icon"><mdui-icon name="' + escapeHTML(item.icon || "insert_drive_file") + '"></mdui-icon></span>';
     return '<div class="media-pick-card media-pick-' + escapeHTML(item.kind || "file") + '">' +
       '<button type="button" class="media-pick" data-markdown="' + escapeHTML(item.markdown || item.url || "") + '" title="' + escapeHTML(title) + '">' +
@@ -623,6 +624,9 @@
           appendToEditor(payload.markdown || payload.url || "");
           document.dispatchEvent(new CustomEvent("goblog:media-uploaded", { detail: payload }));
           setButtonLabel(button, "已插入");
+          if (payload.warning) {
+            showMessage(payload.warning, { type: "info" });
+          }
         }).catch(function (err) {
           showMessage("上传失败：" + err.message);
           setButtonLabel(button, "上传并插入");
@@ -764,6 +768,9 @@
                 target.dispatchEvent(new Event("input", { bubbles: true }));
               }
               setButtonLabel(button, "已填入");
+              if (result.warning) {
+                showMessage(result.warning, { type: "info" });
+              }
             })
             .catch(function (err) {
               showMessage("上传失败：" + err.message);
@@ -775,6 +782,38 @@
             });
         });
       });
+    });
+  }
+
+  function initImageProcessingOptions(root) {
+    query(root, "[data-image-processing-options]").forEach(function (panel) {
+      if (bound(panel, "adminImageOptionsBound")) {
+        return;
+      }
+      var mode = panel.querySelector('[name="upload_image_processing"]');
+      var quality = panel.querySelector("[data-webp-quality]");
+      var thumbnailMode = panel.querySelector('[name="thumbnail_format"]');
+      var thumbnailQuality = panel.querySelector("[data-thumbnail-quality]");
+      if (!mode || !quality) {
+        return;
+      }
+      function syncQualityVisibility() {
+        var customQuality = mode.value === "webp_quality";
+        quality.hidden = !customQuality;
+        var input = quality.querySelector('[name="upload_webp_quality"]');
+        if (input) {
+          input.required = customQuality;
+        }
+      }
+      mode.addEventListener("change", syncQualityVisibility);
+      syncQualityVisibility();
+      if (thumbnailMode && thumbnailQuality) {
+        function syncThumbnailQualityVisibility() {
+          thumbnailQuality.hidden = thumbnailMode.value === "disabled";
+        }
+        thumbnailMode.addEventListener("change", syncThumbnailQualityVisibility);
+        syncThumbnailQualityVisibility();
+      }
     });
   }
 

@@ -2,6 +2,7 @@
 <div class="page-head"><div><h1>{{T "General Settings"}}</h1></div></div>
 {{template "options_tabs" .}}
 {{if .Saved}}<div class="notice">设置已保存。</div>{{end}}
+{{if .Error}}<div class="notice danger">{{.Error}}</div>{{end}}
 <form method="post" class="form-panel field-stack">
   <mdui-text-field name="site_title" label="{{T "Site title"}}" value="{{index .Options "site_title"}}" required></mdui-text-field>
   <mdui-text-field name="base_url" label="{{T "Site URL"}}" value="{{index .Options "base_url"}}" required></mdui-text-field>
@@ -33,6 +34,27 @@
   <mdui-text-field name="active_theme" label="{{T "Active theme"}}" value="{{index .Options "active_theme"}}"></mdui-text-field>
   <mdui-text-field name="upload_allowed_exts" label="{{T "Allowed upload extensions"}}" helper="jpg,png,webp" value="{{index .Options "upload_allowed_exts"}}"></mdui-text-field>
   <mdui-text-field name="upload_max_size" label="{{T "Upload max bytes"}}" type="number" value="{{index .Options "upload_max_size"}}"></mdui-text-field>
+  <fieldset class="fieldset image-processing-options" data-image-processing-options>
+    <legend>图片处理</legend>
+    <mdui-select name="upload_image_processing" label="图片上传保存方式" value="{{index .Options "upload_image_processing"}}">
+      <mdui-menu-item value="original">不处理，保持原文件</mdui-menu-item>
+      <mdui-menu-item value="webp_lossless">转换为原图质量 WebP</mdui-menu-item>
+      <mdui-menu-item value="webp_quality">转换为 WebP 并自定义质量</mdui-menu-item>
+    </mdui-select>
+    <div data-webp-quality {{if ne (index .Options "upload_image_processing") "webp_quality"}}hidden{{end}}>
+      <mdui-text-field name="upload_webp_quality" type="number" min="1" max="100" step="1" label="WebP 转换质量" value="{{index .Options "upload_webp_quality"}}" helper="1-100 的整数；数值越高，画质与文件体积越大"></mdui-text-field>
+    </div>
+    <mdui-text-field name="image_processing_memory_mb" type="number" min="64" max="32768" step="1" label="单次图片处理内存预算（MB）" value="{{index .Options "image_processing_memory_mb"}}" helper="按图片尺寸估算解码和编码峰值内存；最低 64 MB，默认 256 MB"></mdui-text-field>
+    <mdui-select name="thumbnail_format" label="后台缩略图格式" value="{{index .Options "thumbnail_format"}}">
+      <mdui-menu-item value="disabled">禁用，直接使用原图</mdui-menu-item>
+      <mdui-menu-item value="jpg">JPEG</mdui-menu-item>
+      <mdui-menu-item value="webp">WebP</mdui-menu-item>
+    </mdui-select>
+    <div data-thumbnail-quality {{if eq (index .Options "thumbnail_format") "disabled"}}hidden{{end}}>
+      <mdui-text-field name="thumbnail_quality" type="number" min="1" max="100" step="1" label="后台缩略图质量" value="{{index .Options "thumbnail_quality"}}" helper="可留空，默认使用 82 的中高质量"></mdui-text-field>
+    </div>
+    <span class="muted">缩略图只用于后台预览，不会改变文章中引用的原图地址；SVG 保持矢量原文件。</span>
+  </fieldset>
   <mdui-select name="upload_replace_same_ext_only" label="{{T "Replacement extension policy"}}" value="{{index .Options "upload_replace_same_ext_only"}}">
     <mdui-menu-item value="1">{{T "Same extension required"}}</mdui-menu-item>
     <mdui-menu-item value="0">{{T "Different extension allowed"}}</mdui-menu-item>

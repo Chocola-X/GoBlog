@@ -40,6 +40,7 @@ import (
 	"goblog/pkg/auth"
 	compathttp "goblog/pkg/httpclient"
 	"goblog/pkg/i18n"
+	"goblog/pkg/imageproc"
 	"goblog/pkg/render"
 )
 
@@ -124,6 +125,7 @@ func (a *App) Handler() http.Handler {
 		"/admin/upgrade":              a.adminUpgrade,
 		"/admin/autosave":             a.adminAutosave,
 		"/admin/markdown/preview":     a.adminMarkdownPreview,
+		"/admin/thumbnail":            a.adminThumbnail,
 		"/admin/medias/editor":        a.adminEditorMedia,
 		"/admin/tags/search":          a.adminTagSearch,
 		"/admin/ajax/tags":            a.adminTagSearch,
@@ -1301,7 +1303,70 @@ func (a *App) adminOptionsGeneral(w http.ResponseWriter, r *http.Request) {
 	if !a.requireRole(w, r, "administrator") {
 		return
 	}
-	a.optionsForm(w, r, "General Settings", "options_general.html", []string{"site_title", "site_description", "site_keywords", "base_url", "site_language", "site_timezone", "allow_register", "register_default_role", "cookie_prefix", "cookie_secure", "cookie_samesite", "active_theme", "upload_allowed_exts", "upload_max_size", "upload_replace_same_ext_only", "attachment_delete_policy"})
+	keys := []string{"site_title", "site_description", "site_keywords", "base_url", "site_language", "site_timezone", "allow_register", "register_default_role", "cookie_prefix", "cookie_secure", "cookie_samesite", "active_theme", "upload_allowed_exts", "upload_max_size", "upload_image_processing", "upload_webp_quality", "image_processing_memory_mb", "thumbnail_format", "thumbnail_quality", "upload_replace_same_ext_only", "attachment_delete_policy"}
+	if r.Method == http.MethodPost {
+		if err := r.ParseForm(); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if strings.TrimSpace(r.FormValue("upload_image_processing")) == "" {
+			r.Form.Set("upload_image_processing", imageproc.UploadOriginal)
+		}
+		if strings.TrimSpace(r.FormValue("upload_webp_quality")) == "" {
+			r.Form.Set("upload_webp_quality", strconv.Itoa(imageproc.DefaultWebPQuality))
+		}
+		if strings.TrimSpace(r.FormValue("image_processing_memory_mb")) == "" {
+			r.Form.Set("image_processing_memory_mb", strconv.Itoa(imageproc.DefaultMemoryLimitMB))
+		}
+		if strings.TrimSpace(r.FormValue("thumbnail_format")) == "" {
+			r.Form.Set("thumbnail_format", imageproc.ThumbnailJPEG)
+		}
+		if err := validateImageProcessingOptions(r); err != nil {
+			options, _ := a.Options.All(r.Context())
+			for _, key := range keys {
+				options[key] = r.FormValue(key)
+			}
+			a.renderAdmin(w, r, "options_general.html", map[string]any{"Title": "General Settings", "Options": options, "Error": err.Error()})
+			return
+		}
+	}
+	a.optionsForm(w, r, "General Settings", "options_general.html", keys)
+}
+
+func validateImageProcessingOptions(r *http.Request) error {
+	mode := strings.TrimSpace(r.FormValue("upload_image_processing"))
+	switch mode {
+	case imageproc.UploadOriginal, imageproc.UploadWebPLossless, imageproc.UploadWebPQuality:
+	default:
+		return fmt.Errorf("请选择有效的图片保存方式")
+	}
+	if mode == imageproc.UploadWebPQuality {
+		if _, err := requiredQuality(r.FormValue("upload_webp_quality")); err != nil {
+			return fmt.Errorf("WebP 质量必须是 1 到 100 的整数")
+		}
+	}
+	memoryMB, err := strconv.Atoi(strings.TrimSpace(r.FormValue("image_processing_memory_mb")))
+	if err != nil || memoryMB < 64 || memoryMB > 32768 {
+		return fmt.Errorf("图片处理内存预算必须是 64 到 32768 MB 的整数")
+	}
+	format := strings.TrimSpace(r.FormValue("thumbnail_format"))
+	if format != imageproc.ThumbnailDisabled && format != imageproc.ThumbnailJPEG && format != imageproc.ThumbnailWebP {
+		return fmt.Errorf("请选择有效的缩略图格式")
+	}
+	if quality := strings.TrimSpace(r.FormValue("thumbnail_quality")); format != imageproc.ThumbnailDisabled && quality != "" {
+		if _, err := requiredQuality(quality); err != nil {
+			return fmt.Errorf("缩略图质量必须是 1 到 100 的整数，或留空使用默认值")
+		}
+	}
+	return nil
+}
+
+func requiredQuality(raw string) (int, error) {
+	quality, err := strconv.Atoi(strings.TrimSpace(raw))
+	if err != nil || quality < 1 || quality > 100 {
+		return 0, fmt.Errorf("invalid quality")
+	}
+	return quality, nil
 }
 
 func (a *App) adminUpgrade(w http.ResponseWriter, r *http.Request) {
@@ -2069,11 +2134,12 @@ func (a *App) adminSchemaUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer file.Close()
-	meta, err := a.saveUpload(r.Context(), file, header.Filename, 0)
+	saved, err := a.saveUpload(r.Context(), file, header.Filename, 0)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	meta := saved.Meta
 	user, _ := a.currentUser(r)
 	text, _ := json.Marshal(meta)
 	if _, err := a.Contents.CreateAttachmentMeta(r.Context(), meta.Name, strings.TrimSuffix(filepath.Base(meta.Name), filepath.Ext(meta.Name)), string(text), user.UID, 0); err != nil {
@@ -2081,7 +2147,7 @@ func (a *App) adminSchemaUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "url": meta.URL})
+	_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "url": meta.URL, "warning": saved.Warning})
 }
 
 func (a *App) adminManagementUpload(w http.ResponseWriter, r *http.Request) {
@@ -2102,13 +2168,13 @@ func (a *App) adminManagementUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer file.Close()
-	url, err := a.saveAdminSettingUpload(r.Context(), file, header.Filename)
+	saved, err := a.saveAdminSettingUpload(r.Context(), file, header.Filename)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "url": url})
+	_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "url": saved.URL, "warning": saved.Warning})
 }
 
 func (a *App) adminThemeUpload(w http.ResponseWriter, r *http.Request, name string) {
@@ -2133,13 +2199,13 @@ func (a *App) adminThemeUpload(w http.ResponseWriter, r *http.Request, name stri
 		return
 	}
 	defer file.Close()
-	url, err := a.saveThemeSettingUpload(r.Context(), file, header.Filename)
+	saved, err := a.saveThemeSettingUpload(r.Context(), file, header.Filename)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "url": url})
+	_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "url": saved.URL, "warning": saved.Warning})
 }
 
 func (a *App) adminManagementAssets(w http.ResponseWriter, r *http.Request) {
@@ -2220,11 +2286,12 @@ type settingsAssetManager struct {
 }
 
 type settingsAssetFile struct {
-	Name      string
-	URL       string
-	SizeLabel string
-	Modified  string
-	Used      bool
+	Name         string
+	URL          string
+	ThumbnailURL string
+	SizeLabel    string
+	Modified     string
+	Used         bool
 }
 
 func (a *App) settingsAssetManager(ctx context.Context, cfg settingsAssetManagerConfig) *settingsAssetManager {
@@ -2271,11 +2338,12 @@ func (a *App) settingsAssetFiles(bucket string, used map[string]bool) []settings
 		}
 		url := "/uploads/" + path.Join(bucket, entry.Name())
 		files = append(files, settingsAssetFile{
-			Name:      entry.Name(),
-			URL:       url,
-			SizeLabel: formatBytes(info.Size()),
-			Modified:  info.ModTime().Format("2006-01-02 15:04"),
-			Used:      used[url],
+			Name:         entry.Name(),
+			URL:          url,
+			ThumbnailURL: adminThumbnailURL(url),
+			SizeLabel:    formatBytes(info.Size()),
+			Modified:     info.ModTime().Format("2006-01-02 15:04"),
+			Used:         used[url],
 		})
 	}
 	sort.Slice(files, func(i, j int) bool {
@@ -2293,6 +2361,7 @@ func (a *App) deleteSettingsAsset(bucket, name string) error {
 	if err := os.Remove(fullPath); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
+	a.removeImageThumbnails(fullPath)
 	return nil
 }
 
@@ -2353,11 +2422,12 @@ func (a *App) adminMedias(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		defer file.Close()
-		meta, err := a.saveUpload(r.Context(), file, header.Filename, parent)
+		saved, err := a.saveUpload(r.Context(), file, header.Filename, parent)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
+		meta := saved.Meta
 		text, _ := json.Marshal(meta)
 		id, err := a.Contents.CreateAttachmentMeta(r.Context(), meta.Name, strings.TrimSuffix(filepath.Base(meta.Name), filepath.Ext(meta.Name)), string(text), user.UID, parent)
 		if err != nil {
@@ -2366,10 +2436,14 @@ func (a *App) adminMedias(w http.ResponseWriter, r *http.Request) {
 		}
 		if wantsJSON(r) {
 			w.Header().Set("Content-Type", "application/json; charset=utf-8")
-			_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "cid": id, "url": meta.URL, "markdown": attachmentMarkdown(meta)})
+			_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "cid": id, "url": meta.URL, "markdown": attachmentMarkdown(meta), "warning": saved.Warning})
 			return
 		}
-		a.flashRedirect(w, r, "/admin/medias", http.StatusSeeOther, flashNotice{Type: "success", Message: "附件已上传。"})
+		message := "附件已上传。"
+		if saved.Warning != "" {
+			message = saved.Warning
+		}
+		a.flashRedirect(w, r, "/admin/medias", http.StatusSeeOther, flashNotice{Type: "success", Message: message})
 	default:
 		methodNotAllowed(w, http.MethodGet+", "+http.MethodPost)
 	}
@@ -2434,17 +2508,22 @@ func (a *App) adminMediaRoutes(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		defer file.Close()
-		meta, err := a.replaceUpload(r.Context(), file, header.Filename, item.Parent, parseAttachmentMeta(item))
+		saved, err := a.replaceUpload(r.Context(), file, header.Filename, item.Parent, parseAttachmentMeta(item))
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
+		meta := saved.Meta
 		text, _ := json.Marshal(meta)
 		if err := a.Contents.UpdateAttachmentMeta(r.Context(), item.CID, meta.Name, strings.TrimSuffix(filepath.Base(meta.Name), filepath.Ext(meta.Name)), string(text), item.Parent); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		a.flashRedirect(w, r, "/admin/medias", http.StatusSeeOther, flashNotice{Type: "success", Message: "附件已替换。"})
+		message := "附件已替换。"
+		if saved.Warning != "" {
+			message = saved.Warning
+		}
+		a.flashRedirect(w, r, "/admin/medias", http.StatusSeeOther, flashNotice{Type: "success", Message: message})
 	default:
 		http.NotFound(w, r)
 	}
@@ -2458,7 +2537,9 @@ func (a *App) removeAttachmentFile(meta models.AttachmentMeta) {
 	if rel == "" {
 		return
 	}
-	_ = os.Remove(filepath.Join(a.UploadDir, filepath.FromSlash(rel)))
+	fullPath := filepath.Join(a.UploadDir, filepath.FromSlash(rel))
+	_ = os.Remove(fullPath)
+	a.removeImageThumbnails(fullPath)
 }
 
 func (a *App) deleteContentWithAttachmentPolicy(ctx context.Context, cid int64) error {
@@ -3415,17 +3496,18 @@ func (a *App) mediaViews(items, posts, pages []models.Content, users []models.Us
 	for _, item := range items {
 		meta := parseAttachmentMeta(item)
 		view := mediaView{
-			Content:     item,
-			Meta:        meta,
-			Name:        meta.Name,
-			URL:         meta.URL,
-			Kind:        mediaKind(meta),
-			Icon:        mediaIcon(meta),
-			MIME:        meta.MIME,
-			SizeLabel:   formatBytes(meta.Size),
-			AuthorName:  authors[item.AuthorID],
-			ParentTitle: parents[item.Parent],
-			Markdown:    attachmentMarkdown(meta),
+			Content:      item,
+			Meta:         meta,
+			Name:         meta.Name,
+			URL:          meta.URL,
+			ThumbnailURL: adminThumbnailURL(meta.URL),
+			Kind:         mediaKind(meta),
+			Icon:         mediaIcon(meta),
+			MIME:         meta.MIME,
+			SizeLabel:    formatBytes(meta.Size),
+			AuthorName:   authors[item.AuthorID],
+			ParentTitle:  parents[item.Parent],
+			Markdown:     attachmentMarkdown(meta),
 		}
 		if view.Name == "" {
 			view.Name = item.Title
@@ -3588,17 +3670,18 @@ func editorMediaItems(views []mediaView, baseURL string) []editorMediaItem {
 			relativeURL = view.URL
 		}
 		items = append(items, editorMediaItem{
-			CID:         view.CID,
-			Name:        view.Name,
-			URL:         view.URL,
-			RelativeURL: relativeURL,
-			AbsoluteURL: absolutePublicURL(baseURL, relativeURL),
-			Kind:        view.Kind,
-			MIME:        view.MIME,
-			SizeLabel:   view.SizeLabel,
-			Markdown:    view.Markdown,
-			IsImage:     view.Meta.IsImage,
-			Icon:        view.Icon,
+			CID:          view.CID,
+			Name:         view.Name,
+			URL:          view.URL,
+			ThumbnailURL: view.ThumbnailURL,
+			RelativeURL:  relativeURL,
+			AbsoluteURL:  absolutePublicURL(baseURL, relativeURL),
+			Kind:         view.Kind,
+			MIME:         view.MIME,
+			SizeLabel:    view.SizeLabel,
+			Markdown:     view.Markdown,
+			IsImage:      view.Meta.IsImage,
+			Icon:         view.Icon,
 		})
 	}
 	return items
@@ -3738,18 +3821,30 @@ func topLevelComments(comments []models.Comment) []models.Comment {
 	return roots
 }
 
-func (a *App) saveUpload(ctx context.Context, src io.Reader, original string, parent int64) (models.AttachmentMeta, error) {
-	var meta models.AttachmentMeta
+const imageProcessingFallbackWarning = "图片处理失败，已保留原图。"
+
+type savedUpload struct {
+	Meta    models.AttachmentMeta
+	Warning string
+}
+
+type savedSettingsUpload struct {
+	URL     string
+	Warning string
+}
+
+func (a *App) saveUpload(ctx context.Context, src io.Reader, original string, parent int64) (savedUpload, error) {
+	var result savedUpload
 	maxSize := int64(optionInt(a.option(ctx, "upload_max_size", "10485760"), 10485760))
 	if maxSize <= 0 {
 		maxSize = 10 << 20
 	}
 	data, err := io.ReadAll(io.LimitReader(src, maxSize+1))
 	if err != nil {
-		return meta, err
+		return result, err
 	}
 	if int64(len(data)) > maxSize {
-		return meta, fmt.Errorf("文件超过大小限制")
+		return result, fmt.Errorf("文件超过大小限制")
 	}
 	name := sanitizeFilename(original)
 	if name == "" {
@@ -3757,7 +3852,7 @@ func (a *App) saveUpload(ctx context.Context, src io.Reader, original string, pa
 	}
 	uploadPayload := plugin.UploadPayload{Name: name, ParentID: parent}
 	if payload, err := a.Plugins.ApplyActive(ctx, plugin.HookUploadBeforeSave, uploadPayload); err != nil {
-		return meta, err
+		return result, err
 	} else if next, ok := payload.(plugin.UploadPayload); ok {
 		if strings.TrimSpace(next.Name) != "" {
 			name = sanitizeFilename(next.Name)
@@ -3765,33 +3860,44 @@ func (a *App) saveUpload(ctx context.Context, src io.Reader, original string, pa
 		parent = next.ParentID
 	}
 	if dangerousUpload(name) || !allowedUploadExt(name, a.option(ctx, "upload_allowed_exts", "")) {
-		return meta, fmt.Errorf("不允许上传该文件类型")
+		return result, fmt.Errorf("不允许上传该文件类型")
 	}
 	mimeType := http.DetectContentType(data)
 	ext := strings.ToLower(strings.TrimPrefix(filepath.Ext(name), "."))
 	if !mimeAllowedForExt(ext, mimeType) {
-		return meta, fmt.Errorf("文件内容与扩展名不匹配")
+		return result, fmt.Errorf("文件内容与扩展名不匹配")
+	}
+	if imageExt(ext) {
+		processed, err := imageproc.ProcessUpload(data, name, a.option(ctx, "upload_image_processing", imageproc.UploadOriginal), optionInt(a.option(ctx, "upload_webp_quality", "85"), imageproc.DefaultWebPQuality), a.imageProcessingMemoryLimit(ctx))
+		if err != nil {
+			result.Warning = imageProcessingFallbackWarning
+		} else {
+			data = processed.Data
+			name = processed.Name
+			ext = processed.Extension
+			mimeType = processed.MIME
+		}
 	}
 	bucket, err := a.uploadBucketForParent(ctx, parent)
 	if err != nil {
-		return meta, err
+		return result, err
 	}
 	dir := filepath.Join(a.UploadDir, bucket)
 	if err := os.MkdirAll(dir, 0755); err != nil {
-		return meta, err
+		return result, err
 	}
 	targetName := uniqueUploadName(dir, name)
 	fullPath := filepath.Join(dir, targetName)
 	dst, err := os.OpenFile(fullPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0644)
 	if err != nil {
-		return meta, err
+		return result, err
 	}
 	defer dst.Close()
 	if _, err := io.Copy(dst, bytes.NewReader(data)); err != nil {
-		return meta, err
+		return result, err
 	}
 	relPath := path.Join(bucket, targetName)
-	meta = models.AttachmentMeta{
+	result.Meta = models.AttachmentMeta{
 		Name: name,
 		Path: relPath,
 		URL:  "/uploads/" + relPath,
@@ -3800,19 +3906,19 @@ func (a *App) saveUpload(ctx context.Context, src io.Reader, original string, pa
 		MIME: mimeType,
 	}
 	if cfg, _, err := image.DecodeConfig(bytes.NewReader(data)); err == nil {
-		meta.IsImage = true
-		meta.Width = cfg.Width
-		meta.Height = cfg.Height
+		result.Meta.IsImage = true
+		result.Meta.Width = cfg.Width
+		result.Meta.Height = cfg.Height
 	} else if strings.HasPrefix(mimeType, "image/") {
-		meta.IsImage = true
+		result.Meta.IsImage = true
 	}
 	uploadPayload.Name = name
 	uploadPayload.ParentID = parent
-	uploadPayload.Meta = meta
+	uploadPayload.Meta = result.Meta
 	if _, err := a.Plugins.ApplyActive(ctx, plugin.HookUploadAfterSave, uploadPayload); err != nil {
-		return meta, err
+		return result, err
 	}
-	return meta, nil
+	return result, nil
 }
 
 func (a *App) uploadBucketForParent(ctx context.Context, parent int64) (string, error) {
@@ -3841,56 +3947,65 @@ func contentAttachmentBucket(item models.Content) (string, bool) {
 	}
 }
 
-func (a *App) saveAdminSettingUpload(ctx context.Context, src io.Reader, original string) (string, error) {
+func (a *App) saveAdminSettingUpload(ctx context.Context, src io.Reader, original string) (savedSettingsUpload, error) {
 	return a.saveSettingsUpload(ctx, adminSettingsUploadBucket, src, original)
 }
 
-func (a *App) saveThemeSettingUpload(ctx context.Context, src io.Reader, original string) (string, error) {
+func (a *App) saveThemeSettingUpload(ctx context.Context, src io.Reader, original string) (savedSettingsUpload, error) {
 	return a.saveSettingsUpload(ctx, themeSettingsUploadBucket, src, original)
 }
 
-func (a *App) saveSettingsUpload(ctx context.Context, bucket string, src io.Reader, original string) (string, error) {
+func (a *App) saveSettingsUpload(ctx context.Context, bucket string, src io.Reader, original string) (savedSettingsUpload, error) {
+	var result savedSettingsUpload
 	maxSize := int64(optionInt(a.option(ctx, "upload_max_size", "10485760"), 10485760))
 	if maxSize <= 0 {
 		maxSize = 10 << 20
 	}
 	data, err := io.ReadAll(io.LimitReader(src, maxSize+1))
 	if err != nil {
-		return "", err
+		return result, err
 	}
 	if int64(len(data)) > maxSize {
-		return "", fmt.Errorf("文件超过大小限制")
+		return result, fmt.Errorf("文件超过大小限制")
 	}
 	name := sanitizeFilename(original)
 	if name == "" {
 		name = "setting-image"
 	}
 	if dangerousUpload(name) || !allowedUploadExt(name, a.option(ctx, "upload_allowed_exts", "")) {
-		return "", fmt.Errorf("不允许上传该文件类型")
+		return result, fmt.Errorf("不允许上传该文件类型")
 	}
 	mimeType := http.DetectContentType(data)
 	ext := strings.ToLower(strings.TrimPrefix(filepath.Ext(name), "."))
 	if !adminSettingImageExt(ext) {
-		return "", fmt.Errorf("后台设置仅支持图片文件")
+		return result, fmt.Errorf("后台设置仅支持图片文件")
 	}
 	if !mimeAllowedForExt(ext, mimeType) {
-		return "", fmt.Errorf("文件内容与扩展名不匹配")
+		return result, fmt.Errorf("文件内容与扩展名不匹配")
+	}
+	processed, err := imageproc.ProcessUpload(data, name, a.option(ctx, "upload_image_processing", imageproc.UploadOriginal), optionInt(a.option(ctx, "upload_webp_quality", "85"), imageproc.DefaultWebPQuality), a.imageProcessingMemoryLimit(ctx))
+	if err != nil {
+		result.Warning = imageProcessingFallbackWarning
+	} else {
+		data = processed.Data
+		name = processed.Name
 	}
 	dir := filepath.Join(a.UploadDir, bucket)
 	if err := os.MkdirAll(dir, 0755); err != nil {
-		return "", err
+		return result, err
 	}
 	targetName := uniqueUploadName(dir, name)
 	fullPath := filepath.Join(dir, targetName)
 	dst, err := os.OpenFile(fullPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0644)
 	if err != nil {
-		return "", err
+		return result, err
 	}
 	defer dst.Close()
 	if _, err := io.Copy(dst, bytes.NewReader(data)); err != nil {
-		return "", err
+		return result, err
 	}
-	return "/uploads/" + path.Join(bucket, targetName), nil
+	result.URL = "/uploads/" + path.Join(bucket, targetName)
+	return result, nil
 }
 
 func adminSettingImageExt(ext string) bool {
@@ -3902,21 +4017,48 @@ func adminSettingImageExt(ext string) bool {
 	}
 }
 
-func (a *App) replaceUpload(ctx context.Context, src io.Reader, original string, parent int64, old models.AttachmentMeta) (models.AttachmentMeta, error) {
+func (a *App) replaceUpload(ctx context.Context, src io.Reader, original string, parent int64, old models.AttachmentMeta) (savedUpload, error) {
 	if optionBool(a.option(ctx, "upload_replace_same_ext_only", "1")) && old.Type != "" {
 		newExt := strings.ToLower(strings.TrimPrefix(filepath.Ext(original), "."))
-		if newExt != "" && !strings.EqualFold(newExt, old.Type) {
-			return models.AttachmentMeta{}, fmt.Errorf("替换文件必须保持相同扩展名")
+		mode := a.option(ctx, "upload_image_processing", imageproc.UploadOriginal)
+		if imageExt(newExt) && newExt != "svg" && mode != imageproc.UploadOriginal {
+			newExt = "webp"
+		}
+		if newExt != "" && !sameUploadExtension(newExt, old.Type) {
+			return savedUpload{}, fmt.Errorf("替换文件必须保持相同扩展名")
 		}
 	}
-	meta, err := a.saveUpload(ctx, src, original, parent)
+	result, err := a.saveUpload(ctx, src, original, parent)
 	if err != nil {
-		return meta, err
+		return result, err
+	}
+	if optionBool(a.option(ctx, "upload_replace_same_ext_only", "1")) && old.Type != "" && !sameUploadExtension(result.Meta.Type, old.Type) {
+		a.removeAttachmentFile(result.Meta)
+		return savedUpload{}, fmt.Errorf("替换文件必须保持相同扩展名")
 	}
 	if old.Path != "" {
-		_ = os.Remove(filepath.Join(a.UploadDir, filepath.FromSlash(old.Path)))
+		oldPath := filepath.Join(a.UploadDir, filepath.FromSlash(old.Path))
+		_ = os.Remove(oldPath)
+		a.removeImageThumbnails(oldPath)
 	}
-	return meta, nil
+	return result, nil
+}
+
+func sameUploadExtension(left, right string) bool {
+	left = strings.ToLower(strings.TrimPrefix(left, "."))
+	right = strings.ToLower(strings.TrimPrefix(right, "."))
+	if (left == "jpg" || left == "jpeg") && (right == "jpg" || right == "jpeg") {
+		return true
+	}
+	return left == right
+}
+
+func (a *App) imageProcessingMemoryLimit(ctx context.Context) int64 {
+	memoryMB := optionInt(a.option(ctx, "image_processing_memory_mb", strconv.Itoa(imageproc.DefaultMemoryLimitMB)), imageproc.DefaultMemoryLimitMB)
+	if memoryMB < 64 {
+		memoryMB = imageproc.DefaultMemoryLimitMB
+	}
+	return int64(memoryMB) << 20
 }
 
 func (a *App) backupPayload(ctx context.Context) (backupData, error) {
@@ -4308,16 +4450,17 @@ type commentPagination struct {
 
 type mediaView struct {
 	models.Content
-	Meta        models.AttachmentMeta
-	Name        string
-	URL         string
-	Kind        string
-	Icon        string
-	MIME        string
-	SizeLabel   string
-	AuthorName  string
-	ParentTitle string
-	Markdown    string
+	Meta         models.AttachmentMeta
+	Name         string
+	URL          string
+	ThumbnailURL string
+	Kind         string
+	Icon         string
+	MIME         string
+	SizeLabel    string
+	AuthorName   string
+	ParentTitle  string
+	Markdown     string
 }
 
 type editorMediaSource struct {
@@ -4326,17 +4469,18 @@ type editorMediaSource struct {
 }
 
 type editorMediaItem struct {
-	CID         int64  `json:"cid"`
-	Name        string `json:"name"`
-	URL         string `json:"url"`
-	RelativeURL string `json:"relativeURL"`
-	AbsoluteURL string `json:"absoluteURL"`
-	Kind        string `json:"kind"`
-	MIME        string `json:"mime"`
-	SizeLabel   string `json:"sizeLabel"`
-	Markdown    string `json:"markdown"`
-	IsImage     bool   `json:"isImage"`
-	Icon        string `json:"icon"`
+	CID          int64  `json:"cid"`
+	Name         string `json:"name"`
+	URL          string `json:"url"`
+	ThumbnailURL string `json:"thumbnailURL"`
+	RelativeURL  string `json:"relativeURL"`
+	AbsoluteURL  string `json:"absoluteURL"`
+	Kind         string `json:"kind"`
+	MIME         string `json:"mime"`
+	SizeLabel    string `json:"sizeLabel"`
+	Markdown     string `json:"markdown"`
+	IsImage      bool   `json:"isImage"`
+	Icon         string `json:"icon"`
 }
 
 type backupData struct {

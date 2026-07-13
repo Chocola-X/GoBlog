@@ -458,6 +458,21 @@ mdui-select::part(text-field__container) {
   color: rgb(var(--mdui-color-on-surface-variant));
 }
 
+.image-processing-options {
+  display: grid;
+  gap: 18px;
+}
+
+.image-processing-options [data-webp-quality][hidden],
+.image-processing-options [data-thumbnail-quality][hidden] {
+  display: none;
+}
+
+.image-processing-options [data-webp-quality] mdui-text-field,
+.image-processing-options [data-thumbnail-quality] mdui-text-field {
+  width: 100%;
+}
+
 .custom-fields,
 .custom-field-list {
   display: grid;
