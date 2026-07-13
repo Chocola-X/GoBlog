@@ -2,11 +2,11 @@
 <div class="page-head"><div><h1>评论</h1><p class="muted">审核、编辑、回复和删除评论。</p></div></div>
 <form method="get" class="filter-bar">
   <mdui-text-field name="keywords" label="关键字" value="{{.Keywords}}"></mdui-text-field>
-  <mdui-select name="status" label="状态" value="{{if .Status}}{{.Status}}{{else}}approved{{end}}">
+  <mdui-select name="status" label="状态" value="{{if .Status}}{{.Status}}{{else}}all{{end}}">
+    <mdui-menu-item value="all">全部</mdui-menu-item>
     <mdui-menu-item value="approved">已通过</mdui-menu-item>
     <mdui-menu-item value="waiting">待审核</mdui-menu-item>
     <mdui-menu-item value="spam">垃圾</mdui-menu-item>
-    <mdui-menu-item value="all">全部</mdui-menu-item>
   </mdui-select>
   <mdui-select name="type" label="类型" value="{{if .Type}}{{.Type}}{{else}}all{{end}}">
     <mdui-menu-item value="all">全部</mdui-menu-item>
@@ -26,9 +26,10 @@
     <mdui-button type="submit" name="action" value="delete" variant="outlined">批量删除</mdui-button>
   </div>
   <section class="table-panel"><table>
-    <thead><tr><th></th><th>作者</th><th>内容</th><th>状态</th><th>日期</th><th></th></tr></thead>
+    <thead><tr><th></th><th class="comment-avatar-column">头像</th><th>作者</th><th>内容</th><th>状态</th><th>日期</th><th></th></tr></thead>
     <tbody>{{range .Comments}}<tr>
       <td><mdui-checkbox name="id" value="{{.COID}}" aria-label="选择评论"></mdui-checkbox></td>
+      <td class="comment-avatar-column"><img class="admin-comment-avatar" src="{{.AvatarURL}}" alt="" loading="lazy" referrerpolicy="no-referrer"></td>
       <td><strong>{{.Author}}</strong><br><span class="muted">{{.Mail}} {{.IP}}</span></td>
       <td>{{.Text}}<br><span class="muted">{{.Type}} 于 {{.Title}}</span></td>
       <td>{{.Status}}</td><td>{{date .Created}}</td>
@@ -40,7 +41,7 @@
         <mdui-button href="/admin/comments/{{.COID}}/reply" variant="text">回复</mdui-button>
         <mdui-button-icon type="submit" formaction="/admin/comments/{{.COID}}/delete" title="删除"><mdui-icon name="delete"></mdui-icon></mdui-button-icon>
       </div></td>
-    </tr>{{else}}<tr><td colspan="6" class="muted">没有评论。</td></tr>{{end}}</tbody>
+    </tr>{{else}}<tr><td colspan="7" class="muted">没有评论。</td></tr>{{end}}</tbody>
   </table></section>
 </form>
 <form method="post" action="/admin/comments/clear-spam" class="form-actions">

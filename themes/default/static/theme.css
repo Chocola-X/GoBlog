@@ -1189,6 +1189,15 @@ html.mdui-theme-dark .post-content table tr:nth-child(even) td {
   margin-bottom: 12px;
 }
 
+.comment-current-user {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 50px;
+  margin-bottom: 12px;
+  color: rgb(var(--mdui-color-on-surface));
+}
+
 .comment-textarea {
   width: 100%;
 }

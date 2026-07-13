@@ -1006,12 +1006,20 @@ func (a *App) adminComments(w http.ResponseWriter, r *http.Request) {
 	}
 	cid, _ := strconv.ParseInt(r.URL.Query().Get("cid"), 10, 64)
 	typ := strings.TrimSpace(r.URL.Query().Get("type"))
-	comments, err := a.Comments.ListFiltered(r.Context(), r.URL.Query().Get("status"), r.URL.Query().Get("keywords"), cid, typ)
+	status := strings.TrimSpace(r.URL.Query().Get("status"))
+	if status == "" {
+		status = "all"
+	}
+	comments, err := a.Comments.ListFiltered(r.Context(), status, r.URL.Query().Get("keywords"), cid, typ)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	a.renderAdmin(w, r, "comments.html", map[string]any{"Title": "评论", "Comments": comments, "Status": r.URL.Query().Get("status"), "Keywords": r.URL.Query().Get("keywords"), "CID": cid, "Type": typ})
+	views := make([]commentView, 0, len(comments))
+	for _, comment := range comments {
+		views = append(views, commentView{Comment: comment, AvatarURL: a.emailAvatarURL(r.Context(), comment.Mail, 48)})
+	}
+	a.renderAdmin(w, r, "comments.html", map[string]any{"Title": "评论", "Comments": views, "Status": status, "Keywords": r.URL.Query().Get("keywords"), "CID": cid, "Type": typ})
 }
 
 func (a *App) adminCommentRoutes(w http.ResponseWriter, r *http.Request) {
@@ -1399,13 +1407,98 @@ func (a *App) adminOptionsDiscussion(w http.ResponseWriter, r *http.Request) {
 	if !a.requireRole(w, r, "administrator") {
 		return
 	}
-	a.optionsForm(w, r, "评论设置", "options_discussion.html", []string{
+	keys := []string{
+		"comments_moderation_mode",
 		"comments_require_moderation", "comments_require_mail", "comments_require_url", "comments_show_url", "comments_order",
 		"comment_date_format", "comments_list_size", "comments_page_size", "comments_page_display", "comments_max_nesting_levels",
 		"comments_whitelist", "comments_check_referer", "comments_antispam", "comments_auto_close", "comments_post_interval", "comments_post_interval_enable",
 		"comments_html_tag_allowed", "comments_stop_words", "comments_ip_blacklist",
-		"comments_markdown", "comments_url_nofollow", "comments_avatar", "comments_avatar_rating",
-	})
+		"comments_markdown", "comments_url_nofollow", "comments_avatar", "comments_avatar_rating", "avatar_url_template",
+	}
+	switch r.Method {
+	case http.MethodGet:
+		options, err := a.Options.All(r.Context())
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		options["comments_moderation_mode"] = a.commentModerationMode(r.Context())
+		a.renderAdmin(w, r, "options_discussion.html", map[string]any{"Title": "评论设置", "Options": options})
+	case http.MethodPost:
+		if err := r.ParseForm(); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		mode := strings.TrimSpace(r.FormValue("comments_moderation_mode"))
+		switch mode {
+		case "open":
+			r.Form.Set("comments_require_moderation", "0")
+			r.Form.Set("comments_whitelist", "0")
+		case "all":
+			r.Form.Set("comments_require_moderation", "1")
+			r.Form.Set("comments_whitelist", "0")
+		case "approved_author":
+			r.Form.Set("comments_require_moderation", "0")
+			r.Form.Set("comments_whitelist", "1")
+		}
+		if err := validateDiscussionOptions(r); err != nil {
+			options, _ := a.Options.All(r.Context())
+			for _, key := range keys {
+				options[key] = r.FormValue(key)
+			}
+			a.renderAdmin(w, r, "options_discussion.html", map[string]any{"Title": "评论设置", "Options": options, "Error": err.Error()})
+			return
+		}
+		for _, key := range keys {
+			if err := a.Options.Set(r.Context(), key, r.FormValue(key)); err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+		}
+		a.flashRedirect(w, r, r.URL.Path, http.StatusSeeOther, flashNotice{Type: "success", Message: "设置已保存。"})
+	default:
+		methodNotAllowed(w, http.MethodGet+", "+http.MethodPost)
+	}
+}
+
+func (a *App) commentModerationMode(ctx context.Context) string {
+	switch mode := strings.TrimSpace(a.option(ctx, "comments_moderation_mode", "")); mode {
+	case "open", "all", "approved_author":
+		return mode
+	}
+	if optionBool(a.option(ctx, "comments_require_moderation", "0")) {
+		return "all"
+	}
+	if optionBool(a.option(ctx, "comments_whitelist", "0")) {
+		return "approved_author"
+	}
+	return "open"
+}
+
+func validateDiscussionOptions(r *http.Request) error {
+	switch strings.TrimSpace(r.FormValue("comments_moderation_mode")) {
+	case "open", "all", "approved_author":
+	default:
+		return fmt.Errorf("请选择有效的评论处理方式")
+	}
+	if optionBool(r.FormValue("comments_post_interval_enable")) {
+		interval, err := strconv.Atoi(strings.TrimSpace(r.FormValue("comments_post_interval")))
+		if err != nil || interval < 1 || interval > 86400 {
+			return fmt.Errorf("同一内容、同一 IP 的评论间隔必须是 1 到 86400 秒的整数")
+		}
+	}
+	templateURL := strings.TrimSpace(r.FormValue("avatar_url_template"))
+	if templateURL != "" {
+		if !strings.Contains(templateURL, "{hash}") {
+			return fmt.Errorf("自定义头像地址必须包含 {hash} 占位符")
+		}
+		candidate := strings.NewReplacer("{hash}", strings.Repeat("0", 32), "{size}", "48").Replace(templateURL)
+		parsed, err := neturl.Parse(candidate)
+		if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
+			return fmt.Errorf("自定义头像地址必须是有效的 HTTP 或 HTTPS URL")
+		}
+	}
+	return nil
 }
 
 func (a *App) adminOptionsPermalink(w http.ResponseWriter, r *http.Request) {
@@ -2887,20 +2980,25 @@ func (a *App) renderPostContent(w http.ResponseWriter, r *http.Request, post mod
 		return
 	}
 	a.renderTheme(w, r, "post.html", map[string]any{
-		"Post":          post,
-		"ContentHTML":   contentHTML,
-		"Comments":      comments,
-		"CommentPager":  commentPager,
-		"ReplyTo":       r.URL.Query().Get("reply"),
-		"Categories":    categories,
-		"Tags":          tags,
-		"Fields":        fields,
-		"PrevPost":      prev,
-		"NextPost":      next,
-		"RelatedPosts":  related,
-		"CommentError":  r.URL.Query().Get("comment_error"),
-		"CommentOK":     r.URL.Query().Get("comment_ok") == "1",
-		"CanonicalPath": a.contentURL(r.Context(), post),
+		"Post":                post,
+		"ContentHTML":         contentHTML,
+		"Comments":            comments,
+		"CommentPager":        commentPager,
+		"ReplyTo":             r.URL.Query().Get("reply"),
+		"Categories":          categories,
+		"Tags":                tags,
+		"Fields":              fields,
+		"PrevPost":            prev,
+		"NextPost":            next,
+		"RelatedPosts":        related,
+		"CommentError":        r.URL.Query().Get("comment_error"),
+		"CommentErrorMessage": commentErrorMessage(r.URL.Query().Get("comment_error")),
+		"CommentOK":           r.URL.Query().Get("comment_ok") == "1",
+		"CommentPending":      r.URL.Query().Get("comment_status") == "waiting",
+		"CommentIdentity":     a.publicCommentIdentity(r),
+		"CommentsRequireMail": optionBool(a.option(r.Context(), "comments_require_mail", "1")),
+		"CommentsRequireURL":  optionBool(a.option(r.Context(), "comments_require_url", "0")),
+		"CanonicalPath":       a.contentURL(r.Context(), post),
 	})
 }
 
@@ -2927,17 +3025,22 @@ func (a *App) renderPageContent(w http.ResponseWriter, r *http.Request, pageData
 		return
 	}
 	data := map[string]any{
-		"Post":          pageData,
-		"ContentHTML":   contentHTML,
-		"Comments":      comments,
-		"CommentPager":  commentPager,
-		"ReplyTo":       r.URL.Query().Get("reply"),
-		"Fields":        fields,
-		"PrevPost":      models.Content{},
-		"NextPost":      models.Content{},
-		"CommentError":  r.URL.Query().Get("comment_error"),
-		"CommentOK":     r.URL.Query().Get("comment_ok") == "1",
-		"CanonicalPath": a.contentURL(r.Context(), pageData),
+		"Post":                pageData,
+		"ContentHTML":         contentHTML,
+		"Comments":            comments,
+		"CommentPager":        commentPager,
+		"ReplyTo":             r.URL.Query().Get("reply"),
+		"Fields":              fields,
+		"PrevPost":            models.Content{},
+		"NextPost":            models.Content{},
+		"CommentError":        r.URL.Query().Get("comment_error"),
+		"CommentErrorMessage": commentErrorMessage(r.URL.Query().Get("comment_error")),
+		"CommentOK":           r.URL.Query().Get("comment_ok") == "1",
+		"CommentPending":      r.URL.Query().Get("comment_status") == "waiting",
+		"CommentIdentity":     a.publicCommentIdentity(r),
+		"CommentsRequireMail": optionBool(a.option(r.Context(), "comments_require_mail", "1")),
+		"CommentsRequireURL":  optionBool(a.option(r.Context(), "comments_require_url", "0")),
+		"CanonicalPath":       a.contentURL(r.Context(), pageData),
 	}
 	for _, values := range extra {
 		for key, value := range values {
@@ -3094,6 +3197,8 @@ func (a *App) frontComment(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
+	user, loggedIn := a.currentUser(r)
+	trustedCommenter := loggedIn && (roleRank(user.Role) >= roleRank("editor") || post.AuthorID == user.UID)
 	redirectTo := a.contentURL(r.Context(), post)
 	if optionBool(a.option(r.Context(), "comments_check_referer", "1")) && !a.validCommentReferer(r, redirectTo) {
 		http.Redirect(w, r, redirectTo+"?comment_error=referer", http.StatusSeeOther)
@@ -3113,13 +3218,13 @@ func (a *App) frontComment(w http.ResponseWriter, r *http.Request) {
 			http.Redirect(w, r, redirectTo+"?comment_error=blocked", http.StatusSeeOther)
 			return
 		}
-		if optionBool(a.option(r.Context(), "comments_post_interval_enable", "1")) {
-			interval := optionInt(a.option(r.Context(), "comments_post_interval", "30"), 30)
-			recent, _ := a.Comments.CountRecentByIP(r.Context(), ip, time.Now().Add(-time.Duration(interval)*time.Second).Unix())
-			if recent > 0 {
-				http.Redirect(w, r, redirectTo+"?comment_error=frequent", http.StatusSeeOther)
-				return
-			}
+	}
+	if !trustedCommenter && optionBool(a.option(r.Context(), "comments_post_interval_enable", "1")) {
+		interval := optionInt(a.option(r.Context(), "comments_post_interval", "60"), 60)
+		recent, _ := a.Comments.CountRecentByIPForContent(r.Context(), cid, ip, time.Now().Add(-time.Duration(interval)*time.Second).Unix())
+		if recent > 0 {
+			http.Redirect(w, r, redirectTo+"?comment_error=frequent", http.StatusSeeOther)
+			return
 		}
 	}
 	if r.FormValue("website") != "" {
@@ -3130,7 +3235,6 @@ func (a *App) frontComment(w http.ResponseWriter, r *http.Request) {
 	mail := strings.TrimSpace(r.FormValue("mail"))
 	text := strings.TrimSpace(r.FormValue("text"))
 	urlValue := normalizeCommentURL(r.FormValue("url"))
-	user, loggedIn := a.currentUser(r)
 	if loggedIn {
 		author = user.ScreenName
 		if author == "" {
@@ -3139,7 +3243,9 @@ func (a *App) frontComment(w http.ResponseWriter, r *http.Request) {
 		mail = user.Mail
 		urlValue = normalizeCommentURL(user.URL)
 	}
-	if author == "" || text == "" || (optionBool(a.option(r.Context(), "comments_require_mail", "1")) && mail == "") || (optionBool(a.option(r.Context(), "comments_require_url", "0")) && urlValue == "") {
+	requireMail := !loggedIn && optionBool(a.option(r.Context(), "comments_require_mail", "1"))
+	requireURL := !loggedIn && optionBool(a.option(r.Context(), "comments_require_url", "0"))
+	if author == "" || text == "" || (requireMail && mail == "") || (requireURL && urlValue == "") {
 		http.Redirect(w, r, redirectTo+"?comment_error=required", http.StatusSeeOther)
 		return
 	}
@@ -3148,19 +3254,17 @@ func (a *App) frontComment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	status := "approved"
-	if optionBool(a.option(r.Context(), "comments_require_moderation", "0")) && !loggedIn {
-		status = "waiting"
-	}
-	if optionBool(a.option(r.Context(), "comments_whitelist", "0")) && !loggedIn {
-		approved, _ := a.Comments.HasApprovedAuthor(r.Context(), author, mail)
-		if approved {
-			status = "approved"
-		} else {
+	switch a.commentModerationMode(r.Context()) {
+	case "all":
+		if !trustedCommenter {
 			status = "waiting"
 		}
-	}
-	if loggedIn && roleRank(user.Role) >= roleRank("contributor") {
-		status = "approved"
+	case "approved_author":
+		status = "waiting"
+		approved, _ := a.Comments.HasApprovedAuthor(r.Context(), author, mail)
+		if approved || trustedCommenter {
+			status = "approved"
+		}
 	}
 	if optionBool(a.option(r.Context(), "comments_antispam", "1")) && containsListItem(text, a.option(r.Context(), "comments_stop_words", "")) {
 		status = "spam"
@@ -3183,7 +3287,7 @@ func (a *App) frontComment(w http.ResponseWriter, r *http.Request) {
 		authorID = user.UID
 	}
 	input := services.SaveCommentInput{CID: cid, Author: author, AuthorID: authorID, OwnerID: post.AuthorID, Mail: mail, URL: urlValue, Text: text, Status: status, Parent: parent, IP: ip, Agent: r.UserAgent()}
-	if errs := validatePublicCommentInput(input, optionBool(a.option(r.Context(), "comments_require_mail", "1")), optionBool(a.option(r.Context(), "comments_require_url", "0"))); !errs.Empty() {
+	if errs := validatePublicCommentInput(input, requireMail, requireURL); !errs.Empty() {
 		http.Redirect(w, r, redirectTo+"?comment_error=invalid", http.StatusSeeOther)
 		return
 	}
@@ -3202,10 +3306,43 @@ func (a *App) frontComment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_, _ = a.Plugins.ApplyActive(r.Context(), plugin.HookCommentAfterSave, commentPayload)
-	cookies := a.cookieOptions(r.Context())
-	http.SetCookie(w, &http.Cookie{Name: cookies.Name("comment_author"), Value: author, Path: "/", MaxAge: 86400 * 365, HttpOnly: true, SameSite: cookies.SameSite, Secure: cookies.Secure})
-	http.SetCookie(w, &http.Cookie{Name: cookies.Name("comment_mail"), Value: mail, Path: "/", MaxAge: 86400 * 365, HttpOnly: true, SameSite: cookies.SameSite, Secure: cookies.Secure})
-	http.Redirect(w, r, redirectTo+"?comment_ok=1#comments", http.StatusSeeOther)
+	if !loggedIn {
+		cookies := a.cookieOptions(r.Context())
+		http.SetCookie(w, &http.Cookie{Name: cookies.Name("comment_author"), Value: author, Path: "/", MaxAge: 86400 * 365, HttpOnly: true, SameSite: cookies.SameSite, Secure: cookies.Secure})
+		http.SetCookie(w, &http.Cookie{Name: cookies.Name("comment_mail"), Value: mail, Path: "/", MaxAge: 86400 * 365, HttpOnly: true, SameSite: cookies.SameSite, Secure: cookies.Secure})
+	}
+	resultQuery := "?comment_ok=1"
+	if status == "waiting" {
+		resultQuery += "&comment_status=waiting"
+	}
+	http.Redirect(w, r, redirectTo+resultQuery+"#comments", http.StatusSeeOther)
+}
+
+func commentErrorMessage(code string) string {
+	switch code {
+	case "referer":
+		return "评论来源页与当前内容不一致。"
+	case "closed":
+		return "此内容的评论已关闭。"
+	case "blocked":
+		return "评论被安全策略拒绝。"
+	case "frequent":
+		return "评论过于频繁，请稍后再试。"
+	case "spam":
+		return "评论未通过反垃圾检查。"
+	case "reserved":
+		return "该称呼属于站内用户，请登录后评论。"
+	case "parent":
+		return "要回复的评论不存在。"
+	case "depth":
+		return "该回复已超过允许的嵌套层级。"
+	case "required":
+		return "请填写评论必填项。"
+	case "invalid":
+		return "评论内容或身份信息格式不正确。"
+	default:
+		return "评论提交失败，请稍后重试。"
+	}
 }
 
 func (a *App) frontRSS(w http.ResponseWriter, r *http.Request) {
@@ -4453,6 +4590,12 @@ type commentView struct {
 	Anchor     string
 }
 
+type publicCommentIdentity struct {
+	LoggedIn  bool
+	Name      string
+	AvatarURL string
+}
+
 type commentPagination struct {
 	Page       int
 	PageSize   int
@@ -4792,9 +4935,21 @@ func (a *App) gravatarURL(r *http.Request, mail string) string {
 	if a.option(r.Context(), "comments_avatar", "1") != "1" {
 		return ""
 	}
+	return a.emailAvatarURL(r.Context(), mail, 48)
+}
+
+func (a *App) emailAvatarURL(ctx context.Context, mail string, size int) string {
+	if size <= 0 {
+		size = 96
+	}
 	sum := md5.Sum([]byte(strings.ToLower(strings.TrimSpace(mail))))
-	rating := a.option(r.Context(), "comments_avatar_rating", "g")
-	return "https://www.gravatar.com/avatar/" + hex.EncodeToString(sum[:]) + "?s=48&d=mp&r=" + rating
+	hash := hex.EncodeToString(sum[:])
+	templateURL := strings.TrimSpace(a.option(ctx, "avatar_url_template", ""))
+	if templateURL != "" {
+		return strings.NewReplacer("{hash}", hash, "{size}", strconv.Itoa(size)).Replace(templateURL)
+	}
+	rating := a.option(ctx, "comments_avatar_rating", "g")
+	return "https://www.gravatar.com/avatar/" + hash + "?s=" + strconv.Itoa(size) + "&d=mp&r=" + rating
 }
 
 func adminAvatarURL(mail string, size int) string {
@@ -4803,6 +4958,18 @@ func adminAvatarURL(mail string, size int) string {
 	}
 	sum := md5.Sum([]byte(strings.ToLower(strings.TrimSpace(mail))))
 	return "https://www.gravatar.com/avatar/" + hex.EncodeToString(sum[:]) + "?s=" + strconv.Itoa(size) + "&d=mp&r=g"
+}
+
+func (a *App) publicCommentIdentity(r *http.Request) publicCommentIdentity {
+	user, ok := a.currentUser(r)
+	if !ok {
+		return publicCommentIdentity{}
+	}
+	name := strings.TrimSpace(user.ScreenName)
+	if name == "" {
+		name = user.Name
+	}
+	return publicCommentIdentity{LoggedIn: true, Name: name, AvatarURL: a.gravatarURL(r, user.Mail)}
 }
 
 func (a *App) nameReserved(ctx context.Context, name string) bool {
@@ -4888,7 +5055,9 @@ func (a *App) renderAdmin(w http.ResponseWriter, r *http.Request, page string, d
 		"schemaValue":            schemaValue,
 		"schemaChecked":          schemaChecked,
 		"schemaOptionsAreColors": schemaOptionsAreColors,
-		"adminAvatarURL":         adminAvatarURL,
+		"adminAvatarURL": func(mail string, size int) string {
+			return a.emailAvatarURL(r.Context(), mail, size)
+		},
 	}
 	tmpl, err := template.New("base.html").Funcs(funcs).ParseFS(admin.FS, "templates/base.html", "templates/"+page)
 	if err != nil {

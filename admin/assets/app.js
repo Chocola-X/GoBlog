@@ -114,6 +114,7 @@
     initCopyButtons(root);
     initSchemaForm(root);
     initImageProcessingOptions(root);
+    initCommentProcessingOptions(root);
     initAdminNotices(root);
   }
 
@@ -818,6 +819,28 @@
         thumbnailMode.addEventListener("change", syncThumbnailQualityVisibility);
         syncThumbnailQualityVisibility();
       }
+    });
+  }
+
+  function initCommentProcessingOptions(root) {
+    query(root, "[data-comment-processing-options]").forEach(function (panel) {
+      if (bound(panel, "adminCommentOptionsBound")) {
+        return;
+      }
+      var enabled = panel.querySelector('[name="comments_post_interval_enable"]');
+      var interval = panel.querySelector("[data-comment-interval]");
+      if (!enabled || !interval) {
+        return;
+      }
+      function syncIntervalVisibility() {
+        interval.hidden = !enabled.checked;
+        var input = interval.querySelector('[name="comments_post_interval"]');
+        if (input) {
+          input.required = enabled.checked;
+        }
+      }
+      enabled.addEventListener("change", syncIntervalVisibility);
+      syncIntervalVisibility();
     });
   }
 

@@ -132,11 +132,21 @@ func (s *CommentService) CountForContent(ctx context.Context, cid int64) (int64,
 }
 
 func (s *CommentService) CountRecentByIP(ctx context.Context, ip string, since int64) (int64, error) {
+	return s.CountRecentByIPForContent(ctx, 0, ip, since)
+}
+
+func (s *CommentService) CountRecentByIPForContent(ctx context.Context, cid int64, ip string, since int64) (int64, error) {
 	if ip == "" {
 		return 0, nil
 	}
 	var count int64
-	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM gb_comments WHERE ip = ? AND created >= ?`, ip, since).Scan(&count)
+	query := `SELECT COUNT(*) FROM gb_comments WHERE ip = ? AND created >= ?`
+	args := []any{ip, since}
+	if cid > 0 {
+		query += ` AND cid = ?`
+		args = append(args, cid)
+	}
+	err := s.db.QueryRowContext(ctx, query, args...).Scan(&count)
 	return count, err
 }
 

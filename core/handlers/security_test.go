@@ -3,8 +3,10 @@ package handlers
 import (
 	"bytes"
 	"context"
+	"crypto/md5"
 	"database/sql"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"encoding/xml"
 	"errors"
@@ -871,6 +873,182 @@ func TestPublicCommentWhitelistAndStopWords(t *testing.T) {
 	}
 	if statuses["approved"] != 2 || statuses["waiting"] != 1 || statuses["spam"] != 1 {
 		t.Fatalf("comment statuses = %#v, want approved=2 waiting=1 spam=1", statuses)
+	}
+}
+
+func TestLoggedInAdminPublicCommentUsesAccountIdentity(t *testing.T) {
+	app, secret, adminID := newSecurityTestApp(t)
+	ctx := context.Background()
+	if err := app.Options.Set(ctx, "comments_moderation_mode", "all"); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.Options.Set(ctx, "comments_require_url", "1"); err != nil {
+		t.Fatal(err)
+	}
+	postID := createPublishedPost(t, app, adminID, "admin-comment")
+	if err := app.Comments.Save(ctx, services.SaveCommentInput{CID: postID, Author: "Guest", Mail: "guest@example.com", Text: "recent", Status: "approved", IP: "198.51.100.90"}, 0); err != nil {
+		t.Fatal(err)
+	}
+
+	form := url.Values{"cid": {itoa(postID)}, "text": {"administrator reply"}}
+	tokenReq := httptest.NewRequest(http.MethodPost, "/comment", strings.NewReader(form.Encode()))
+	setSession(t, tokenReq, secret, adminID)
+	form.Set("_csrf", app.csrfTokenFor(tokenReq, "comment"))
+	req := httptest.NewRequest(http.MethodPost, "/comment", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("X-Real-IP", "198.51.100.90")
+	req.Header.Set("Referer", "http://example.com/post/admin-comment.html")
+	setSession(t, req, secret, adminID)
+	rec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusSeeOther || !strings.Contains(rec.Header().Get("Location"), "comment_ok=1") {
+		t.Fatalf("logged-in comment response = %d %q", rec.Code, rec.Header().Get("Location"))
+	}
+
+	comments, err := app.Comments.List(ctx, "all", "administrator reply", postID)
+	if err != nil || len(comments) != 1 {
+		t.Fatalf("saved admin comment = %#v, err = %v", comments, err)
+	}
+	admin, err := app.Users.ByID(ctx, adminID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	expectedName := admin.ScreenName
+	if expectedName == "" {
+		expectedName = admin.Name
+	}
+	comment := comments[0]
+	if comment.AuthorID != adminID || comment.Author != expectedName || comment.Mail != admin.Mail || comment.Status != "approved" {
+		t.Fatalf("admin comment identity/status = %#v, user = %#v", comment, admin)
+	}
+
+	pageReq := httptest.NewRequest(http.MethodGet, "/post/admin-comment.html", nil)
+	setSession(t, pageReq, secret, adminID)
+	pageRec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(pageRec, pageReq)
+	if pageRec.Code != http.StatusOK || strings.Contains(pageRec.Body.String(), "name=\"author\"") || !strings.Contains(pageRec.Body.String(), expectedName) {
+		t.Fatalf("logged-in comment form did not use account identity: status=%d body=%s", pageRec.Code, pageRec.Body.String())
+	}
+}
+
+func TestPublicCommentModerationModesAndContentScopedInterval(t *testing.T) {
+	app, _, adminID := newSecurityTestApp(t)
+	ctx := context.Background()
+	if err := app.Options.Set(ctx, "comments_post_interval_enable", "0"); err != nil {
+		t.Fatal(err)
+	}
+	postID := createPublishedPost(t, app, adminID, "moderation-modes")
+
+	for _, test := range []struct {
+		mode   string
+		author string
+		mail   string
+		want   string
+	}{
+		{mode: "open", author: "Open", mail: "open@example.com", want: "approved"},
+		{mode: "all", author: "Moderated", mail: "moderated@example.com", want: "waiting"},
+		{mode: "approved_author", author: "Unknown", mail: "unknown@example.com", want: "waiting"},
+	} {
+		if err := app.Options.Set(ctx, "comments_moderation_mode", test.mode); err != nil {
+			t.Fatal(err)
+		}
+		rec := submitPublicComment(t, app, postID, url.Values{"author": {test.author}, "mail": {test.mail}, "text": {"mode " + test.mode}}, "198.51.100."+strconv.Itoa(len(test.author)+20))
+		if rec.Code != http.StatusSeeOther {
+			t.Fatalf("mode %s response = %d", test.mode, rec.Code)
+		}
+		comments, err := app.Comments.List(ctx, "all", "mode "+test.mode, postID)
+		if err != nil || len(comments) != 1 || comments[0].Status != test.want {
+			t.Fatalf("mode %s comments = %#v, err = %v, want status %s", test.mode, comments, err, test.want)
+		}
+	}
+
+	if err := app.Comments.Save(ctx, services.SaveCommentInput{CID: postID, Author: "Known", Mail: "known-mode@example.com", Text: "approved history", Status: "approved"}, 0); err != nil {
+		t.Fatal(err)
+	}
+	rec := submitPublicComment(t, app, postID, url.Values{"author": {"Known"}, "mail": {"known-mode@example.com"}, "text": {"known followup"}}, "198.51.100.70")
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("known commenter response = %d", rec.Code)
+	}
+	known, err := app.Comments.List(ctx, "all", "known followup", postID)
+	if err != nil || len(known) != 1 || known[0].Status != "approved" {
+		t.Fatalf("known commenter comments = %#v, err = %v", known, err)
+	}
+
+	if err := app.Options.Set(ctx, "comments_moderation_mode", "open"); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.Options.Set(ctx, "comments_post_interval_enable", "1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.Options.Set(ctx, "comments_post_interval", "60"); err != nil {
+		t.Fatal(err)
+	}
+	otherPostID := createPublishedPost(t, app, adminID, "interval-other-post")
+	ip := "198.51.100.88"
+	first := submitPublicComment(t, app, postID, url.Values{"author": {"Interval"}, "mail": {"interval@example.com"}, "text": {"first content"}}, ip)
+	second := submitPublicComment(t, app, otherPostID, url.Values{"author": {"Interval"}, "mail": {"interval@example.com"}, "text": {"other content"}}, ip)
+	third := submitPublicComment(t, app, otherPostID, url.Values{"author": {"Interval"}, "mail": {"interval@example.com"}, "text": {"too soon"}}, ip)
+	if !strings.Contains(first.Header().Get("Location"), "comment_ok=1") || !strings.Contains(second.Header().Get("Location"), "comment_ok=1") || !strings.Contains(third.Header().Get("Location"), "comment_error=frequent") {
+		t.Fatalf("interval redirects = %q, %q, %q", first.Header().Get("Location"), second.Header().Get("Location"), third.Header().Get("Location"))
+	}
+}
+
+func TestAdminCommentsDefaultToAllAndUseAvatarTemplate(t *testing.T) {
+	app, secret, adminID := newSecurityTestApp(t)
+	ctx := context.Background()
+	templateURL := "https://weavatar.example/avatar/{hash}?s={size}"
+	if err := app.Options.Set(ctx, "avatar_url_template", templateURL); err != nil {
+		t.Fatal(err)
+	}
+	postID := createPublishedPost(t, app, adminID, "admin-comment-list")
+	for _, input := range []services.SaveCommentInput{
+		{CID: postID, Author: "Approved", Mail: "approved@example.com", Text: "approved-visible", Status: "approved"},
+		{CID: postID, Author: "Waiting", Mail: "waiting@example.com", Text: "waiting-visible", Status: "waiting"},
+	} {
+		if err := app.Comments.Save(ctx, input, 0); err != nil {
+			t.Fatal(err)
+		}
+	}
+	req := httptest.NewRequest(http.MethodGet, "/admin/comments", nil)
+	setSession(t, req, secret, adminID)
+	rec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(rec, req)
+	body := rec.Body.String()
+	hash := md5.Sum([]byte("waiting@example.com"))
+	wantAvatar := "https://weavatar.example/avatar/" + hex.EncodeToString(hash[:]) + "?s=48"
+	if rec.Code != http.StatusOK || !strings.Contains(body, "approved-visible") || !strings.Contains(body, "waiting-visible") || !strings.Contains(body, wantAvatar) || !strings.Contains(body, "name=\"status\" label=\"状态\" value=\"all\"") {
+		t.Fatalf("default comments page missing all statuses/avatar: status=%d body=%s", rec.Code, body)
+	}
+}
+
+func TestDiscussionSettingsSynchronizeModerationCompatibilityOptions(t *testing.T) {
+	app, secret, adminID := newSecurityTestApp(t)
+	form := url.Values{
+		"_csrf":                         {adminToken(secret, adminID)},
+		"comments_moderation_mode":      {"approved_author"},
+		"comments_post_interval_enable": {"1"},
+		"comments_post_interval":        {"90"},
+		"avatar_url_template":           {"https://weavatar.example/avatar/{hash}?s={size}"},
+	}
+	req := httptest.NewRequest(http.MethodPost, "/admin/options/discussion", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	setSession(t, req, secret, adminID)
+	rec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("discussion settings status = %d, want 303: %s", rec.Code, rec.Body.String())
+	}
+
+	for key, want := range map[string]string{
+		"comments_moderation_mode":    "approved_author",
+		"comments_require_moderation": "0",
+		"comments_whitelist":          "1",
+		"comments_post_interval":      "90",
+	} {
+		got, err := app.Options.Get(context.Background(), key)
+		if err != nil || got != want {
+			t.Fatalf("option %s = %q, err = %v, want %q", key, got, err, want)
+		}
 	}
 }
 
