@@ -165,3 +165,25 @@ func TestUploadExtensionComparisonUsesStoredFormat(t *testing.T) {
 		t.Fatal("different stored extensions should not match")
 	}
 }
+
+func TestMediaPageUsesDirectUploadAndCompactTable(t *testing.T) {
+	app, secret, adminID := newSecurityTestApp(t)
+	app.UploadDir = t.TempDir()
+	uploadMedia(t, app, secret, adminID, 0, "compact.png", tinyPNG(t))
+	req := httptest.NewRequest(http.MethodGet, "/admin/medias?kind=all&author=all", nil)
+	setSession(t, req, secret, adminID)
+	rec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("media page status = %d", rec.Code)
+	}
+	body := rec.Body.String()
+	for _, want := range []string{"media-upload-form", "data-auto-submit", "media-table", "media-copy-button", "上传附件", `name="kind" label="类型" value="all"`, `name="author" label="作者" value="all"`, `<mdui-menu-item value="all">全部</mdui-menu-item>`} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("media page missing %q", want)
+		}
+	}
+	if strings.Contains(body, "<th>地址</th>") || strings.Contains(body, "未选择文件") {
+		t.Fatalf("media page still contains the old upload or address layout")
+	}
+}

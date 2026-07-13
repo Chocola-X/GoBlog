@@ -2405,8 +2405,10 @@ func (a *App) adminMedias(w http.ResponseWriter, r *http.Request) {
 		}
 		users, _ := a.Users.List(r.Context(), "")
 		views := a.mediaViews(medias, posts, pages, users)
-		views = filterMediaViews(views, r.URL.Query().Get("kind"), r.URL.Query().Get("author"), r.URL.Query().Get("keywords"))
-		a.renderAdmin(w, r, "medias.html", map[string]any{"Title": "附件", "Medias": views, "Posts": posts, "Pages": pages, "Saved": r.URL.Query().Get("saved") == "1", "Kind": r.URL.Query().Get("kind"), "Author": r.URL.Query().Get("author"), "Keywords": r.URL.Query().Get("keywords"), "Users": users})
+		kind := mediaFilterValue(r.URL.Query().Get("kind"))
+		author := mediaFilterValue(r.URL.Query().Get("author"))
+		views = filterMediaViews(views, kind, author, r.URL.Query().Get("keywords"))
+		a.renderAdmin(w, r, "medias.html", map[string]any{"Title": "附件", "Medias": views, "Posts": posts, "Pages": pages, "Saved": r.URL.Query().Get("saved") == "1", "Kind": kind, "Author": author, "Keywords": r.URL.Query().Get("keywords"), "Users": users})
 	case http.MethodPost:
 		if err := r.ParseMultipartForm(32 << 20); err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
@@ -3689,6 +3691,12 @@ func editorMediaItems(views []mediaView, baseURL string) []editorMediaItem {
 
 func filterMediaViews(items []mediaView, kind, author, keywords string) []mediaView {
 	kind = strings.TrimSpace(kind)
+	if kind == "all" {
+		kind = ""
+	}
+	if strings.TrimSpace(author) == "all" {
+		author = ""
+	}
 	authorID, _ := strconv.ParseInt(author, 10, 64)
 	keywords = strings.ToLower(strings.TrimSpace(keywords))
 	if kind == "" && authorID <= 0 && keywords == "" {
@@ -3711,6 +3719,14 @@ func filterMediaViews(items []mediaView, kind, author, keywords string) []mediaV
 		out = append(out, item)
 	}
 	return out
+}
+
+func mediaFilterValue(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "all"
+	}
+	return value
 }
 
 func parseAttachmentMeta(item models.Content) models.AttachmentMeta {

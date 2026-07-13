@@ -690,7 +690,11 @@
           return;
         }
         copyToClipboard(value).then(function () {
-          button.textContent = "已复制";
+          if (button.classList.contains("media-copy-button")) {
+            showMessage("URL 已复制", { type: "info" });
+          } else {
+            button.textContent = "已复制";
+          }
         }).catch(function () {});
       });
     });
