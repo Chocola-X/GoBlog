@@ -54,6 +54,7 @@ type App struct {
 	UploadDir       string
 	HTTPClient      *compathttp.Client
 	HTTPFetch       func(context.Context, string) (string, error)
+	WAF             *wafManager
 	loginMu         sync.Mutex
 	loginNext       map[string]time.Time
 	draftRepairOnce sync.Once
@@ -70,7 +71,9 @@ func New(contents *services.ContentService, metas *services.MetaService, comment
 		uploadDir = filepath.Join("data", "uploads")
 	}
 	httpClient, _ := compathttp.New(compathttp.Config{Timeout: 5 * time.Second, UserAgent: "GoBlog/1.0", Retries: 1})
-	return &App{Contents: contents, Metas: metas, Comments: comments, Users: users, Options: options, Plugins: plugins, UploadDir: uploadDir, HTTPClient: httpClient, loginNext: map[string]time.Time{}}
+	app := &App{Contents: contents, Metas: metas, Comments: comments, Users: users, Options: options, Plugins: plugins, UploadDir: uploadDir, HTTPClient: httpClient, loginNext: map[string]time.Time{}}
+	app.WAF = newWAFManager(app)
+	return app
 }
 
 func (a *App) ensureDraftRepair(ctx context.Context) error {
@@ -124,6 +127,7 @@ func (a *App) Handler() http.Handler {
 		"/admin/options/reading":         a.adminOptionsReading,
 		"/admin/options/discussion":      a.adminOptionsDiscussion,
 		"/admin/options/permalink":       a.adminOptionsPermalink,
+		"/admin/options/waf":             a.adminOptionsWAF,
 		"/admin/themes":                  a.adminThemes,
 		"/admin/themes/":                 a.adminThemeRoutes,
 		"/admin/plugins":                 a.adminPlugins,
@@ -186,7 +190,10 @@ func (a *App) Handler() http.Handler {
 	mux.HandleFunc("/search/", a.frontSearch)
 	mux.HandleFunc("/archive/", a.frontArchive)
 	mux.HandleFunc("/", a.frontDynamic)
-	return mux
+	if a.WAF == nil {
+		a.WAF = newWAFManager(a)
+	}
+	return a.WAF.wrap(mux)
 }
 
 func (a *App) adminLogin(w http.ResponseWriter, r *http.Request) {
@@ -220,6 +227,7 @@ func (a *App) adminLogin(w http.ResponseWriter, r *http.Request) {
 			a.renderAdmin(w, r, "login.html", map[string]any{"Title": "登录", "Error": "用户名或密码不正确", "Name": name, "Next": next})
 			return
 		}
+		a.recordLoginSuccess(clientIP(r))
 		secret, _ := a.Options.Get(r.Context(), "auth_secret")
 		auth.SetVersionedSessionWithOptions(w, secret, user.UID, user.AuthCode, a.cookieOptions(r.Context()))
 		if next == "" {
@@ -2152,6 +2160,94 @@ func (a *App) adminOptionsPermalink(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	a.optionsForm(w, r, "永久链接", "options_permalink.html", []string{"permalink_post", "permalink_page", "permalink_category"})
+}
+
+func (a *App) adminOptionsWAF(w http.ResponseWriter, r *http.Request) {
+	if !a.requireRole(w, r, "administrator") {
+		return
+	}
+	keys := wafOptionKeys()
+	if r.Method == http.MethodPost {
+		if err := r.ParseForm(); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if err := validateWAFOptions(r); err != nil {
+			options, _ := a.Options.All(r.Context())
+			for _, key := range keys {
+				options[key] = r.FormValue(key)
+			}
+			a.renderAdmin(w, r, "options_waf.html", map[string]any{"Title": "WAF", "Options": options, "Error": err.Error()})
+			return
+		}
+	}
+	a.optionsForm(w, r, "WAF", "options_waf.html", keys)
+	if r.Method == http.MethodPost && a.WAF != nil {
+		a.WAF.invalidatePublicData()
+	}
+}
+
+func wafOptionKeys() []string {
+	return []string{
+		"waf_enabled",
+		"waf_url_index_enabled", "waf_url_index_ttl", "waf_index_max_items",
+		"waf_cache_enabled", "waf_cache_ttl", "waf_cache_max_entries",
+		"waf_dynamic_rate_enabled", "waf_dynamic_rate_window", "waf_dynamic_rate_limit",
+		"waf_static_rate_enabled", "waf_static_rate_window", "waf_static_rate_limit",
+		"waf_upload_rate_enabled", "waf_upload_rate_window", "waf_upload_rate_limit",
+		"waf_attachment_ban_enabled", "waf_attachment_ban_window", "waf_attachment_ban_limit", "waf_attachment_ban_seconds",
+		"waf_invalid_path_enabled", "waf_invalid_path_window", "waf_invalid_path_limit", "waf_invalid_path_ban_seconds",
+		"waf_search_rate_enabled", "waf_search_rate_window", "waf_search_rate_limit",
+		"waf_login_ban_enabled", "waf_login_window", "waf_login_failures", "waf_login_ban_seconds",
+	}
+}
+
+func validateWAFOptions(r *http.Request) error {
+	boolKeys := []string{
+		"waf_enabled", "waf_url_index_enabled", "waf_cache_enabled", "waf_dynamic_rate_enabled",
+		"waf_static_rate_enabled", "waf_upload_rate_enabled", "waf_attachment_ban_enabled",
+		"waf_invalid_path_enabled", "waf_search_rate_enabled", "waf_login_ban_enabled",
+	}
+	for _, key := range boolKeys {
+		if value := r.FormValue(key); value != "0" && value != "1" {
+			return fmt.Errorf("WAF 开关参数无效")
+		}
+	}
+	ranges := []struct {
+		key   string
+		label string
+		min   int
+		max   int
+	}{
+		{"waf_url_index_ttl", "URL 索引刷新秒数", 1, 86400},
+		{"waf_index_max_items", "URL 索引最大条目数", 100, 1000000},
+		{"waf_cache_ttl", "公开页缓存 TTL", 1, 86400},
+		{"waf_cache_max_entries", "公开页缓存最大条目数", 1, 100000},
+		{"waf_dynamic_rate_window", "动态请求限流窗口", 1, 86400},
+		{"waf_dynamic_rate_limit", "动态请求限流次数", 1, 100000},
+		{"waf_static_rate_window", "静态资源限流窗口", 1, 86400},
+		{"waf_static_rate_limit", "静态资源限流次数", 1, 100000},
+		{"waf_upload_rate_window", "附件资源限流窗口", 1, 86400},
+		{"waf_upload_rate_limit", "附件资源限流次数", 1, 100000},
+		{"waf_attachment_ban_window", "附件下载封禁统计窗口", 1, 86400},
+		{"waf_attachment_ban_limit", "附件下载封禁允许次数", 1, 100000},
+		{"waf_attachment_ban_seconds", "附件下载封禁秒数", 1, 604800},
+		{"waf_invalid_path_window", "非法路径统计窗口", 1, 86400},
+		{"waf_invalid_path_limit", "非法路径允许次数", 1, 100000},
+		{"waf_invalid_path_ban_seconds", "非法路径封禁秒数", 1, 604800},
+		{"waf_search_rate_window", "搜索限流窗口", 1, 86400},
+		{"waf_search_rate_limit", "搜索限流次数", 1, 100000},
+		{"waf_login_window", "登录试错窗口", 1, 86400},
+		{"waf_login_failures", "登录试错次数", 1, 100000},
+		{"waf_login_ban_seconds", "登录封禁秒数", 1, 604800},
+	}
+	for _, item := range ranges {
+		value, err := strconv.Atoi(strings.TrimSpace(r.FormValue(item.key)))
+		if err != nil || value < item.min || value > item.max {
+			return fmt.Errorf("%s必须是 %d 到 %d 的整数", item.label, item.min, item.max)
+		}
+	}
+	return nil
 }
 
 func (a *App) optionsForm(w http.ResponseWriter, r *http.Request, title, tmpl string, keys []string) {
@@ -6203,6 +6299,9 @@ func (a *App) validCSRFFor(r *http.Request, purpose string) bool {
 }
 
 func (a *App) loginAllowed(ip, name string) bool {
+	if a.WAF != nil {
+		return a.WAF.loginAllowed(context.Background(), ip)
+	}
 	a.loginMu.Lock()
 	defer a.loginMu.Unlock()
 	key := ip + "|" + strings.ToLower(name)
@@ -6215,10 +6314,20 @@ func (a *App) loginAllowed(ip, name string) bool {
 }
 
 func (a *App) recordLoginFailure(ip, name string) {
+	if a.WAF != nil {
+		a.WAF.recordLoginFailure(context.Background(), ip)
+		return
+	}
 	a.loginMu.Lock()
 	defer a.loginMu.Unlock()
 	key := ip + "|" + strings.ToLower(name)
 	a.loginNext[key] = time.Now().Add(3 * time.Second)
+}
+
+func (a *App) recordLoginSuccess(ip string) {
+	if a.WAF != nil {
+		a.WAF.recordLoginSuccess(ip)
+	}
 }
 
 func (a *App) csrfPurpose(r *http.Request) string {

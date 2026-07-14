@@ -1,0 +1,109 @@
+{{define "content"}}
+<div class="page-head"><div><h1>WAF</h1><p class="muted">在请求进入业务处理前进行基础限流、路径拦截和公开页缓存。</p></div></div>
+{{if .Saved}}<div class="notice">设置已保存。</div>{{end}}
+{{if .Error}}<div class="notice danger">{{.Error}}</div>{{end}}
+<form method="post" class="form-panel field-stack">
+  <fieldset class="fieldset">
+    <legend>总开关</legend>
+    <div class="comment-option-row">
+      <mdui-checkbox name="waf_enabled" value="1" {{if eq (index .Options "waf_enabled") "1"}}checked{{end}}>启用 WAF</mdui-checkbox>
+      <input type="hidden" name="waf_enabled" value="0">
+    </div>
+  </fieldset>
+
+  <fieldset class="fieldset">
+    <legend>URL 快速索引</legend>
+    <div class="comment-option-row">
+      <mdui-checkbox name="waf_url_index_enabled" value="1" {{if eq (index .Options "waf_url_index_enabled") "1"}}checked{{end}}>启用公开 URL 索引拦截</mdui-checkbox>
+      <input type="hidden" name="waf_url_index_enabled" value="0">
+    </div>
+    <mdui-text-field name="waf_url_index_ttl" label="索引刷新秒数" type="number" min="1" max="86400" step="1" value="{{index .Options "waf_url_index_ttl"}}"></mdui-text-field>
+    <mdui-text-field name="waf_index_max_items" label="索引最大条目数" type="number" min="100" max="1000000" step="1" value="{{index .Options "waf_index_max_items"}}"></mdui-text-field>
+  </fieldset>
+
+  <fieldset class="fieldset">
+    <legend>公开页缓存</legend>
+    <div class="comment-option-row">
+      <mdui-checkbox name="waf_cache_enabled" value="1" {{if eq (index .Options "waf_cache_enabled") "1"}}checked{{end}}>启用公开动态页面缓存</mdui-checkbox>
+      <input type="hidden" name="waf_cache_enabled" value="0">
+    </div>
+    <mdui-text-field name="waf_cache_ttl" label="缓存 TTL（秒）" type="number" min="1" max="86400" step="1" value="{{index .Options "waf_cache_ttl"}}"></mdui-text-field>
+    <mdui-text-field name="waf_cache_max_entries" label="缓存最大条目数" type="number" min="1" max="100000" step="1" value="{{index .Options "waf_cache_max_entries"}}"></mdui-text-field>
+  </fieldset>
+
+  <fieldset class="fieldset">
+    <legend>动态请求限流</legend>
+    <div class="comment-option-row">
+      <mdui-checkbox name="waf_dynamic_rate_enabled" value="1" {{if eq (index .Options "waf_dynamic_rate_enabled") "1"}}checked{{end}}>启用动态请求 IP 限流</mdui-checkbox>
+      <input type="hidden" name="waf_dynamic_rate_enabled" value="0">
+    </div>
+    <mdui-text-field name="waf_dynamic_rate_window" label="时间窗口（秒）" type="number" min="1" max="86400" step="1" value="{{index .Options "waf_dynamic_rate_window"}}"></mdui-text-field>
+    <mdui-text-field name="waf_dynamic_rate_limit" label="窗口内允许动态请求数" type="number" min="1" max="100000" step="1" value="{{index .Options "waf_dynamic_rate_limit"}}"></mdui-text-field>
+  </fieldset>
+
+  <fieldset class="fieldset">
+    <legend>静态资源限流</legend>
+    <div class="comment-option-row">
+      <mdui-checkbox name="waf_static_rate_enabled" value="1" {{if eq (index .Options "waf_static_rate_enabled") "1"}}checked{{end}}>启用主题和后台静态资源 IP 限流</mdui-checkbox>
+      <input type="hidden" name="waf_static_rate_enabled" value="0">
+    </div>
+    <mdui-text-field name="waf_static_rate_window" label="时间窗口（秒）" type="number" min="1" max="86400" step="1" value="{{index .Options "waf_static_rate_window"}}"></mdui-text-field>
+    <mdui-text-field name="waf_static_rate_limit" label="窗口内允许静态资源请求数" type="number" min="1" max="100000" step="1" value="{{index .Options "waf_static_rate_limit"}}"></mdui-text-field>
+  </fieldset>
+
+  <fieldset class="fieldset">
+    <legend>附件资源限流</legend>
+    <div class="comment-option-row">
+      <mdui-checkbox name="waf_upload_rate_enabled" value="1" {{if eq (index .Options "waf_upload_rate_enabled") "1"}}checked{{end}}>启用 /uploads/ 附件资源 IP 限流</mdui-checkbox>
+      <input type="hidden" name="waf_upload_rate_enabled" value="0">
+    </div>
+    <mdui-text-field name="waf_upload_rate_window" label="时间窗口（秒）" type="number" min="1" max="86400" step="1" value="{{index .Options "waf_upload_rate_window"}}"></mdui-text-field>
+    <mdui-text-field name="waf_upload_rate_limit" label="窗口内允许附件请求数" type="number" min="1" max="100000" step="1" value="{{index .Options "waf_upload_rate_limit"}}"></mdui-text-field>
+  </fieldset>
+
+  <fieldset class="fieldset">
+    <legend>附件下载封禁</legend>
+    <div class="comment-option-row">
+      <mdui-checkbox name="waf_attachment_ban_enabled" value="1" {{if eq (index .Options "waf_attachment_ban_enabled") "1"}}checked{{end}}>启用附件下载次数封禁</mdui-checkbox>
+      <input type="hidden" name="waf_attachment_ban_enabled" value="0">
+    </div>
+    <mdui-text-field name="waf_attachment_ban_window" label="统计窗口（秒）" type="number" min="1" max="86400" step="1" value="{{index .Options "waf_attachment_ban_window"}}"></mdui-text-field>
+    <mdui-text-field name="waf_attachment_ban_limit" label="窗口内允许附件下载次数" type="number" min="1" max="100000" step="1" value="{{index .Options "waf_attachment_ban_limit"}}"></mdui-text-field>
+    <mdui-text-field name="waf_attachment_ban_seconds" label="封禁时长（秒）" type="number" min="1" max="604800" step="1" value="{{index .Options "waf_attachment_ban_seconds"}}"></mdui-text-field>
+  </fieldset>
+
+  <fieldset class="fieldset">
+    <legend>非法路径封禁</legend>
+    <div class="comment-option-row">
+      <mdui-checkbox name="waf_invalid_path_enabled" value="1" {{if eq (index .Options "waf_invalid_path_enabled") "1"}}checked{{end}}>启用不存在路径统计封禁</mdui-checkbox>
+      <input type="hidden" name="waf_invalid_path_enabled" value="0">
+    </div>
+    <mdui-text-field name="waf_invalid_path_window" label="统计窗口（秒）" type="number" min="1" max="86400" step="1" value="{{index .Options "waf_invalid_path_window"}}"></mdui-text-field>
+    <mdui-text-field name="waf_invalid_path_limit" label="窗口内允许非法路径次数" type="number" min="1" max="100000" step="1" value="{{index .Options "waf_invalid_path_limit"}}"></mdui-text-field>
+    <mdui-text-field name="waf_invalid_path_ban_seconds" label="封禁时长（秒）" type="number" min="1" max="604800" step="1" value="{{index .Options "waf_invalid_path_ban_seconds"}}"></mdui-text-field>
+  </fieldset>
+
+  <fieldset class="fieldset">
+    <legend>搜索限流</legend>
+    <div class="comment-option-row">
+      <mdui-checkbox name="waf_search_rate_enabled" value="1" {{if eq (index .Options "waf_search_rate_enabled") "1"}}checked{{end}}>启用搜索请求独立限流</mdui-checkbox>
+      <input type="hidden" name="waf_search_rate_enabled" value="0">
+    </div>
+    <mdui-text-field name="waf_search_rate_window" label="搜索限流窗口（秒）" type="number" min="1" max="86400" step="1" value="{{index .Options "waf_search_rate_window"}}"></mdui-text-field>
+    <mdui-text-field name="waf_search_rate_limit" label="窗口内允许搜索次数" type="number" min="1" max="100000" step="1" value="{{index .Options "waf_search_rate_limit"}}"></mdui-text-field>
+  </fieldset>
+
+  <fieldset class="fieldset">
+    <legend>后台登录爆破封禁</legend>
+    <div class="comment-option-row">
+      <mdui-checkbox name="waf_login_ban_enabled" value="1" {{if eq (index .Options "waf_login_ban_enabled") "1"}}checked{{end}}>启用登录失败封禁</mdui-checkbox>
+      <input type="hidden" name="waf_login_ban_enabled" value="0">
+    </div>
+    <mdui-text-field name="waf_login_window" label="试错统计窗口（秒）" type="number" min="1" max="86400" step="1" value="{{index .Options "waf_login_window"}}"></mdui-text-field>
+    <mdui-text-field name="waf_login_failures" label="窗口内允许失败次数" type="number" min="1" max="100000" step="1" value="{{index .Options "waf_login_failures"}}"></mdui-text-field>
+    <mdui-text-field name="waf_login_ban_seconds" label="封禁时长（秒）" type="number" min="1" max="604800" step="1" value="{{index .Options "waf_login_ban_seconds"}}"></mdui-text-field>
+  </fieldset>
+
+  <div class="form-actions"><mdui-button type="submit"><mdui-icon slot="icon" name="security"></mdui-icon>保存设置</mdui-button></div>
+</form>
+{{end}}

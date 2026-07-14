@@ -2553,6 +2553,247 @@ func TestDefaultPageURLUsesNumericSlugIDWithHTMLSuffix(t *testing.T) {
 	}
 }
 
+func TestWAFInvalidPathBanAndDisableSwitch(t *testing.T) {
+	app, _, _ := newSecurityTestApp(t)
+	ctx := context.Background()
+	for key, value := range map[string]string{
+		"waf_cache_enabled":            "0",
+		"waf_dynamic_rate_enabled":     "1",
+		"waf_dynamic_rate_window":      "60",
+		"waf_dynamic_rate_limit":       "100",
+		"waf_invalid_path_enabled":     "1",
+		"waf_invalid_path_window":      "60",
+		"waf_invalid_path_limit":       "1",
+		"waf_invalid_path_ban_seconds": "60",
+		"waf_attachment_ban_enabled":   "0",
+		"waf_search_rate_enabled":      "0",
+		"waf_login_ban_enabled":        "0",
+		"waf_url_index_enabled":        "1",
+		"waf_url_index_ttl":            "60",
+		"waf_static_rate_enabled":      "0",
+		"waf_upload_rate_enabled":      "0",
+	} {
+		if err := app.Options.Set(ctx, key, value); err != nil {
+			t.Fatal(err)
+		}
+	}
+	handler := app.Handler()
+	req := httptest.NewRequest(http.MethodGet, "/missing-a", nil)
+	req.Header.Set("X-Forwarded-For", "198.51.100.10")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("first missing status = %d, want 404", rec.Code)
+	}
+	req = httptest.NewRequest(http.MethodGet, "/missing-b", nil)
+	req.Header.Set("X-Forwarded-For", "198.51.100.10")
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("second missing status = %d, want 403", rec.Code)
+	}
+
+	app2, _, _ := newSecurityTestApp(t)
+	for key, value := range map[string]string{
+		"waf_cache_enabled":          "0",
+		"waf_invalid_path_enabled":   "0",
+		"waf_dynamic_rate_enabled":   "0",
+		"waf_search_rate_enabled":    "0",
+		"waf_login_ban_enabled":      "0",
+		"waf_attachment_ban_enabled": "0",
+	} {
+		if err := app2.Options.Set(ctx, key, value); err != nil {
+			t.Fatal(err)
+		}
+	}
+	handler = app2.Handler()
+	for i := 0; i < 3; i++ {
+		req = httptest.NewRequest(http.MethodGet, "/missing-disabled-"+strconv.Itoa(i), nil)
+		req.Header.Set("X-Forwarded-For", "198.51.100.11")
+		rec = httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusNotFound {
+			t.Fatalf("disabled invalid path status %d = %d, want 404", i, rec.Code)
+		}
+	}
+}
+
+func TestWAFPublicPageCache(t *testing.T) {
+	app, _, adminID := newSecurityTestApp(t)
+	ctx := context.Background()
+	for key, value := range map[string]string{
+		"waf_cache_enabled":          "1",
+		"waf_cache_ttl":              "60",
+		"waf_cache_max_entries":      "10",
+		"waf_dynamic_rate_enabled":   "0",
+		"waf_search_rate_enabled":    "0",
+		"waf_login_ban_enabled":      "0",
+		"waf_attachment_ban_enabled": "0",
+	} {
+		if err := app.Options.Set(ctx, key, value); err != nil {
+			t.Fatal(err)
+		}
+	}
+	postID := createPublishedPost(t, app, adminID, "cache-target")
+	post, err := app.Contents.ByID(ctx, postID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := app.Handler()
+	req := httptest.NewRequest(http.MethodGet, app.contentURL(ctx, post), nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("first cache status = %d: %s", rec.Code, rec.Body.String())
+	}
+	req = httptest.NewRequest(http.MethodGet, app.contentURL(ctx, post), nil)
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || rec.Header().Get("X-GoBlog-Cache") != "HIT" {
+		t.Fatalf("second cache response = %d cache %q", rec.Code, rec.Header().Get("X-GoBlog-Cache"))
+	}
+}
+
+func TestWAFSearchRateLimit(t *testing.T) {
+	app, _, _ := newSecurityTestApp(t)
+	ctx := context.Background()
+	for key, value := range map[string]string{
+		"waf_cache_enabled":          "0",
+		"waf_dynamic_rate_enabled":   "0",
+		"waf_search_rate_enabled":    "1",
+		"waf_search_rate_window":     "60",
+		"waf_search_rate_limit":      "1",
+		"waf_login_ban_enabled":      "0",
+		"waf_attachment_ban_enabled": "0",
+	} {
+		if err := app.Options.Set(ctx, key, value); err != nil {
+			t.Fatal(err)
+		}
+	}
+	handler := app.Handler()
+	req := httptest.NewRequest(http.MethodGet, "/search/one", nil)
+	req.Header.Set("X-Forwarded-For", "198.51.100.20")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("first search status = %d", rec.Code)
+	}
+	req = httptest.NewRequest(http.MethodGet, "/search/two", nil)
+	req.Header.Set("X-Forwarded-For", "198.51.100.20")
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("second search status = %d, want 429", rec.Code)
+	}
+}
+
+func TestWAFLoginFailureBan(t *testing.T) {
+	app, _, _ := newSecurityTestApp(t)
+	ctx := context.Background()
+	for key, value := range map[string]string{
+		"waf_dynamic_rate_enabled":   "0",
+		"waf_search_rate_enabled":    "0",
+		"waf_login_ban_enabled":      "1",
+		"waf_login_window":           "60",
+		"waf_login_failures":         "1",
+		"waf_login_ban_seconds":      "60",
+		"waf_attachment_ban_enabled": "0",
+	} {
+		if err := app.Options.Set(ctx, key, value); err != nil {
+			t.Fatal(err)
+		}
+	}
+	handler := app.Handler()
+	form := url.Values{"name": {"admin"}, "password": {"wrong"}}
+	req := httptest.NewRequest(http.MethodPost, "/admin/login", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("X-Forwarded-For", "198.51.100.30")
+	form.Set("_csrf", app.csrfTokenFor(req, "login"))
+	req = httptest.NewRequest(http.MethodPost, "/admin/login", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("X-Forwarded-For", "198.51.100.30")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "用户名或密码不正确") {
+		t.Fatalf("first login failure = %d: %s", rec.Code, rec.Body.String())
+	}
+
+	form = url.Values{"name": {"admin"}, "password": {"admin123"}}
+	req = httptest.NewRequest(http.MethodPost, "/admin/login", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("X-Forwarded-For", "198.51.100.30")
+	form.Set("_csrf", app.csrfTokenFor(req, "login"))
+	req = httptest.NewRequest(http.MethodPost, "/admin/login", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("X-Forwarded-For", "198.51.100.30")
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code == http.StatusSeeOther || !strings.Contains(rec.Body.String(), "尝试过于频繁") {
+		t.Fatalf("banned login response = %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestWAFAttachmentDownloadBan(t *testing.T) {
+	app, _, _ := newSecurityTestApp(t)
+	ctx := context.Background()
+	uploadDir := t.TempDir()
+	app.UploadDir = uploadDir
+	if err := os.WriteFile(filepath.Join(uploadDir, "asset.txt"), []byte("asset"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for key, value := range map[string]string{
+		"waf_cache_enabled":          "0",
+		"waf_dynamic_rate_enabled":   "0",
+		"waf_static_rate_enabled":    "0",
+		"waf_upload_rate_enabled":    "0",
+		"waf_search_rate_enabled":    "0",
+		"waf_login_ban_enabled":      "0",
+		"waf_attachment_ban_enabled": "1",
+		"waf_attachment_ban_window":  "60",
+		"waf_attachment_ban_limit":   "1",
+		"waf_attachment_ban_seconds": "60",
+		"waf_invalid_path_enabled":   "0",
+		"waf_url_index_enabled":      "0",
+	} {
+		if err := app.Options.Set(ctx, key, value); err != nil {
+			t.Fatal(err)
+		}
+	}
+	handler := app.Handler()
+	req := httptest.NewRequest(http.MethodGet, "/uploads/asset.txt", nil)
+	req.Header.Set("X-Forwarded-For", "198.51.100.40")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("first attachment status = %d: %s", rec.Code, rec.Body.String())
+	}
+	req = httptest.NewRequest(http.MethodGet, "/uploads/asset.txt", nil)
+	req.Header.Set("X-Forwarded-For", "198.51.100.40")
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("second attachment status = %d, want 403", rec.Code)
+	}
+}
+
+func TestAdminOptionsWAFPageRenders(t *testing.T) {
+	app, secret, adminID := newSecurityTestApp(t)
+	req := httptest.NewRequest(http.MethodGet, "/admin/options/waf", nil)
+	setSession(t, req, secret, adminID)
+	rec := httptest.NewRecorder()
+
+	app.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("waf options status = %d: %s", rec.Code, rec.Body.String())
+	}
+	for _, want := range []string{"URL 快速索引", "公开页缓存", "附件下载封禁", "后台登录爆破封禁"} {
+		if !strings.Contains(rec.Body.String(), want) {
+			t.Fatalf("waf options page missing %q", want)
+		}
+	}
+}
+
 func TestCategoryDirectoryPermalink(t *testing.T) {
 	app, _, adminID := newSecurityTestApp(t)
 	ctx := context.Background()

@@ -48,6 +48,7 @@
         <mdui-list-item href="/admin/plugins"><mdui-icon slot="icon" name="extension"></mdui-icon>{{T "Plugins"}}</mdui-list-item>
         {{range .AdminMenu}}<mdui-list-item href="{{.URL}}"><mdui-icon slot="icon" name="extension"></mdui-icon>{{.Label}}</mdui-list-item>{{end}}
         <mdui-list-item href="/admin/options/general"><mdui-icon slot="icon" name="settings"></mdui-icon>{{T "Settings"}}</mdui-list-item>
+        <mdui-list-item href="/admin/options/waf"><mdui-icon slot="icon" name="security"></mdui-icon>WAF</mdui-list-item>
         <mdui-list-item href="/admin/management"><mdui-icon slot="icon" name="tune"></mdui-icon>管理设置</mdui-list-item>
         <mdui-list-item href="/admin/backup"><mdui-icon slot="icon" name="download"></mdui-icon>{{T "Backup"}}</mdui-list-item>
         <mdui-list-item href="/admin/upgrade"><mdui-icon slot="icon" name="system_update"></mdui-icon>{{T "Upgrade"}}</mdui-list-item>
