@@ -150,7 +150,7 @@ func (a *App) Handler() http.Handler {
 		mux.HandleFunc(route, a.requireAdmin(handler))
 	}
 
-	runtime := &plugin.Runtime{ListPublished: a.Contents.ListPublishedPlugin, ContentByID: a.Contents.ContentByIDPlugin, IncrementIntField: a.Contents.IncrementIntField, Option: a.Options.Get, Config: a.pluginConfig, PersonalConfig: a.pluginPersonalConfig}
+	runtime := a.pluginRuntime()
 	for _, route := range a.Plugins.Routes() {
 		route := route
 		mux.HandleFunc(route.Pattern, func(w http.ResponseWriter, r *http.Request) {
@@ -2315,7 +2315,7 @@ func (a *App) adminPluginToggle(w http.ResponseWriter, r *http.Request, name str
 		return
 	}
 	active := a.activePluginSet(r.Context())
-	runtime := &plugin.Runtime{ListPublished: a.Contents.ListPublishedPlugin, Option: a.Options.Get, Config: a.pluginConfig, PersonalConfig: a.pluginPersonalConfig}
+	runtime := a.pluginRuntime()
 	if enable {
 		if activator, ok := p.(plugin.Activator); ok {
 			if err := activator.Activate(r.Context(), runtime); err != nil {
@@ -7704,6 +7704,18 @@ func themeOptionKey(name string) string {
 
 func (a *App) pluginConfig(ctx context.Context, name string) (map[string]string, error) {
 	return a.optionJSONForUser(ctx, pluginOptionKey(name), 0)
+}
+
+func (a *App) pluginRuntime() *plugin.Runtime {
+	return &plugin.Runtime{
+		ListPublished:     a.Contents.ListPublishedPlugin,
+		ContentByID:       a.Contents.ContentByIDPlugin,
+		IncrementIntField: a.Contents.IncrementIntField,
+		Option:            a.Options.Get,
+		Config:            a.pluginConfig,
+		PersonalConfig:    a.pluginPersonalConfig,
+		DispatchHook:      a.Plugins.DispatchActive,
+	}
 }
 
 func (a *App) pluginPersonalConfig(ctx context.Context, name string, userID int64) (map[string]string, error) {

@@ -1,6 +1,45 @@
-# 内容与评论插件钩子
+# 插件与钩子开发
 
 插件通过 `Manager.RegisterHook` 注册钩子。钩子只在所属插件启用时执行；返回错误会中止前置操作，完成类钩子的错误会返回给调用方。
+
+## 调度与优先级
+
+`RegisterHook` 保持注册顺序执行，等价于使用普通优先级。需要控制顺序时使用：
+
+```go
+m.RegisterHookWithPriority("content.filter", plugin.HookPriorityEarly, earlyFilter)
+m.RegisterHookWithPriority("content.filter", 20, laterFilter)
+```
+
+优先级数值越小越先执行；相同优先级严格保持注册顺序。内置常量为 `HookPriorityEarly`（-100）、`HookPriorityNormal`（0）和 `HookPriorityLate`（100），插件也可以使用其他整数。
+
+`Apply` 和 `ApplyActive` 保留原有链式过滤 API。需要获知 Typecho `trigger(&$signal)` 对应的“是否存在处理器”信号时，使用 `Dispatch` 或 `DispatchActive`：
+
+```go
+result, err := m.DispatchActive(ctx, "cache.lookup", key)
+if err != nil {
+    return err
+}
+if !result.Triggered {
+    // 没有已启用插件处理，执行核心默认逻辑。
+}
+```
+
+钩子返回 `plugin.StopHook(payload)` 会保留新 payload 并停止后续回调，调度结果的 `Stopped` 同时为 `true`。钩子名称是开放字符串，插件可以为自身功能定义带命名空间的钩子，例如 `acme.analytics.before_flush`；核心预定义常量用于稳定的 CMS 生命周期契约。
+
+插件路由可以通过 `Runtime.DispatchHook` 调用当前已启用插件的自定义钩子，不需要持有全局 Manager。插件在 `Init` 中注册自定义钩子时仍会自动关联到自身，停用插件后这些处理器不会执行。
+
+## 接管默认实现
+
+当前可接管钩子并非报告所述的“不支持”。搜索、Markdown/AutoP 解析、上传保存、附件替换、附件删除和附件数据读取的 payload 均包含 `Handled`。插件设置 `Handled=true` 并返回完整结果后，核心不会执行默认实现。
+
+`Triggered` 与 `Handled` 含义不同：前者仅表示至少调用了一个已启用插件，后者表示插件确实提供了默认实现所需的结果。存储和解析等核心入口应继续检查 `Handled`，避免一个只做日志记录的插件意外跳过默认行为。
+
+## 加载模型
+
+GoBlog 插件是与 CMS 一起编译的 Go 包，通过 `plugin.Register` 注册。每次新增或修改插件、主题源码后，都必须重新编译并重启 GoBlog。后台“启用/停用”只控制当前二进制中已经注册插件的钩子、路由和生命周期，不会动态装载或卸载机器代码。
+
+没有采用标准库 `plugin.Open` 扫描 `.so`：该机制仅支持部分平台、不能卸载，并要求宿主与插件使用完全一致的 Go 工具链、依赖源码、构建标签和参数；不匹配可能直接导致进程崩溃。对于当前单二进制、跨平台部署模型，构建时空白导入插件是更可靠的边界。需要隔离式运行时扩展时，应另行定义版本化 RPC/WASM ABI，而不是把 Go `.so` 当作可移植插件包。
 
 ## 保存生命周期
 

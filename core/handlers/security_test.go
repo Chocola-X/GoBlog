@@ -2800,6 +2800,25 @@ func TestPluginActivationFiltersRoutesAndHooks(t *testing.T) {
 	}
 }
 
+func TestPluginRuntimeProvidesConsistentCapabilities(t *testing.T) {
+	app, _, _ := newSecurityTestApp(t)
+	runtime := app.pluginRuntime()
+	if runtime.ListPublished == nil || runtime.ContentByID == nil || runtime.IncrementIntField == nil ||
+		runtime.Option == nil || runtime.Config == nil || runtime.PersonalConfig == nil || runtime.DispatchHook == nil {
+		t.Fatalf("incomplete plugin runtime: %#v", runtime)
+	}
+	app.Plugins.RegisterHook("test.runtime", func(_ context.Context, payload any) (any, error) {
+		return payload.(string) + ":hooked", nil
+	})
+	dispatch, err := runtime.DispatchHook(context.Background(), "test.runtime", "value")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !dispatch.Triggered || dispatch.Payload != "value:hooked" {
+		t.Fatalf("runtime dispatch = %#v", dispatch)
+	}
+}
+
 func TestPluginConfigSavesJSON(t *testing.T) {
 	app, secret, adminID := newSecurityTestApp(t)
 	mgr := plugin.NewManager()

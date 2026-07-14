@@ -6,6 +6,7 @@ import (
 	"io"
 	"io/fs"
 	"net/http"
+	"sort"
 	"sync"
 )
 
@@ -29,6 +30,7 @@ type Runtime struct {
 	Option            func(context.Context, string) (string, error)
 	Config            func(context.Context, string) (map[string]string, error)
 	PersonalConfig    func(context.Context, string, int64) (map[string]string, error)
+	DispatchHook      func(context.Context, string, any) (HookDispatch, error)
 }
 
 type RouteHandler func(*Runtime, http.ResponseWriter, *http.Request)
@@ -41,6 +43,29 @@ type Route struct {
 }
 
 type HookFunc func(context.Context, any) (any, error)
+
+const (
+	HookPriorityEarly  = -100
+	HookPriorityNormal = 0
+	HookPriorityLate   = 100
+)
+
+// HookControl lets a hook stop the remaining callbacks while preserving a payload.
+type HookControl struct {
+	Payload any
+	Stop    bool
+}
+
+// HookDispatch reports whether a hook point was handled and whether propagation stopped.
+type HookDispatch struct {
+	Payload   any
+	Triggered bool
+	Stopped   bool
+}
+
+func StopHook(payload any) HookControl {
+	return HookControl{Payload: payload, Stop: true}
+}
 
 const (
 	HookContentBeforeSave       = "content.before_save"
@@ -372,6 +397,7 @@ type Manager struct {
 	themes        map[string]Theme
 	activePlugins map[string]bool
 	registering   string
+	hookSequence  uint64
 }
 
 var Default = NewManager()
@@ -409,44 +435,45 @@ func (m *Manager) Register(p Plugin) {
 }
 
 func (m *Manager) RegisterHook(name string, fn HookFunc) {
+	m.RegisterHookWithPriority(name, HookPriorityNormal, fn)
+}
+
+func (m *Manager) RegisterHookWithPriority(name string, priority int, fn HookFunc) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.hooks[name] = append(m.hooks[name], ownedHook{Plugin: m.registering, Fn: fn})
+	m.hookSequence++
+	m.hooks[name] = append(m.hooks[name], ownedHook{Plugin: m.registering, Priority: priority, Sequence: m.hookSequence, Fn: fn})
+	sort.SliceStable(m.hooks[name], func(i, j int) bool {
+		if m.hooks[name][i].Priority == m.hooks[name][j].Priority {
+			return m.hooks[name][i].Sequence < m.hooks[name][j].Sequence
+		}
+		return m.hooks[name][i].Priority < m.hooks[name][j].Priority
+	})
 }
 
 func (m *Manager) Apply(ctx context.Context, name string, payload any) (any, error) {
+	dispatch, err := m.Dispatch(ctx, name, payload)
+	return dispatch.Payload, err
+}
+
+func (m *Manager) Dispatch(ctx context.Context, name string, payload any) (HookDispatch, error) {
 	m.mu.RLock()
 	hooks := append([]ownedHook(nil), m.hooks[name]...)
 	m.mu.RUnlock()
-
-	var err error
-	for _, hook := range hooks {
-		payload, err = hook.Fn(ctx, payload)
-		if err != nil {
-			return nil, err
-		}
-	}
-
-	return payload, nil
+	return dispatchHooks(ctx, hooks, nil, payload)
 }
 
 func (m *Manager) ApplyActive(ctx context.Context, name string, payload any) (any, error) {
+	dispatch, err := m.DispatchActive(ctx, name, payload)
+	return dispatch.Payload, err
+}
+
+func (m *Manager) DispatchActive(ctx context.Context, name string, payload any) (HookDispatch, error) {
 	m.mu.RLock()
 	hooks := append([]ownedHook(nil), m.hooks[name]...)
 	active := copyBoolMap(m.activePlugins)
 	m.mu.RUnlock()
-
-	var err error
-	for _, hook := range hooks {
-		if hook.Plugin != "" && !active[hook.Plugin] {
-			continue
-		}
-		payload, err = hook.Fn(ctx, payload)
-		if err != nil {
-			return nil, err
-		}
-	}
-	return payload, nil
+	return dispatchHooks(ctx, hooks, active, payload)
 }
 
 func (m *Manager) HasActiveHook(name string) bool {
@@ -567,8 +594,10 @@ func Compatible(required, current string) bool {
 }
 
 type ownedHook struct {
-	Plugin string
-	Fn     HookFunc
+	Plugin   string
+	Priority int
+	Sequence uint64
+	Fn       HookFunc
 }
 
 type ownedRoute struct {
@@ -588,6 +617,30 @@ func copyBoolMap(in map[string]bool) map[string]bool {
 		out[key] = value
 	}
 	return out
+}
+
+func dispatchHooks(ctx context.Context, hooks []ownedHook, active map[string]bool, payload any) (HookDispatch, error) {
+	result := HookDispatch{Payload: payload}
+	for _, hook := range hooks {
+		if active != nil && hook.Plugin != "" && !active[hook.Plugin] {
+			continue
+		}
+		result.Triggered = true
+		next, err := hook.Fn(ctx, result.Payload)
+		if err != nil {
+			return HookDispatch{}, err
+		}
+		if control, ok := next.(HookControl); ok {
+			result.Payload = control.Payload
+			if control.Stop {
+				result.Stopped = true
+				break
+			}
+			continue
+		}
+		result.Payload = next
+	}
+	return result, nil
 }
 
 func compareVersion(a, b string) int {
