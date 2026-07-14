@@ -102,53 +102,55 @@ func (a *App) Handler() http.Handler {
 	mux.HandleFunc("/install", a.installWizard)
 
 	adminRoutes := map[string]http.HandlerFunc{
-		"/admin":                      a.adminDashboard,
-		"/admin/":                     a.adminDashboard,
-		"/admin/posts":                a.adminPosts,
-		"/admin/posts/":               a.adminPostRoutes,
-		"/admin/pages":                a.adminPages,
-		"/admin/pages/":               a.adminPageRoutes,
-		"/admin/categories":           a.adminCategories,
-		"/admin/categories/":          a.adminCategoryRoutes,
-		"/admin/tags":                 a.adminTags,
-		"/admin/tags/":                a.adminTagRoutes,
-		"/admin/comments":             a.adminComments,
-		"/admin/comments/":            a.adminCommentRoutes,
-		"/admin/users":                a.adminUsers,
-		"/admin/users/":               a.adminUserRoutes,
-		"/admin/profile":              a.adminProfile,
-		"/admin/options":              a.adminOptionsGeneral,
-		"/admin/options/general":      a.adminOptionsGeneral,
-		"/admin/options/reading":      a.adminOptionsReading,
-		"/admin/options/discussion":   a.adminOptionsDiscussion,
-		"/admin/options/permalink":    a.adminOptionsPermalink,
-		"/admin/themes":               a.adminThemes,
-		"/admin/themes/":              a.adminThemeRoutes,
-		"/admin/plugins":              a.adminPlugins,
-		"/admin/plugins/":             a.adminPluginRoutes,
-		"/admin/management":           a.adminManagement,
-		"/admin/management/upload":    a.adminManagementUpload,
-		"/admin/management/assets/":   a.adminManagementAssets,
-		"/admin/medias":               a.adminMedias,
-		"/admin/medias/":              a.adminMediaRoutes,
-		"/admin/backup":               a.adminBackup,
-		"/admin/upgrade":              a.adminUpgrade,
-		"/admin/autosave":             a.adminAutosave,
-		"/admin/markdown/preview":     a.adminMarkdownPreview,
-		"/admin/thumbnail":            a.adminThumbnail,
-		"/admin/medias/editor":        a.adminEditorMedia,
-		"/admin/tags/search":          a.adminTagSearch,
-		"/admin/ajax/tags":            a.adminTagSearch,
-		"/admin/ajax/preferences":     a.adminAjaxPreferences,
-		"/admin/ajax/remote-callback": a.adminAjaxRemoteCallback,
-		"/admin/schema/upload":        a.adminSchemaUpload,
-		"/admin/theme-editor":         a.adminPlaceholder("主题编辑器", "对应 Typecho 的 theme-editor.php。直接编辑文件需要额外权限和审计，当前先保留入口。"),
+		"/admin":                         a.adminDashboard,
+		"/admin/":                        a.adminDashboard,
+		"/admin/posts":                   a.adminPosts,
+		"/admin/posts/":                  a.adminPostRoutes,
+		"/admin/pages":                   a.adminPages,
+		"/admin/pages/":                  a.adminPageRoutes,
+		"/admin/categories":              a.adminCategories,
+		"/admin/categories/":             a.adminCategoryRoutes,
+		"/admin/tags":                    a.adminTags,
+		"/admin/tags/":                   a.adminTagRoutes,
+		"/admin/comments":                a.adminComments,
+		"/admin/comments/":               a.adminCommentRoutes,
+		"/admin/users":                   a.adminUsers,
+		"/admin/users/":                  a.adminUserRoutes,
+		"/admin/profile":                 a.adminProfile,
+		"/admin/profile/revoke-sessions": a.adminProfileRevokeSessions,
+		"/admin/profile/plugins/":        a.adminProfilePluginRoutes,
+		"/admin/options":                 a.adminOptionsGeneral,
+		"/admin/options/general":         a.adminOptionsGeneral,
+		"/admin/options/reading":         a.adminOptionsReading,
+		"/admin/options/discussion":      a.adminOptionsDiscussion,
+		"/admin/options/permalink":       a.adminOptionsPermalink,
+		"/admin/themes":                  a.adminThemes,
+		"/admin/themes/":                 a.adminThemeRoutes,
+		"/admin/plugins":                 a.adminPlugins,
+		"/admin/plugins/":                a.adminPluginRoutes,
+		"/admin/management":              a.adminManagement,
+		"/admin/management/upload":       a.adminManagementUpload,
+		"/admin/management/assets/":      a.adminManagementAssets,
+		"/admin/medias":                  a.adminMedias,
+		"/admin/medias/":                 a.adminMediaRoutes,
+		"/admin/backup":                  a.adminBackup,
+		"/admin/upgrade":                 a.adminUpgrade,
+		"/admin/autosave":                a.adminAutosave,
+		"/admin/markdown/preview":        a.adminMarkdownPreview,
+		"/admin/thumbnail":               a.adminThumbnail,
+		"/admin/medias/editor":           a.adminEditorMedia,
+		"/admin/tags/search":             a.adminTagSearch,
+		"/admin/ajax/tags":               a.adminTagSearch,
+		"/admin/ajax/preferences":        a.adminAjaxPreferences,
+		"/admin/ajax/remote-callback":    a.adminAjaxRemoteCallback,
+		"/admin/schema/upload":           a.adminSchemaUpload,
+		"/admin/theme-editor":            a.adminPlaceholder("主题编辑器", "对应 Typecho 的 theme-editor.php。直接编辑文件需要额外权限和审计，当前先保留入口。"),
 	}
 	for route, handler := range adminRoutes {
 		mux.HandleFunc(route, a.requireAdmin(handler))
 	}
 
-	runtime := &plugin.Runtime{ListPublished: a.Contents.ListPublishedPlugin, ContentByID: a.Contents.ContentByIDPlugin, IncrementIntField: a.Contents.IncrementIntField, Option: a.Options.Get, Config: a.pluginConfig}
+	runtime := &plugin.Runtime{ListPublished: a.Contents.ListPublishedPlugin, ContentByID: a.Contents.ContentByIDPlugin, IncrementIntField: a.Contents.IncrementIntField, Option: a.Options.Get, Config: a.pluginConfig, PersonalConfig: a.pluginPersonalConfig}
 	for _, route := range a.Plugins.Routes() {
 		route := route
 		mux.HandleFunc(route.Pattern, func(w http.ResponseWriter, r *http.Request) {
@@ -219,7 +221,7 @@ func (a *App) adminLogin(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		secret, _ := a.Options.Get(r.Context(), "auth_secret")
-		auth.SetSessionWithOptions(w, secret, user.UID, a.cookieOptions(r.Context()))
+		auth.SetVersionedSessionWithOptions(w, secret, user.UID, user.AuthCode, a.cookieOptions(r.Context()))
 		if next == "" {
 			next = "/admin"
 		}
@@ -259,6 +261,7 @@ func (a *App) adminRegister(w http.ResponseWriter, r *http.Request) {
 			Role:       role,
 		}
 		errs := validateUserInput(input, true)
+		validatePasswordConfirmation(&errs, input.Password, r.FormValue("confirm"), true)
 		if strings.TrimSpace(input.Mail) == "" {
 			errs.Add("mail", "不能为空")
 		}
@@ -306,6 +309,7 @@ func (a *App) installWizard(w http.ResponseWriter, r *http.Request) {
 			Role:       "administrator",
 		}
 		errs := validateUserInput(input, true)
+		validatePasswordConfirmation(&errs, input.Password, r.FormValue("confirm"), true)
 		if !errs.Empty() {
 			a.renderAdmin(w, r, "install.html", map[string]any{"Title": "安装", "User": models.User{Name: input.Name, Mail: input.Mail, ScreenName: input.ScreenName}, "SiteTitle": siteTitle, "Errors": errs})
 			return
@@ -1071,11 +1075,39 @@ func (a *App) metaList(w http.ResponseWriter, r *http.Request, typ, title, tmpl 
 		return
 	}
 	options, _ := a.Options.All(r.Context())
-	a.renderAdmin(w, r, tmpl, map[string]any{"Title": title, "Items": items, "Options": options})
+	views := metaAdminViews(items, nil)
+	var parent models.Meta
+	parentID := int64(0)
+	parentSet := false
+	if typ == "category" {
+		if raw, ok := r.URL.Query()["parent"]; ok {
+			parentSet = true
+			if len(raw) > 0 {
+				parentID, _ = strconv.ParseInt(raw[0], 10, 64)
+			}
+			if parentID > 0 {
+				parent, err = a.Metas.ByID(r.Context(), parentID)
+				if err != nil || parent.Type != "category" {
+					http.NotFound(w, r)
+					return
+				}
+			}
+			views = metaAdminViews(items, &parentID)
+		}
+	}
+	a.renderAdmin(w, r, tmpl, map[string]any{"Title": title, "Items": views, "AllItems": metaAdminViews(items, nil), "Options": options, "Parent": parent, "ParentID": parentID, "ParentSet": parentSet})
 }
 
 func (a *App) metaRoutes(w http.ResponseWriter, r *http.Request, prefix, typ string) {
 	clean := strings.Trim(strings.TrimPrefix(r.URL.Path, prefix), "/")
+	if clean == "batch" {
+		a.metaBatch(w, r, typ)
+		return
+	}
+	if clean == "clean" && typ == "tag" {
+		a.cleanTags(w, r)
+		return
+	}
 	if clean == "new" {
 		a.metaForm(w, r, typ, 0)
 		return
@@ -1098,11 +1130,25 @@ func (a *App) metaRoutes(w http.ResponseWriter, r *http.Request, prefix, typ str
 			methodNotAllowed(w, http.MethodPost)
 			return
 		}
+		if typ == "category" && a.option(r.Context(), "default_category", "0") == strconv.FormatInt(id, 10) {
+			http.Error(w, "默认分类不能删除", http.StatusBadRequest)
+			return
+		}
 		if err := a.Metas.Delete(r.Context(), id); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		http.Redirect(w, r, metaListURL(typ), http.StatusSeeOther)
+		a.flashRedirect(w, r, metaListURL(typ), http.StatusSeeOther, flashNotice{Type: "success", Message: "已删除。"})
+	case "move":
+		if r.Method != http.MethodPost {
+			methodNotAllowed(w, http.MethodPost)
+			return
+		}
+		if err := a.Metas.Move(r.Context(), id, r.FormValue("direction")); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		a.flashRedirect(w, r, metaListURL(typ), http.StatusSeeOther, flashNotice{Type: "success", Message: "排序已更新。"})
 	case "default":
 		if r.Method != http.MethodPost {
 			methodNotAllowed(w, http.MethodPost)
@@ -1118,6 +1164,124 @@ func (a *App) metaRoutes(w http.ResponseWriter, r *http.Request, prefix, typ str
 	}
 }
 
+type metaAdminView struct {
+	models.Meta
+	Depth       int
+	ParentName  string
+	HasChildren bool
+}
+
+func metaAdminViews(items []models.Meta, parentFilter *int64) []metaAdminView {
+	byID := make(map[int64]models.Meta, len(items))
+	children := make(map[int64][]models.Meta)
+	for _, item := range items {
+		byID[item.MID] = item
+		children[item.Parent] = append(children[item.Parent], item)
+	}
+	if parentFilter != nil {
+		out := make([]metaAdminView, 0, len(children[*parentFilter]))
+		for _, item := range children[*parentFilter] {
+			parentName := ""
+			if parent, ok := byID[item.Parent]; ok {
+				parentName = parent.Name
+			}
+			out = append(out, metaAdminView{Meta: item, ParentName: parentName, HasChildren: len(children[item.MID]) > 0})
+		}
+		return out
+	}
+	var out []metaAdminView
+	seen := map[int64]bool{}
+	var walk func(int64, int)
+	walk = func(parentID int64, depth int) {
+		for _, item := range children[parentID] {
+			if seen[item.MID] {
+				continue
+			}
+			seen[item.MID] = true
+			parentName := ""
+			if parent, ok := byID[item.Parent]; ok {
+				parentName = parent.Name
+			}
+			out = append(out, metaAdminView{Meta: item, Depth: depth, ParentName: parentName, HasChildren: len(children[item.MID]) > 0})
+			walk(item.MID, depth+1)
+		}
+	}
+	walk(0, 0)
+	for _, item := range items {
+		if !seen[item.MID] {
+			out = append(out, metaAdminView{Meta: item, ParentName: byID[item.Parent].Name, HasChildren: len(children[item.MID]) > 0})
+		}
+	}
+	return out
+}
+
+func (a *App) metaBatch(w http.ResponseWriter, r *http.Request, typ string) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w, http.MethodPost)
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	ids := parseInt64Values(r.Form["id"])
+	switch r.FormValue("action") {
+	case "merge":
+		target, _ := strconv.ParseInt(r.FormValue("target"), 10, 64)
+		if target <= 0 || len(ids) == 0 {
+			http.Error(w, "请选择合并目标和来源", http.StatusBadRequest)
+			return
+		}
+		if err := a.Metas.Merge(r.Context(), target, ids, typ); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if typ == "category" {
+			defaultID, _ := strconv.ParseInt(a.option(r.Context(), "default_category", "0"), 10, 64)
+			for _, id := range ids {
+				if id == defaultID && id != target {
+					_ = a.Options.Set(r.Context(), "default_category", strconv.FormatInt(target, 10))
+				}
+			}
+		}
+	case "refresh":
+		for _, id := range ids {
+			if err := a.Metas.RefreshCount(r.Context(), id); err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+		}
+	case "delete":
+		defaultID := a.option(r.Context(), "default_category", "0")
+		for _, id := range ids {
+			if typ == "category" && defaultID == strconv.FormatInt(id, 10) {
+				continue
+			}
+			if err := a.Metas.Delete(r.Context(), id); err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+		}
+	default:
+		http.Error(w, "unsupported meta action", http.StatusBadRequest)
+		return
+	}
+	a.flashRedirect(w, r, metaListURL(typ), http.StatusSeeOther, flashNotice{Type: "success", Message: "批量操作已完成。"})
+}
+
+func (a *App) cleanTags(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w, http.MethodPost)
+		return
+	}
+	count, err := a.Metas.CleanOrphanTags(r.Context())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	a.flashRedirect(w, r, "/admin/tags", http.StatusSeeOther, flashNotice{Type: "success", Message: fmt.Sprintf("已清理 %d 个孤立标签。", count)})
+}
+
 func (a *App) metaForm(w http.ResponseWriter, r *http.Request, typ string, id int64) {
 	var item models.Meta
 	var err error
@@ -1129,11 +1293,14 @@ func (a *App) metaForm(w http.ResponseWriter, r *http.Request, typ string, id in
 		}
 	} else {
 		item = models.Meta{Type: typ}
+		if typ == "category" {
+			item.Parent, _ = strconv.ParseInt(r.URL.Query().Get("parent"), 10, 64)
+		}
 	}
 	switch r.Method {
 	case http.MethodGet:
 		categories, _ := a.Metas.List(r.Context(), "category")
-		a.renderAdmin(w, r, "meta_form.html", map[string]any{"Title": metaTitle(typ, id), "Meta": item, "Type": typ, "Action": metaActionURL(typ, id), "Categories": categories})
+		a.renderAdmin(w, r, "meta_form.html", map[string]any{"Title": metaTitle(typ, id), "Meta": item, "Type": typ, "Action": metaActionURL(typ, id), "Categories": metaAdminViews(categories, nil)})
 	case http.MethodPost:
 		if err := r.ParseForm(); err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
@@ -1144,12 +1311,14 @@ func (a *App) metaForm(w http.ResponseWriter, r *http.Request, typ string, id in
 		if errs := validateMetaInput(input); !errs.Empty() {
 			item = models.Meta{MID: id, Name: input.Name, Slug: input.Slug, Type: typ, Description: input.Description, Parent: input.Parent}
 			categories, _ := a.Metas.List(r.Context(), "category")
-			a.renderAdmin(w, r, "meta_form.html", map[string]any{"Title": metaTitle(typ, id), "Meta": item, "Type": typ, "Action": metaActionURL(typ, id), "Categories": categories, "Errors": errs})
+			a.renderAdmin(w, r, "meta_form.html", map[string]any{"Title": metaTitle(typ, id), "Meta": item, "Type": typ, "Action": metaActionURL(typ, id), "Categories": metaAdminViews(categories, nil), "Errors": errs})
 			return
 		}
 		_, err := a.Metas.Save(r.Context(), input, id)
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			item = models.Meta{MID: id, Name: input.Name, Slug: input.Slug, Type: typ, Description: input.Description, Parent: input.Parent}
+			categories, _ := a.Metas.List(r.Context(), "category")
+			a.renderAdmin(w, r, "meta_form.html", map[string]any{"Title": metaTitle(typ, id), "Meta": item, "Type": typ, "Action": metaActionURL(typ, id), "Categories": metaAdminViews(categories, nil), "Error": err.Error()})
 			return
 		}
 		http.Redirect(w, r, metaListURL(typ), http.StatusSeeOther)
@@ -1536,11 +1705,32 @@ func (a *App) adminUserRoutes(w http.ResponseWriter, r *http.Request) {
 			methodNotAllowed(w, http.MethodPost)
 			return
 		}
+		currentID, _ := a.currentUserID(r)
+		if id == currentID {
+			http.Error(w, "不能删除当前登录用户", http.StatusBadRequest)
+			return
+		}
 		if err := a.Users.Delete(r.Context(), id); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
 		a.flashRedirect(w, r, "/admin/users", http.StatusSeeOther, flashNotice{Type: "success", Message: "用户已删除。"})
+	case "revoke":
+		if r.Method != http.MethodPost {
+			methodNotAllowed(w, http.MethodPost)
+			return
+		}
+		currentID, _ := a.currentUserID(r)
+		if err := a.Users.RevokeSessions(r.Context(), id); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if currentID == id {
+			if user, err := a.Users.ByID(r.Context(), id); err == nil {
+				a.setUserSession(w, r.Context(), user)
+			}
+		}
+		a.flashRedirect(w, r, "/admin/users", http.StatusSeeOther, flashNotice{Type: "success", Message: "该用户的旧会话已吊销。"})
 	default:
 		http.NotFound(w, r)
 	}
@@ -1566,16 +1756,25 @@ func (a *App) userForm(w http.ResponseWriter, r *http.Request, id int64) {
 		}
 		input := services.SaveUserInput{Name: strings.TrimSpace(r.FormValue("name")), Password: r.FormValue("password"), Mail: strings.TrimSpace(r.FormValue("mail")), URL: strings.TrimSpace(r.FormValue("url")), ScreenName: strings.TrimSpace(r.FormValue("screenName")), Role: r.FormValue("role")}
 		errs := validateUserInput(input, id == 0)
+		validatePasswordConfirmation(&errs, input.Password, r.FormValue("confirm"), id == 0)
 		a.addUserUniqueErrors(r.Context(), &errs, input.Name, input.Mail, id)
 		if !errs.Empty() {
 			user = models.User{UID: id, Name: input.Name, Mail: input.Mail, URL: input.URL, ScreenName: input.ScreenName, Role: input.Role}
 			a.renderAdmin(w, r, "user_form.html", map[string]any{"Title": userTitle(id), "User": user, "Action": userActionURL(id), "Errors": errs})
 			return
 		}
+		currentID, _ := a.currentUserID(r)
 		_, err := a.Users.Save(r.Context(), input, id)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
+		}
+		if input.Password != "" {
+			if currentID == id {
+				if updated, err := a.Users.ByID(r.Context(), id); err == nil {
+					a.setUserSession(w, r.Context(), updated)
+				}
+			}
 		}
 		a.flashRedirect(w, r, "/admin/users", http.StatusSeeOther, flashNotice{Type: "success", Message: "用户已保存。"})
 	default:
@@ -1592,7 +1791,7 @@ func (a *App) adminProfile(w http.ResponseWriter, r *http.Request) {
 	}
 	switch r.Method {
 	case http.MethodGet:
-		a.renderAdmin(w, r, "profile.html", map[string]any{"Title": "个人设置", "User": user, "Saved": r.URL.Query().Get("saved") == "1"})
+		a.renderAdmin(w, r, "profile.html", map[string]any{"Title": "个人设置", "User": user, "Saved": r.URL.Query().Get("saved") == "1", "PersonalPlugins": a.personalPluginViews(r.Context())})
 	case http.MethodPost:
 		if err := r.ParseForm(); err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
@@ -1604,25 +1803,111 @@ func (a *App) adminProfile(w http.ResponseWriter, r *http.Request) {
 		if password := r.FormValue("password"); password != "" && len([]rune(password)) < 6 {
 			errs.Add("password", "长度不能少于 6 个字符")
 		}
+		validatePasswordConfirmation(&errs, r.FormValue("password"), r.FormValue("confirm"), false)
 		if !errs.Empty() {
 			user.Mail = input.Mail
 			user.URL = input.URL
 			user.ScreenName = input.ScreenName
-			a.renderAdmin(w, r, "profile.html", map[string]any{"Title": "个人设置", "User": user, "Errors": errs})
+			a.renderAdmin(w, r, "profile.html", map[string]any{"Title": "个人设置", "User": user, "Errors": errs, "PersonalPlugins": a.personalPluginViews(r.Context())})
 			return
 		}
 		if _, err := a.Users.Save(r.Context(), input, uid); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		if err := a.Users.ChangePassword(r.Context(), uid, r.FormValue("password")); err != nil {
+		password := r.FormValue("password")
+		if err := a.Users.ChangePassword(r.Context(), uid, password); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
+		}
+		if password != "" {
+			if updated, err := a.Users.ByID(r.Context(), uid); err == nil {
+				a.setUserSession(w, r.Context(), updated)
+			}
 		}
 		a.flashRedirect(w, r, "/admin/profile", http.StatusSeeOther, flashNotice{Type: "success", Message: "个人资料已保存。"})
 	default:
 		methodNotAllowed(w, http.MethodGet+", "+http.MethodPost)
 	}
+}
+
+func (a *App) adminProfileRevokeSessions(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w, http.MethodPost)
+		return
+	}
+	uid, _ := a.currentUserID(r)
+	if err := a.Users.RevokeSessions(r.Context(), uid); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	user, err := a.Users.ByID(r.Context(), uid)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	a.setUserSession(w, r.Context(), user)
+	a.flashRedirect(w, r, "/admin/profile", http.StatusSeeOther, flashNotice{Type: "success", Message: "其他设备上的会话已吊销。"})
+}
+
+type personalPluginView struct {
+	Name  string
+	Label string
+}
+
+func (a *App) personalPluginViews(ctx context.Context) []personalPluginView {
+	active := a.activePluginSet(ctx)
+	var out []personalPluginView
+	for _, candidate := range a.Plugins.Plugins() {
+		if !active[candidate.Name()] {
+			continue
+		}
+		provider, ok := candidate.(plugin.PersonalConfigProvider)
+		if !ok || len(provider.PersonalConfigSchema()) == 0 {
+			continue
+		}
+		info := a.Plugins.PluginInfo(candidate)
+		label := info.Name
+		if label == "" {
+			label = candidate.Name()
+		}
+		out = append(out, personalPluginView{Name: candidate.Name(), Label: label})
+	}
+	return out
+}
+
+func (a *App) adminProfilePluginRoutes(w http.ResponseWriter, r *http.Request) {
+	name := strings.Trim(strings.TrimPrefix(r.URL.Path, "/admin/profile/plugins/"), "/")
+	if name == "" || !a.Plugins.IsActive(name) {
+		http.NotFound(w, r)
+		return
+	}
+	candidate, ok := a.Plugins.Plugin(name)
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	provider, ok := candidate.(plugin.PersonalConfigProvider)
+	if !ok || len(provider.PersonalConfigSchema()) == 0 {
+		http.NotFound(w, r)
+		return
+	}
+	uid, _ := a.currentUserID(r)
+	a.schemaForm(w, r, schemaFormConfig{
+		Title:     "插件个人设置：" + name,
+		Template:  "schema_form.html",
+		BackURL:   "/admin/profile",
+		OptionKey: pluginPersonalOptionKey(name),
+		UserID:    uid,
+		Schema:    provider.PersonalConfigSchema(),
+		SavedURL:  r.URL.Path,
+		Saved:     r.URL.Query().Get("saved") == "1",
+	})
+}
+
+func (a *App) setUserSession(w http.ResponseWriter, ctx context.Context, user models.User) {
+	secret, _ := a.Options.Get(ctx, "auth_secret")
+	auth.SetVersionedSessionWithOptions(w, secret, user.UID, user.AuthCode, a.cookieOptions(ctx))
 }
 
 func (a *App) adminOptionsGeneral(w http.ResponseWriter, r *http.Request) {
@@ -2030,7 +2315,7 @@ func (a *App) adminPluginToggle(w http.ResponseWriter, r *http.Request, name str
 		return
 	}
 	active := a.activePluginSet(r.Context())
-	runtime := &plugin.Runtime{ListPublished: a.Contents.ListPublishedPlugin, Option: a.Options.Get, Config: a.pluginConfig}
+	runtime := &plugin.Runtime{ListPublished: a.Contents.ListPublishedPlugin, Option: a.Options.Get, Config: a.pluginConfig, PersonalConfig: a.pluginPersonalConfig}
 	if enable {
 		if activator, ok := p.(plugin.Activator); ok {
 			if err := activator.Activate(r.Context(), runtime); err != nil {
@@ -5804,7 +6089,7 @@ func (a *App) requireAdmin(next http.HandlerFunc) http.HandlerFunc {
 			http.Redirect(w, r, "/admin/login", http.StatusSeeOther)
 			return
 		}
-		if roleRank(user.Role) < roleRank("contributor") && r.URL.Path != "/admin/profile" && r.URL.Path != "/admin/logout" {
+		if roleRank(user.Role) < roleRank("contributor") && !strings.HasPrefix(r.URL.Path, "/admin/profile") && r.URL.Path != "/admin/logout" {
 			http.Error(w, "permission denied", http.StatusForbidden)
 			return
 		}
@@ -5817,7 +6102,15 @@ func (a *App) currentUserID(r *http.Request) (int64, bool) {
 	if err != nil || secret == "" {
 		return 0, false
 	}
-	return auth.ParseSessionWithOptions(r, secret, a.cookieOptions(r.Context()))
+	session, ok := auth.ParseVersionedSessionWithOptions(r, secret, a.cookieOptions(r.Context()))
+	if !ok {
+		return 0, false
+	}
+	user, err := a.Users.ByID(r.Context(), session.UID)
+	if err != nil || !hmac.Equal([]byte(user.AuthCode), []byte(session.Version)) {
+		return 0, false
+	}
+	return session.UID, true
 }
 
 func (a *App) currentUser(r *http.Request) (models.User, bool) {
@@ -6692,6 +6985,16 @@ func validateUserInput(input services.SaveUserInput, requirePassword bool) valid
 	return v.Errors
 }
 
+func validatePasswordConfirmation(errs *validate.Errors, password, confirmation string, required bool) {
+	if required && confirmation == "" {
+		errs.Add("confirm", "请再次输入密码")
+		return
+	}
+	if password != confirmation {
+		errs.Add("confirm", "两次输入的密码不一致")
+	}
+}
+
 func validateCommentInput(input services.SaveCommentInput) validate.Errors {
 	v := validate.New()
 	v.Required("author", input.Author).
@@ -7401,6 +7704,21 @@ func themeOptionKey(name string) string {
 
 func (a *App) pluginConfig(ctx context.Context, name string) (map[string]string, error) {
 	return a.optionJSONForUser(ctx, pluginOptionKey(name), 0)
+}
+
+func (a *App) pluginPersonalConfig(ctx context.Context, name string, userID int64) (map[string]string, error) {
+	values, err := a.optionJSONForUser(ctx, pluginPersonalOptionKey(name), userID)
+	if err != nil {
+		return nil, err
+	}
+	if global, globalErr := a.pluginConfig(ctx, name); globalErr == nil {
+		for key, value := range global {
+			if _, exists := values[key]; !exists {
+				values[key] = value
+			}
+		}
+	}
+	return values, nil
 }
 
 func (a *App) themeConfig(ctx context.Context, name string) (map[string]string, error) {

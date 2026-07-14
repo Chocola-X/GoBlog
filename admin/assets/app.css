@@ -239,6 +239,13 @@ body.admin-pjax-loading .admin-main {
   transform: translateX(-50%);
 }
 
+.profile-security-panel {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
 .stat-value {
   display: block;
   margin-top: 8px;
@@ -776,6 +783,36 @@ mdui-select::part(text-field__container) {
   margin: 0 0 14px;
 }
 
+.meta-bulk-actions {
+  align-items: center;
+}
+
+.meta-merge-target {
+  width: min(280px, 100%);
+}
+
+.meta-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.meta-tree-name {
+  padding-left: calc(var(--meta-depth, 0) * 18px);
+}
+
+.meta-parent-option {
+  display: inline-block;
+  padding-left: calc(var(--meta-depth, 0) * 14px);
+}
+
+.meta-children-link {
+  margin-left: 8px;
+  font-size: 12px;
+}
+
 .table-panel {
   overflow: auto;
 }
@@ -1037,6 +1074,11 @@ mdui-icon {
   }
 
   .page-head {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .profile-security-panel {
     align-items: flex-start;
     flex-direction: column;
   }

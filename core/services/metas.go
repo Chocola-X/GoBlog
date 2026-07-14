@@ -102,22 +102,43 @@ func (s *MetaService) Save(ctx context.Context, input SaveMetaInput, id int64) (
 	if err != nil {
 		return 0, err
 	}
+	if input.Type != "category" {
+		input.Parent = 0
+	}
+	if err := s.validateParent(ctx, input.Type, id, input.Parent); err != nil {
+		return 0, err
+	}
 	if id > 0 {
-		_, err = s.db.ExecContext(ctx, `UPDATE gb_metas SET name = ?, slug = ?, description = ?, parent = ? WHERE mid = ?`, name, metaSlug, input.Description, input.Parent, id)
+		current, currentErr := s.ByID(ctx, id)
+		if currentErr != nil {
+			return 0, currentErr
+		}
+		sortOrder := current.SortOrder
+		if current.Parent != input.Parent {
+			sortOrder, err = s.nextSortOrder(ctx, input.Type, input.Parent)
+			if err != nil {
+				return 0, err
+			}
+		}
+		_, err = s.db.ExecContext(ctx, `UPDATE gb_metas SET name = ?, slug = ?, description = ?, parent = ?, sortOrder = ? WHERE mid = ?`, name, metaSlug, input.Description, input.Parent, sortOrder, id)
 		return id, err
+	}
+	sortOrder, err := s.nextSortOrder(ctx, input.Type, input.Parent)
+	if err != nil {
+		return 0, err
 	}
 	if s.db.Dialect() == models.DialectPostgres {
 		var newID int64
 		err = s.db.QueryRowContext(ctx, `
 			INSERT INTO gb_metas (name, slug, type, description, count, sortOrder, parent)
-			VALUES (?, ?, ?, ?, 0, 0, ?) RETURNING mid
-		`, name, metaSlug, input.Type, input.Description, input.Parent).Scan(&newID)
+			VALUES (?, ?, ?, ?, 0, ?, ?) RETURNING mid
+		`, name, metaSlug, input.Type, input.Description, sortOrder, input.Parent).Scan(&newID)
 		return newID, err
 	}
 	res, err := s.db.ExecContext(ctx, `
 		INSERT INTO gb_metas (name, slug, type, description, count, sortOrder, parent)
-		VALUES (?, ?, ?, ?, 0, 0, ?)
-	`, name, metaSlug, input.Type, input.Description, input.Parent)
+		VALUES (?, ?, ?, ?, 0, ?, ?)
+	`, name, metaSlug, input.Type, input.Description, sortOrder, input.Parent)
 	if err != nil {
 		return 0, err
 	}
@@ -126,14 +147,27 @@ func (s *MetaService) Save(ctx context.Context, input SaveMetaInput, id int64) (
 
 func (s *MetaService) Delete(ctx context.Context, id int64) error {
 	ctx = WithWriter(ctx)
-	if _, err := s.db.ExecContext(ctx, `DELETE FROM gb_relationships WHERE mid = ?`, id); err != nil {
-		return err
-	}
-	_, err := s.db.ExecContext(ctx, `DELETE FROM gb_metas WHERE mid = ?`, id)
+	item, err := s.ByID(ctx, id)
 	if err != nil {
 		return err
 	}
-	return s.RefreshCounts(ctx)
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if item.Type == "category" {
+		if _, err := txExec(ctx, tx, s.db.Dialect(), `UPDATE gb_metas SET parent = ? WHERE type = 'category' AND parent = ?`, item.Parent, id); err != nil {
+			return err
+		}
+	}
+	if _, err := txExec(ctx, tx, s.db.Dialect(), `DELETE FROM gb_relationships WHERE mid = ?`, id); err != nil {
+		return err
+	}
+	if _, err := txExec(ctx, tx, s.db.Dialect(), `DELETE FROM gb_metas WHERE mid = ?`, id); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (s *MetaService) EnsureDefaultCategory(ctx context.Context) error {
@@ -161,6 +195,168 @@ func (s *MetaService) RefreshCounts(ctx context.Context) error {
 	return err
 }
 
+func (s *MetaService) RefreshCount(ctx context.Context, id int64) error {
+	if id <= 0 {
+		return nil
+	}
+	ctx = WithWriter(ctx)
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE gb_metas SET count = (
+			SELECT COUNT(*) FROM gb_relationships r
+			JOIN gb_contents c ON c.cid = r.cid
+			WHERE r.mid = gb_metas.mid AND c.type = 'post' AND c.status = 'publish' AND COALESCE(c.draftOf, 0) = 0
+		) WHERE mid = ?
+	`, id)
+	return err
+}
+
+func (s *MetaService) Merge(ctx context.Context, targetID int64, sourceIDs []int64, typ string) error {
+	ctx = WithWriter(ctx)
+	target, err := s.ByID(ctx, targetID)
+	if err != nil || target.Type != typ {
+		return fmt.Errorf("invalid merge target")
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	seen := map[int64]bool{targetID: true}
+	for _, sourceID := range sourceIDs {
+		if sourceID <= 0 || seen[sourceID] {
+			continue
+		}
+		seen[sourceID] = true
+		var sourceType string
+		if err := tx.QueryRowContext(ctx, models.Rebind(s.db.Dialect(), `SELECT type FROM gb_metas WHERE mid = ?`), sourceID).Scan(&sourceType); err != nil {
+			return err
+		}
+		if sourceType != typ {
+			return fmt.Errorf("merge source type mismatch")
+		}
+		if typ == "category" {
+			contains, err := categoryAncestorContainsTx(ctx, tx, s.db.Dialect(), targetID, sourceID)
+			if err != nil {
+				return err
+			}
+			if contains {
+				return fmt.Errorf("cannot merge a category into its descendant")
+			}
+		}
+		rows, err := tx.QueryContext(ctx, models.Rebind(s.db.Dialect(), `SELECT cid FROM gb_relationships WHERE mid = ?`), sourceID)
+		if err != nil {
+			return err
+		}
+		var contentIDs []int64
+		for rows.Next() {
+			var cid int64
+			if err := rows.Scan(&cid); err != nil {
+				rows.Close()
+				return err
+			}
+			contentIDs = append(contentIDs, cid)
+		}
+		if err := rows.Close(); err != nil {
+			return err
+		}
+		for _, cid := range contentIDs {
+			if err := insertRelationshipTx(ctx, tx, s.db.Dialect(), cid, targetID); err != nil {
+				return err
+			}
+		}
+		if _, err := txExec(ctx, tx, s.db.Dialect(), `DELETE FROM gb_relationships WHERE mid = ?`, sourceID); err != nil {
+			return err
+		}
+		if typ == "category" {
+			if _, err := txExec(ctx, tx, s.db.Dialect(), `UPDATE gb_metas SET parent = ? WHERE type = 'category' AND parent = ?`, targetID, sourceID); err != nil {
+				return err
+			}
+		}
+		if _, err := txExec(ctx, tx, s.db.Dialect(), `DELETE FROM gb_metas WHERE mid = ? AND type = ?`, sourceID, typ); err != nil {
+			return err
+		}
+	}
+	if _, err := txExec(ctx, tx, s.db.Dialect(), `
+		UPDATE gb_metas SET count = (
+			SELECT COUNT(*) FROM gb_relationships r JOIN gb_contents c ON c.cid = r.cid
+			WHERE r.mid = gb_metas.mid AND c.type = 'post' AND c.status = 'publish' AND COALESCE(c.draftOf, 0) = 0
+		) WHERE mid = ?
+	`, targetID); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func categoryAncestorContainsTx(ctx context.Context, tx *sql.Tx, dialect models.Dialect, categoryID, ancestorID int64) (bool, error) {
+	seen := map[int64]bool{}
+	for categoryID > 0 && !seen[categoryID] {
+		if categoryID == ancestorID {
+			return true, nil
+		}
+		seen[categoryID] = true
+		var parent int64
+		err := tx.QueryRowContext(ctx, models.Rebind(dialect, `SELECT parent FROM gb_metas WHERE mid = ? AND type = 'category'`), categoryID).Scan(&parent)
+		if err != nil {
+			return false, err
+		}
+		categoryID = parent
+	}
+	return false, nil
+}
+
+func (s *MetaService) Move(ctx context.Context, id int64, direction string) error {
+	ctx = WithWriter(ctx)
+	item, err := s.ByID(ctx, id)
+	if err != nil {
+		return err
+	}
+	items, err := s.List(ctx, item.Type)
+	if err != nil {
+		return err
+	}
+	var siblings []models.Meta
+	for _, candidate := range items {
+		if candidate.Parent == item.Parent {
+			siblings = append(siblings, candidate)
+		}
+	}
+	index := -1
+	for i := range siblings {
+		if siblings[i].MID == id {
+			index = i
+			break
+		}
+	}
+	other := index - 1
+	if direction == "down" {
+		other = index + 1
+	}
+	if index < 0 || other < 0 || other >= len(siblings) {
+		return nil
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	siblings[index], siblings[other] = siblings[other], siblings[index]
+	for position, sibling := range siblings {
+		if _, err := txExec(ctx, tx, s.db.Dialect(), `UPDATE gb_metas SET sortOrder = ? WHERE mid = ?`, position+1, sibling.MID); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+func (s *MetaService) CleanOrphanTags(ctx context.Context) (int64, error) {
+	ctx = WithWriter(ctx)
+	result, err := s.db.ExecContext(ctx, `DELETE FROM gb_metas WHERE type = 'tag' AND NOT EXISTS (SELECT 1 FROM gb_relationships r WHERE r.mid = gb_metas.mid)`)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 func (s *MetaService) TagsForContent(ctx context.Context, cid int64) ([]models.Meta, error) {
 	return s.metasForContent(ctx, cid, "tag")
 }
@@ -185,6 +381,52 @@ func (s *MetaService) metasForContent(ctx context.Context, cid int64, typ string
 
 func (s *MetaService) SetDefaultCategory(ctx context.Context, mid int64, options *OptionService) error {
 	return options.Set(ctx, "default_category", fmt.Sprint(mid))
+}
+
+func (s *MetaService) nextSortOrder(ctx context.Context, typ string, parent int64) (int64, error) {
+	var order int64
+	err := s.db.QueryRowContext(ctx, `SELECT COALESCE(MAX(sortOrder), 0) + 1 FROM gb_metas WHERE type = ? AND parent = ?`, typ, parent).Scan(&order)
+	return order, err
+}
+
+func (s *MetaService) validateParent(ctx context.Context, typ string, id, parent int64) error {
+	if typ != "category" || parent <= 0 {
+		return nil
+	}
+	if parent == id {
+		return errors.New("category cannot be its own parent")
+	}
+	seen := map[int64]bool{id: true}
+	for current := parent; current > 0; {
+		if seen[current] {
+			return errors.New("category parent would create a cycle")
+		}
+		seen[current] = true
+		var next int64
+		var parentType string
+		if err := s.db.QueryRowContext(ctx, `SELECT parent, type FROM gb_metas WHERE mid = ?`, current).Scan(&next, &parentType); err != nil {
+			return err
+		}
+		if parentType != "category" {
+			return errors.New("invalid category parent")
+		}
+		current = next
+	}
+	return nil
+}
+
+func insertRelationshipTx(ctx context.Context, tx *sql.Tx, dialect models.Dialect, cid, mid int64) error {
+	var query string
+	switch dialect {
+	case models.DialectPostgres:
+		query = `INSERT INTO gb_relationships (cid, mid) VALUES (?, ?) ON CONFLICT (cid, mid) DO NOTHING`
+	case models.DialectMySQL:
+		query = `INSERT IGNORE INTO gb_relationships (cid, mid) VALUES (?, ?)`
+	default:
+		query = `INSERT OR IGNORE INTO gb_relationships (cid, mid) VALUES (?, ?)`
+	}
+	_, err := txExec(ctx, tx, dialect, query, cid, mid)
+	return err
 }
 
 func (s *MetaService) uniqueSlug(ctx context.Context, raw, name, typ string, exceptID int64) (string, error) {

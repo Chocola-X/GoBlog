@@ -460,9 +460,19 @@ func (s *ContentService) Delete(ctx context.Context, id int64) error {
 		return err
 	}
 	defer tx.Rollback()
+	txDB := txExecer{tx: tx, dialect: s.db.Dialect()}
+	affected, err := metaIDsForContent(ctx, txDB, id)
+	if err != nil {
+		return err
+	}
 	var draftID int64
 	err = tx.QueryRowContext(ctx, models.Rebind(s.db.Dialect(), `SELECT cid FROM gb_contents WHERE draftOf = ? AND status = ? ORDER BY modified DESC, cid DESC LIMIT 1`), id, models.ContentStatusDraft).Scan(&draftID)
 	if err == nil {
+		draftMetaIDs, metaErr := metaIDsForContent(ctx, txDB, draftID)
+		if metaErr != nil {
+			return metaErr
+		}
+		affected = append(affected, draftMetaIDs...)
 		if err := s.deleteDraftTx(ctx, tx, draftID); err != nil {
 			return err
 		}
@@ -484,7 +494,7 @@ func (s *ContentService) Delete(ctx context.Context, id int64) error {
 	if _, err := txExec(ctx, tx, s.db.Dialect(), `DELETE FROM gb_contents WHERE cid = ?`, id); err != nil {
 		return err
 	}
-	if err := s.cleanupMetasTx(ctx, txExecer{tx: tx, dialect: s.db.Dialect()}); err != nil {
+	if err := s.cleanupMetasTx(ctx, txDB, affected); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -540,10 +550,15 @@ func (s *ContentService) DeleteDraft(ctx context.Context, draftID int64) error {
 		return err
 	}
 	defer tx.Rollback()
+	txDB := txExecer{tx: tx, dialect: s.db.Dialect()}
+	affected, err := metaIDsForContent(ctx, txDB, draftID)
+	if err != nil {
+		return err
+	}
 	if err := s.deleteDraftTx(ctx, tx, draftID); err != nil {
 		return err
 	}
-	if err := s.cleanupMetasTx(ctx, txExecer{tx: tx, dialect: s.db.Dialect()}); err != nil {
+	if err := s.cleanupMetasTx(ctx, txDB, affected); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -901,6 +916,7 @@ func (s *ContentService) saveFieldsTx(ctx context.Context, tx *sql.Tx, cid int64
 
 type execer interface {
 	ExecContext(context.Context, string, ...any) (sql.Result, error)
+	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
 	QueryRowContext(context.Context, string, ...any) *sql.Row
 }
 
@@ -911,6 +927,10 @@ type txExecer struct {
 
 func (e txExecer) ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error) {
 	return e.tx.ExecContext(ctx, models.Rebind(e.dialect, query), args...)
+}
+
+func (e txExecer) QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error) {
+	return e.tx.QueryContext(ctx, models.Rebind(e.dialect, query), args...)
 }
 
 func (e txExecer) QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row {
@@ -1222,6 +1242,10 @@ func (s *ContentService) syncRelationshipsTx(ctx context.Context, tx *sql.Tx, ci
 }
 
 func (s *ContentService) syncRelationshipsTxLike(ctx context.Context, db execer, cid int64, input SaveContentInput) error {
+	affected, err := metaIDsForContent(ctx, db, cid)
+	if err != nil {
+		return err
+	}
 	if _, err := db.ExecContext(ctx, `DELETE FROM gb_relationships WHERE cid = ?`, cid); err != nil {
 		return err
 	}
@@ -1235,6 +1259,7 @@ func (s *ContentService) syncRelationshipsTxLike(ctx context.Context, db execer,
 					}
 					return err
 				}
+				affected = append(affected, mid)
 				if s.db.Dialect() == models.DialectPostgres {
 					if _, err := db.ExecContext(ctx, `INSERT INTO gb_relationships (cid, mid) VALUES (?, ?) ON CONFLICT (cid, mid) DO NOTHING`, cid, mid); err != nil {
 						return err
@@ -1255,6 +1280,7 @@ func (s *ContentService) syncRelationshipsTxLike(ctx context.Context, db execer,
 			if err != nil {
 				return err
 			}
+			affected = append(affected, mid)
 			if s.db.Dialect() == models.DialectPostgres {
 				if _, err := db.ExecContext(ctx, `INSERT INTO gb_relationships (cid, mid) VALUES (?, ?) ON CONFLICT (cid, mid) DO NOTHING`, cid, mid); err != nil {
 					return err
@@ -1266,20 +1292,48 @@ func (s *ContentService) syncRelationshipsTxLike(ctx context.Context, db execer,
 			}
 		}
 	}
-	return s.cleanupMetasTx(ctx, db)
+	return s.cleanupMetasTx(ctx, db, affected)
 }
 
-func (s *ContentService) cleanupMetasTx(ctx context.Context, db execer) error {
-	if _, err := db.ExecContext(ctx, `DELETE FROM gb_metas WHERE type = 'tag' AND NOT EXISTS (SELECT 1 FROM gb_relationships r WHERE r.mid = gb_metas.mid)`); err != nil {
+func (s *ContentService) cleanupMetasTx(ctx context.Context, db execer, ids []int64) error {
+	ids = positiveUniqueIDs(ids)
+	if len(ids) == 0 {
+		return nil
+	}
+	placeholders := make([]string, len(ids))
+	args := make([]any, len(ids))
+	for i, id := range ids {
+		placeholders[i] = "?"
+		args[i] = id
+	}
+	inClause := strings.Join(placeholders, ",")
+	if _, err := db.ExecContext(ctx, `DELETE FROM gb_metas WHERE type = 'tag' AND mid IN (`+inClause+`) AND NOT EXISTS (SELECT 1 FROM gb_relationships r WHERE r.mid = gb_metas.mid)`, args...); err != nil {
 		return err
 	}
 	_, err := db.ExecContext(ctx, `
 		UPDATE gb_metas SET count = (
 			SELECT COUNT(*) FROM gb_relationships r JOIN gb_contents c ON c.cid = r.cid
 			WHERE r.mid = gb_metas.mid AND c.type = 'post' AND c.status = 'publish' AND COALESCE(c.draftOf, 0) = 0
-		)
-	`)
+		) WHERE mid IN (`+inClause+`)
+	`, args...)
 	return err
+}
+
+func metaIDsForContent(ctx context.Context, db execer, cid int64) ([]int64, error) {
+	rows, err := db.QueryContext(ctx, `SELECT mid FROM gb_relationships WHERE cid = ?`, cid)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
 }
 
 var validFieldName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)

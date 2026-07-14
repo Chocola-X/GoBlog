@@ -28,6 +28,7 @@ type Runtime struct {
 	IncrementIntField func(context.Context, int64, string, int64) (int64, error)
 	Option            func(context.Context, string) (string, error)
 	Config            func(context.Context, string) (map[string]string, error)
+	PersonalConfig    func(context.Context, string, int64) (map[string]string, error)
 }
 
 type RouteHandler func(*Runtime, http.ResponseWriter, *http.Request)

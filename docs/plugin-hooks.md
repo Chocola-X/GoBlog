@@ -47,6 +47,10 @@
 
 - `ContentByID`：读取单项公开内容结构。
 - `IncrementIntField`：原子增加整数自定义字段，适合阅读计数等场景。
+- `Config`：读取插件的站点级配置。
+- `PersonalConfig`：按用户 ID 读取插件个人配置；未被个人值覆盖的字段会回落到站点级配置。
+
+插件实现 `PersonalConfigProvider` 并通过 `PersonalConfigSchema() []FieldSchema` 声明个人字段后，已登录用户可以在“个人设置”中维护自己的配置。该入口对 `visitor`、`subscriber` 等不具备内容管理权限的用户同样开放，但只能读写当前用户自己的配置。
 
 ## 评论保存生命周期
 

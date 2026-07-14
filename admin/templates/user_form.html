@@ -6,14 +6,14 @@
   <mdui-text-field name="mail" label="邮箱" value="{{.User.Mail}}" {{if fieldError .Errors "mail"}}helper="{{fieldError .Errors "mail"}}"{{end}}></mdui-text-field>
   <mdui-text-field name="url" label="个人主页" value="{{.User.URL}}" {{if fieldError .Errors "url"}}helper="{{fieldError .Errors "url"}}"{{end}}></mdui-text-field>
   <mdui-text-field name="password" label="密码" type="password" helper="{{if fieldError .Errors "password"}}{{fieldError .Errors "password"}}{{else}}编辑用户时留空表示不修改{{end}}"></mdui-text-field>
-  <label class="muted" for="role">用户组</label>
-  <select id="role" name="role">
-    <option value="administrator" {{if eq .User.Role "administrator"}}selected{{end}}>管理员</option>
-    <option value="editor" {{if eq .User.Role "editor"}}selected{{end}}>编辑</option>
-    <option value="contributor" {{if eq .User.Role "contributor"}}selected{{end}}>贡献者</option>
-    <option value="subscriber" {{if eq .User.Role "subscriber"}}selected{{end}}>关注者</option>
-    <option value="visitor" {{if eq .User.Role "visitor"}}selected{{end}}>访问者</option>
-  </select>
+  <mdui-text-field name="confirm" label="确认密码" type="password" helper="{{if fieldError .Errors "confirm"}}{{fieldError .Errors "confirm"}}{{else}}请再次输入上面的密码{{end}}"></mdui-text-field>
+  <mdui-select name="role" label="用户组" value="{{if .User.Role}}{{.User.Role}}{{else}}subscriber{{end}}">
+    <mdui-menu-item value="administrator">管理员</mdui-menu-item>
+    <mdui-menu-item value="editor">编辑</mdui-menu-item>
+    <mdui-menu-item value="contributor">贡献者</mdui-menu-item>
+    <mdui-menu-item value="subscriber">关注者</mdui-menu-item>
+    <mdui-menu-item value="visitor">访问者</mdui-menu-item>
+  </mdui-select>
   {{if fieldError .Errors "role"}}<div class="notice danger">{{fieldError .Errors "role"}}</div>{{end}}
   <div class="form-actions"><mdui-button type="submit">保存</mdui-button></div>
 </form>

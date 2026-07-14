@@ -8,6 +8,17 @@
   <mdui-text-field name="mail" label="邮箱" value="{{.User.Mail}}" {{if fieldError .Errors "mail"}}helper="{{fieldError .Errors "mail"}}"{{end}}></mdui-text-field>
   <mdui-text-field name="url" label="个人主页" value="{{.User.URL}}" {{if fieldError .Errors "url"}}helper="{{fieldError .Errors "url"}}"{{end}}></mdui-text-field>
   <mdui-text-field name="password" label="新密码" type="password" helper="{{if fieldError .Errors "password"}}{{fieldError .Errors "password"}}{{else}}留空表示不修改{{end}}"></mdui-text-field>
+  <mdui-text-field name="confirm" label="确认新密码" type="password" helper="{{if fieldError .Errors "confirm"}}{{fieldError .Errors "confirm"}}{{else}}修改密码时需要再次输入{{end}}"></mdui-text-field>
   <div class="form-actions"><mdui-button type="submit">保存</mdui-button></div>
 </form>
+<section class="form-panel profile-security-panel">
+  <div><h2>会话安全</h2><p class="muted">吊销除当前浏览器之外的所有已登录会话。</p></div>
+  <form method="post" action="/admin/profile/revoke-sessions"><mdui-button type="submit" variant="outlined"><mdui-icon slot="icon" name="logout"></mdui-icon>吊销其他会话</mdui-button></form>
+</section>
+{{if .PersonalPlugins}}
+<section class="form-panel field-stack">
+  <h2>插件个人设置</h2>
+  {{range .PersonalPlugins}}<mdui-list-item href="/admin/profile/plugins/{{.Name}}"><mdui-icon slot="icon" name="tune"></mdui-icon>{{.Label}}</mdui-list-item>{{end}}
+</section>
+{{end}}
 {{end}}

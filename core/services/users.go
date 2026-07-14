@@ -2,7 +2,9 @@ package services
 
 import (
 	"context"
+	"crypto/rand"
 	"database/sql"
+	"encoding/hex"
 	"errors"
 	"strings"
 	"time"
@@ -161,7 +163,11 @@ func (s *UserService) Save(ctx context.Context, input SaveUserInput, id int64) (
 			if err != nil {
 				return 0, err
 			}
-			_, err = s.db.ExecContext(ctx, `UPDATE gb_users SET name = ?, password = ?, mail = ?, url = ?, screenName = ?, role = ? WHERE uid = ?`, input.Name, string(hash), input.Mail, input.URL, input.ScreenName, input.Role, id)
+			authCode, err := newUserAuthCode()
+			if err != nil {
+				return 0, err
+			}
+			_, err = s.db.ExecContext(ctx, `UPDATE gb_users SET name = ?, password = ?, mail = ?, url = ?, screenName = ?, role = ?, authCode = ? WHERE uid = ?`, input.Name, string(hash), input.Mail, input.URL, input.ScreenName, input.Role, authCode, id)
 			return id, err
 		}
 		_, err := s.db.ExecContext(ctx, `UPDATE gb_users SET name = ?, mail = ?, url = ?, screenName = ?, role = ? WHERE uid = ?`, input.Name, input.Mail, input.URL, input.ScreenName, input.Role, id)
@@ -202,6 +208,19 @@ func (s *UserService) Delete(ctx context.Context, id int64) error {
 	if count <= 1 {
 		return errors.New("cannot delete the last user")
 	}
+	var role string
+	if err := s.db.QueryRowContext(ctx, `SELECT role FROM gb_users WHERE uid = ?`, id).Scan(&role); err != nil {
+		return err
+	}
+	if role == "administrator" {
+		var administrators int
+		if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM gb_users WHERE role = 'administrator'`).Scan(&administrators); err != nil {
+			return err
+		}
+		if administrators <= 1 {
+			return errors.New("cannot delete the last administrator")
+		}
+	}
 	_, err := s.db.ExecContext(ctx, `DELETE FROM gb_users WHERE uid = ?`, id)
 	return err
 }
@@ -215,6 +234,35 @@ func (s *UserService) ChangePassword(ctx context.Context, id int64, password str
 	if err != nil {
 		return err
 	}
-	_, err = s.db.ExecContext(ctx, `UPDATE gb_users SET password = ? WHERE uid = ?`, string(hash), id)
+	authCode, err := newUserAuthCode()
+	if err != nil {
+		return err
+	}
+	_, err = s.db.ExecContext(ctx, `UPDATE gb_users SET password = ?, authCode = ? WHERE uid = ?`, string(hash), authCode, id)
 	return err
+}
+
+func (s *UserService) RevokeSessions(ctx context.Context, id int64) error {
+	ctx = WithWriter(ctx)
+	authCode, err := newUserAuthCode()
+	if err != nil {
+		return err
+	}
+	result, err := s.db.ExecContext(ctx, `UPDATE gb_users SET authCode = ? WHERE uid = ?`, authCode, id)
+	if err != nil {
+		return err
+	}
+	rows, err := result.RowsAffected()
+	if err == nil && rows == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+
+func newUserAuthCode() (string, error) {
+	buffer := make([]byte, 32)
+	if _, err := rand.Read(buffer); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(buffer), nil
 }

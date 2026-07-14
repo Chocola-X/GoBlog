@@ -2824,6 +2824,55 @@ func TestPluginConfigSavesJSON(t *testing.T) {
 	}
 }
 
+func TestPluginPersonalConfigAvailableFromProfileAndRuntime(t *testing.T) {
+	app, secret, _ := newSecurityTestApp(t)
+	mgr := plugin.NewManager()
+	mgr.Register(phase6Plugin{})
+	app.Plugins = mgr
+	ctx := context.Background()
+	if err := app.Options.Set(ctx, "active_plugins", `["phase6"]`); err != nil {
+		t.Fatal(err)
+	}
+	visitorID, err := app.Users.Save(ctx, services.SaveUserInput{
+		Name: "visitor", Password: "visitor123", Mail: "visitor@example.com", Role: "visitor",
+	}, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := app.setOptionJSONForUser(ctx, pluginOptionKey("phase6"), map[string]string{"message": "global"}, 0); err != nil {
+		t.Fatal(err)
+	}
+	handler := app.Handler()
+
+	req := httptest.NewRequest(http.MethodGet, "/admin/profile", nil)
+	setSession(t, req, secret, visitorID)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "/admin/profile/plugins/phase6") {
+		t.Fatalf("visitor profile personal plugin entry = %d: %s", rec.Code, rec.Body.String())
+	}
+
+	form := url.Values{
+		"_csrf":        {adminToken(secret, visitorID)},
+		"display_name": {"Reader"},
+	}
+	req = httptest.NewRequest(http.MethodPost, "/admin/profile/plugins/phase6", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	setSession(t, req, secret, visitorID)
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("personal plugin config status = %d: %s", rec.Code, rec.Body.String())
+	}
+	values, err := app.pluginPersonalConfig(ctx, "phase6", visitorID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if values["display_name"] != "Reader" || values["message"] != "global" {
+		t.Fatalf("merged personal config = %#v", values)
+	}
+}
+
 func TestThemeConfigInjectedIntoTemplates(t *testing.T) {
 	app, _, _ := newSecurityTestApp(t)
 	mgr := plugin.NewManager()
@@ -2893,6 +2942,7 @@ func TestRegistrationToggleUniqueAndDefaultRole(t *testing.T) {
 		"name":       {"reader"},
 		"mail":       {"reader@example.com"},
 		"password":   {"secret123"},
+		"confirm":    {"secret123"},
 		"screenName": {"Reader"},
 	}
 	req = httptest.NewRequest(http.MethodPost, "/register", strings.NewReader(form.Encode()))
@@ -2936,6 +2986,71 @@ func TestRegistrationToggleUniqueAndDefaultRole(t *testing.T) {
 	}
 }
 
+func TestRegistrationRejectsMismatchedPasswordConfirmation(t *testing.T) {
+	app, secret, _ := newSecurityTestApp(t)
+	if err := app.Options.Set(context.Background(), "allow_register", "1"); err != nil {
+		t.Fatal(err)
+	}
+	form := url.Values{
+		"_csrf":    {signCSRF(secret, "anon", "register", time.Now().UTC())},
+		"name":     {"mismatch"},
+		"mail":     {"mismatch@example.com"},
+		"password": {"secret123"},
+		"confirm":  {"different"},
+	}
+	req := httptest.NewRequest(http.MethodPost, "/register", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "两次输入的密码不一致") {
+		t.Fatalf("mismatched registration = %d: %s", rec.Code, rec.Body.String())
+	}
+	if _, err := app.Users.ByName(context.Background(), "mismatch"); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("mismatched registration created user: %v", err)
+	}
+}
+
+func TestRevokeCurrentUserSessionsReissuesCurrentSession(t *testing.T) {
+	app, secret, adminID := newSecurityTestApp(t)
+	oldRecorder := httptest.NewRecorder()
+	auth.SetSession(oldRecorder, secret, adminID)
+	oldCookie := oldRecorder.Result().Cookies()[0]
+	form := url.Values{"_csrf": {adminToken(secret, adminID)}}
+	req := httptest.NewRequest(http.MethodPost, "/admin/users/"+itoa(adminID)+"/revoke", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.AddCookie(oldCookie)
+	rec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("revoke current sessions = %d: %s", rec.Code, rec.Body.String())
+	}
+	var currentCookie *http.Cookie
+	for _, cookie := range rec.Result().Cookies() {
+		if cookie.Name == auth.CookieName {
+			currentCookie = cookie
+			break
+		}
+	}
+	if currentCookie == nil {
+		t.Fatal("revoke current sessions did not issue a replacement session")
+	}
+
+	oldRequest := httptest.NewRequest(http.MethodGet, "/admin", nil)
+	oldRequest.AddCookie(oldCookie)
+	oldResponse := httptest.NewRecorder()
+	app.Handler().ServeHTTP(oldResponse, oldRequest)
+	if oldResponse.Code != http.StatusSeeOther || oldResponse.Header().Get("Location") != "/admin/login" {
+		t.Fatalf("old session remained valid: %d %q", oldResponse.Code, oldResponse.Header().Get("Location"))
+	}
+	currentRequest := httptest.NewRequest(http.MethodGet, "/admin", nil)
+	currentRequest.AddCookie(currentCookie)
+	currentResponse := httptest.NewRecorder()
+	app.Handler().ServeHTTP(currentResponse, currentRequest)
+	if currentResponse.Code != http.StatusOK {
+		t.Fatalf("replacement session status = %d: %s", currentResponse.Code, currentResponse.Body.String())
+	}
+}
+
 func TestInstallWizardAvailableOnEmptyDatabaseThenLocks(t *testing.T) {
 	app, secret := newInstallTestApp(t)
 
@@ -2953,6 +3068,7 @@ func TestInstallWizardAvailableOnEmptyDatabaseThenLocks(t *testing.T) {
 		"name":       {"owner"},
 		"mail":       {"owner@example.com"},
 		"password":   {"secret123"},
+		"confirm":    {"secret123"},
 	}
 	req = httptest.NewRequest(http.MethodPost, "/install", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -3150,6 +3266,9 @@ func (phase6Plugin) ConfigSchema() []plugin.FieldSchema {
 		{Name: "message", Label: "Message", Type: plugin.FieldText, Default: "default"},
 		{Name: "enabled", Label: "Enabled", Type: plugin.FieldCheckbox, Default: "0"},
 	}
+}
+func (phase6Plugin) PersonalConfigSchema() []plugin.FieldSchema {
+	return []plugin.FieldSchema{{Name: "display_name", Label: "Display name", Type: plugin.FieldText}}
 }
 func (phase6Plugin) Init(m *plugin.Manager) {
 	m.RegisterRoute(http.MethodGet, "/phase6", func(_ *plugin.Runtime, w http.ResponseWriter, _ *http.Request) {
