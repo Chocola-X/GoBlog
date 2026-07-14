@@ -1112,6 +1112,17 @@ html.mdui-theme-dark .post-content table tr:nth-child(even) td {
   display: block;
 }
 
+.comment-pending {
+  display: inline-flex;
+  margin-left: 8px;
+  padding: 1px 6px;
+  border: 1px solid rgba(var(--mdui-color-primary), 0.35);
+  border-radius: 4px;
+  color: rgb(var(--mdui-color-primary));
+  font-size: 12px;
+  font-weight: 500;
+}
+
 .comment-header span {
   color: rgb(var(--mdui-color-on-surface-variant));
   font-size: 14px;

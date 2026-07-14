@@ -759,6 +759,16 @@ mdui-select::part(text-field__container) {
   margin-top: 18px;
 }
 
+.pagination {
+  display: flex;
+  min-height: 48px;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  margin: 12px 0;
+  flex-wrap: wrap;
+}
+
 .bulk-actions {
   display: flex;
   flex-wrap: wrap;

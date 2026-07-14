@@ -1172,16 +1172,43 @@ func (a *App) adminComments(w http.ResponseWriter, r *http.Request) {
 	if status == "" {
 		status = "all"
 	}
-	comments, err := a.Comments.ListFiltered(r.Context(), status, r.URL.Query().Get("keywords"), cid, typ)
+	page := optionInt(r.URL.Query().Get("page"), 1)
+	if page < 1 {
+		page = 1
+	}
+	pageSize := optionInt(a.option(r.Context(), "comments_list_size", "10"), 10)
+	if pageSize < 1 {
+		pageSize = 10
+	} else if pageSize > 100 {
+		pageSize = 100
+	}
+	query := services.CommentQuery{Status: status, Keywords: r.URL.Query().Get("keywords"), CID: cid, Type: typ}
+	total, err := a.Comments.CountFiltered(r.Context(), query)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	totalPages := int((total + int64(pageSize) - 1) / int64(pageSize))
+	if totalPages < 1 {
+		totalPages = 1
+	}
+	if page > totalPages {
+		page = totalPages
+	}
+	query.Limit = pageSize
+	query.Offset = (page - 1) * pageSize
+	comments, err := a.Comments.ListPage(r.Context(), query)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 	views := make([]commentView, 0, len(comments))
 	for _, comment := range comments {
-		views = append(views, commentView{Comment: comment, AvatarURL: a.emailAvatarURL(r.Context(), comment.Mail, 48)})
+		comment = a.filterComment(r.Context(), comment)
+		views = append(views, commentView{Comment: comment, AvatarURL: a.commentAvatarURL(r.Context(), comment, 48)})
 	}
-	a.renderAdmin(w, r, "comments.html", map[string]any{"Title": "评论", "Comments": views, "Status": status, "Keywords": r.URL.Query().Get("keywords"), "CID": cid, "Type": typ})
+	pager := pagination{Page: page, PageSize: pageSize, Total: total, TotalPages: totalPages, PrevURL: pageURL(r, page-1), NextURL: pageURL(r, page+1), HasPrev: page > 1, HasNext: page < totalPages}
+	a.renderAdmin(w, r, "comments.html", map[string]any{"Title": "评论", "Comments": views, "Status": status, "Keywords": r.URL.Query().Get("keywords"), "CID": cid, "Type": typ, "Pagination": pager})
 }
 
 func (a *App) adminCommentRoutes(w http.ResponseWriter, r *http.Request) {
@@ -1217,7 +1244,7 @@ func (a *App) adminCommentRoutes(w http.ResponseWriter, r *http.Request) {
 			methodNotAllowed(w, http.MethodPost)
 			return
 		}
-		if err := a.Comments.Mark(r.Context(), id, r.FormValue("status")); err != nil {
+		if err := a.markCommentWithHooks(r.Context(), id, r.FormValue("status")); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
@@ -1227,7 +1254,7 @@ func (a *App) adminCommentRoutes(w http.ResponseWriter, r *http.Request) {
 			methodNotAllowed(w, http.MethodPost)
 			return
 		}
-		if err := a.Comments.Delete(r.Context(), id); err != nil {
+		if err := a.deleteCommentWithHooks(r.Context(), id); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
@@ -1253,14 +1280,18 @@ func (a *App) adminCommentsBatch(w http.ResponseWriter, r *http.Request) {
 	}
 	switch r.FormValue("action") {
 	case "approved", "waiting", "spam":
-		if err := a.Comments.MarkMany(r.Context(), ids, r.FormValue("action")); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
+		for _, id := range ids {
+			if err := a.markCommentWithHooks(r.Context(), id, r.FormValue("action")); err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
 		}
 	case "delete":
-		if err := a.Comments.DeleteMany(r.Context(), ids); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
+		for _, id := range ids {
+			if err := a.deleteCommentWithHooks(r.Context(), id); err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
 		}
 	default:
 		http.Error(w, "unsupported comment action", http.StatusBadRequest)
@@ -1274,9 +1305,16 @@ func (a *App) adminCommentsClearSpam(w http.ResponseWriter, r *http.Request) {
 		methodNotAllowed(w, http.MethodPost)
 		return
 	}
-	if err := a.Comments.ClearSpam(r.Context()); err != nil {
+	spam, err := a.Comments.ListPage(r.Context(), services.CommentQuery{Status: "spam", Type: "all"})
+	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
+	}
+	for _, comment := range spam {
+		if err := a.deleteCommentWithHooks(r.Context(), comment.COID); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
 	}
 	a.flashRedirect(w, r, "/admin/comments?status=spam", http.StatusSeeOther, flashNotice{Type: "success", Message: "垃圾评论已清空。"})
 }
@@ -1293,7 +1331,13 @@ func (a *App) commentForm(w http.ResponseWriter, r *http.Request, id int64, repl
 		if reply {
 			title = "回复评论"
 		}
-		a.renderAdmin(w, r, "comment_form.html", map[string]any{"Title": title, "Comment": comment, "Reply": reply, "Action": r.URL.Path})
+		replyAuthor := ""
+		if reply {
+			if user, ok := a.currentUser(r); ok {
+				replyAuthor = firstNonEmpty(user.ScreenName, user.Name)
+			}
+		}
+		a.renderAdmin(w, r, "comment_form.html", map[string]any{"Title": title, "Comment": comment, "Reply": reply, "ReplyAuthor": replyAuthor, "Action": r.URL.Path})
 	case http.MethodPost:
 		if err := r.ParseForm(); err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
@@ -1305,6 +1349,9 @@ func (a *App) commentForm(w http.ResponseWriter, r *http.Request, id int64, repl
 			input.OwnerID = comment.OwnerID
 			if user, ok := a.currentUser(r); ok {
 				input.AuthorID = user.UID
+				input.Author = firstNonEmpty(user.ScreenName, user.Name)
+				input.Mail = user.Mail
+				input.URL = normalizeCommentURL(user.URL)
 			}
 			if input.Author == "" {
 				input.Author = "admin"
@@ -1319,14 +1366,22 @@ func (a *App) commentForm(w http.ResponseWriter, r *http.Request, id int64, repl
 			comment.URL = input.URL
 			comment.Text = input.Text
 			comment.Status = input.Status
-			a.renderAdmin(w, r, "comment_form.html", map[string]any{"Title": "编辑评论", "Comment": comment, "Reply": reply, "Action": r.URL.Path, "Errors": errs})
+			title := "编辑评论"
+			replyAuthor := ""
+			if reply {
+				title = "回复评论"
+				replyAuthor = input.Author
+			}
+			a.renderAdmin(w, r, "comment_form.html", map[string]any{"Title": title, "Comment": comment, "Reply": reply, "ReplyAuthor": replyAuthor, "Action": r.URL.Path, "Errors": errs})
 			return
 		}
+		operation := "edit"
+		targetID := id
 		if reply {
-			err = a.Comments.Save(r.Context(), input, 0)
-		} else {
-			err = a.Comments.Save(r.Context(), input, id)
+			operation = "reply"
+			targetID = 0
 		}
+		_, err = a.saveCommentWithHooks(r.Context(), input, targetID, operation, nil)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -1335,6 +1390,107 @@ func (a *App) commentForm(w http.ResponseWriter, r *http.Request, id int64, repl
 	default:
 		methodNotAllowed(w, http.MethodGet+", "+http.MethodPost)
 	}
+}
+
+func (a *App) saveCommentWithHooks(ctx context.Context, input services.SaveCommentInput, id int64, operation string, content any) (plugin.CommentSavePayload, error) {
+	payload := plugin.CommentSavePayload{ID: id, Operation: operation, Input: input, Content: content}
+	if payload.Content == nil && input.CID > 0 {
+		if parentContent, err := a.Contents.ByID(ctx, input.CID); err == nil {
+			payload.Content = parentContent
+		}
+	}
+	if out, err := a.Plugins.ApplyActive(ctx, plugin.HookCommentBeforeSave, payload); err != nil {
+		return payload, err
+	} else if next, ok := out.(plugin.CommentSavePayload); ok {
+		payload = next
+		if nextInput, ok := next.Input.(services.SaveCommentInput); ok {
+			input = nextInput
+		}
+	}
+	specificBefore := ""
+	specificAfter := ""
+	switch operation {
+	case "reply":
+		specificBefore, specificAfter = plugin.HookCommentBeforeReply, plugin.HookCommentAfterReply
+	case "edit":
+		specificBefore, specificAfter = plugin.HookCommentBeforeEdit, plugin.HookCommentAfterEdit
+	}
+	if specificBefore != "" {
+		if out, err := a.Plugins.ApplyActive(ctx, specificBefore, payload); err != nil {
+			return payload, err
+		} else if next, ok := out.(plugin.CommentSavePayload); ok {
+			payload = next
+			if nextInput, ok := next.Input.(services.SaveCommentInput); ok {
+				input = nextInput
+			}
+		}
+	}
+	commentID, err := a.Comments.SaveReturningID(ctx, input, id)
+	if err != nil {
+		return payload, err
+	}
+	payload.ID = commentID
+	payload.Input = input
+	if comment, err := a.Comments.ByID(ctx, commentID); err == nil {
+		payload.Comment = comment
+	}
+	if _, err := a.Plugins.ApplyActive(ctx, plugin.HookCommentAfterSave, payload); err != nil {
+		return payload, err
+	}
+	if specificAfter != "" {
+		if _, err := a.Plugins.ApplyActive(ctx, specificAfter, payload); err != nil {
+			return payload, err
+		}
+	}
+	return payload, nil
+}
+
+func (a *App) markCommentWithHooks(ctx context.Context, id int64, status string) error {
+	comment, err := a.Comments.ByID(ctx, id)
+	if err != nil {
+		return err
+	}
+	payload := plugin.CommentActionPayload{ID: id, Status: status, PreviousStatus: comment.Status, Comment: comment}
+	if content, err := a.Contents.ByID(ctx, comment.CID); err == nil {
+		payload.Content = content
+	}
+	if out, err := a.Plugins.ApplyActive(ctx, plugin.HookCommentBeforeMark, payload); err != nil {
+		return err
+	} else if next, ok := out.(plugin.CommentActionPayload); ok {
+		payload = next
+		status = next.Status
+	}
+	if status != "approved" && status != "waiting" && status != "spam" {
+		return fmt.Errorf("invalid comment status %q", status)
+	}
+	if err := a.Comments.Mark(ctx, id, status); err != nil {
+		return err
+	}
+	if updated, err := a.Comments.ByID(ctx, id); err == nil {
+		payload.Comment = updated
+		payload.Status = updated.Status
+	}
+	_, err = a.Plugins.ApplyActive(ctx, plugin.HookCommentAfterMark, payload)
+	return err
+}
+
+func (a *App) deleteCommentWithHooks(ctx context.Context, id int64) error {
+	comment, err := a.Comments.ByID(ctx, id)
+	if err != nil {
+		return err
+	}
+	payload := plugin.CommentActionPayload{ID: id, PreviousStatus: comment.Status, Comment: comment}
+	if content, err := a.Contents.ByID(ctx, comment.CID); err == nil {
+		payload.Content = content
+	}
+	if _, err := a.Plugins.ApplyActive(ctx, plugin.HookCommentBeforeDelete, payload); err != nil {
+		return err
+	}
+	if err := a.Comments.Delete(ctx, id); err != nil {
+		return err
+	}
+	_, err = a.Plugins.ApplyActive(ctx, plugin.HookCommentAfterDelete, payload)
+	return err
 }
 
 func (a *App) adminUsers(w http.ResponseWriter, r *http.Request) {
@@ -1660,6 +1816,23 @@ func validateDiscussionOptions(r *http.Request) error {
 		if err != nil || interval < 1 || interval > 86400 {
 			return fmt.Errorf("同一内容、同一 IP 的评论间隔必须是 1 到 86400 秒的整数")
 		}
+	}
+	for _, field := range []struct {
+		name  string
+		label string
+		max   int
+	}{
+		{name: "comments_list_size", label: "后台每页评论数", max: 100},
+		{name: "comments_page_size", label: "前台每页评论数", max: 1000},
+	} {
+		value, err := strconv.Atoi(strings.TrimSpace(r.FormValue(field.name)))
+		if err != nil || value < 1 || value > field.max {
+			return fmt.Errorf("%s必须是 1 到 %d 的整数", field.label, field.max)
+		}
+	}
+	maxNesting, err := strconv.Atoi(strings.TrimSpace(r.FormValue("comments_max_nesting_levels")))
+	if err != nil || maxNesting < 2 || maxNesting > 7 {
+		return fmt.Errorf("最大嵌套层级必须是 2 到 7 的整数")
 	}
 	templateURL := strings.TrimSpace(r.FormValue("avatar_url_template"))
 	if templateURL != "" {
@@ -3506,14 +3679,15 @@ func (a *App) frontComment(w http.ResponseWriter, r *http.Request) {
 	}
 	parent, _ := strconv.ParseInt(r.FormValue("parent"), 10, 64)
 	if parent > 0 {
-		depth, err := a.Comments.ParentDepth(r.Context(), cid, parent)
+		maxDepth := optionInt(a.option(r.Context(), "comments_max_nesting_levels", "3"), 3)
+		if maxDepth < 2 {
+			maxDepth = 2
+		} else if maxDepth > 7 {
+			maxDepth = 7
+		}
+		parent, err = a.Comments.NormalizeParent(r.Context(), cid, parent, maxDepth)
 		if err != nil {
 			http.Redirect(w, r, redirectTo+"?comment_error=parent", http.StatusSeeOther)
-			return
-		}
-		maxDepth := optionInt(a.option(r.Context(), "comments_max_nesting_levels", "3"), 3)
-		if maxDepth > 0 && depth >= maxDepth {
-			http.Redirect(w, r, redirectTo+"?comment_error=depth", http.StatusSeeOther)
 			return
 		}
 	}
@@ -3526,28 +3700,25 @@ func (a *App) frontComment(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, redirectTo+"?comment_error=invalid", http.StatusSeeOther)
 		return
 	}
-	commentPayload := plugin.CommentSavePayload{Input: input, Content: post}
-	if payload, err := a.Plugins.ApplyActive(r.Context(), plugin.HookCommentBeforeSave, commentPayload); err != nil {
+	commentPayload, err := a.saveCommentWithHooks(r.Context(), input, 0, "comment", post)
+	if err != nil {
 		http.Redirect(w, r, redirectTo+"?comment_error=blocked", http.StatusSeeOther)
 		return
-	} else if next, ok := payload.(plugin.CommentSavePayload); ok {
-		commentPayload = next
-		if nextInput, ok := next.Input.(services.SaveCommentInput); ok {
-			input = nextInput
-		}
 	}
-	if err := a.Comments.Save(r.Context(), input, 0); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
+	if nextInput, ok := commentPayload.Input.(services.SaveCommentInput); ok {
+		input = nextInput
 	}
-	_, _ = a.Plugins.ApplyActive(r.Context(), plugin.HookCommentAfterSave, commentPayload)
+	commentID := commentPayload.ID
 	if !loggedIn {
 		cookies := a.cookieOptions(r.Context())
 		http.SetCookie(w, &http.Cookie{Name: cookies.Name("comment_author"), Value: author, Path: "/", MaxAge: 86400 * 365, HttpOnly: true, SameSite: cookies.SameSite, Secure: cookies.Secure})
 		http.SetCookie(w, &http.Cookie{Name: cookies.Name("comment_mail"), Value: mail, Path: "/", MaxAge: 86400 * 365, HttpOnly: true, SameSite: cookies.SameSite, Secure: cookies.Secure})
 	}
+	if input.Status == "waiting" {
+		a.rememberUnapprovedComment(w, r, commentID)
+	}
 	resultQuery := "?comment_ok=1"
-	if status == "waiting" {
+	if input.Status == "waiting" {
 		resultQuery += "&comment_status=waiting"
 	}
 	http.Redirect(w, r, redirectTo+resultQuery+"#comments", http.StatusSeeOther)
@@ -3578,6 +3749,69 @@ func commentErrorMessage(code string) string {
 	default:
 		return "评论提交失败，请稍后重试。"
 	}
+}
+
+func (a *App) rememberUnapprovedComment(w http.ResponseWriter, r *http.Request, id int64) {
+	if id <= 0 {
+		return
+	}
+	ids := a.unapprovedCommentIDs(r)
+	ids = append(ids, id)
+	ids = positiveUniqueCommentIDs(ids)
+	if len(ids) > 20 {
+		ids = ids[len(ids)-20:]
+	}
+	raw, err := json.Marshal(ids)
+	if err != nil {
+		return
+	}
+	encoded := base64.RawURLEncoding.EncodeToString(raw)
+	secret := a.option(r.Context(), "auth_secret", "goblog")
+	value := encoded + "." + flashSign(secret, "unapproved-comment:"+encoded)
+	options := a.cookieOptions(r.Context())
+	http.SetCookie(w, &http.Cookie{Name: options.Name("unapproved_comment"), Value: value, Path: "/", MaxAge: 30 * 86400, HttpOnly: true, SameSite: options.SameSite, Secure: options.Secure})
+}
+
+func (a *App) unapprovedCommentIDs(r *http.Request) []int64 {
+	options := a.cookieOptions(r.Context())
+	cookie, err := r.Cookie(options.Name("unapproved_comment"))
+	if err != nil || cookie.Value == "" {
+		return nil
+	}
+	parts := strings.Split(cookie.Value, ".")
+	if len(parts) != 2 {
+		return nil
+	}
+	secret := a.option(r.Context(), "auth_secret", "goblog")
+	expected := flashSign(secret, "unapproved-comment:"+parts[0])
+	if !hmac.Equal([]byte(expected), []byte(parts[1])) {
+		return nil
+	}
+	raw, err := base64.RawURLEncoding.DecodeString(parts[0])
+	if err != nil {
+		return nil
+	}
+	var ids []int64
+	if err := json.Unmarshal(raw, &ids); err != nil {
+		return nil
+	}
+	ids = positiveUniqueCommentIDs(ids)
+	if len(ids) > 20 {
+		ids = ids[len(ids)-20:]
+	}
+	return ids
+}
+
+func positiveUniqueCommentIDs(ids []int64) []int64 {
+	seen := map[int64]bool{}
+	out := make([]int64, 0, len(ids))
+	for _, id := range ids {
+		if id > 0 && !seen[id] {
+			seen[id] = true
+			out = append(out, id)
+		}
+	}
+	return out
 }
 
 func (a *App) frontRSS(w http.ResponseWriter, r *http.Request) {
@@ -3829,7 +4063,11 @@ func (a *App) commentsForPost(r *http.Request, post models.Content) ([]commentVi
 		pageSize = 20
 	}
 	order := a.option(r.Context(), "comments_order", "ASC")
-	comments, err := a.Comments.ListForContent(r.Context(), post.CID, order, 0, 0)
+	viewerAuthorID := int64(0)
+	if user, ok := a.currentUser(r); ok {
+		viewerAuthorID = user.UID
+	}
+	comments, err := a.Comments.ListForContentViewer(r.Context(), post.CID, order, 0, 0, viewerAuthorID, a.unapprovedCommentIDs(r))
 	if err != nil {
 		return nil, commentPagination{}, err
 	}
@@ -3859,6 +4097,11 @@ func (a *App) commentsForPost(r *http.Request, post models.Content) ([]commentVi
 		end = len(roots)
 	}
 	maxLevel := optionInt(a.option(r.Context(), "comments_max_nesting_levels", "3"), 3)
+	if maxLevel < 2 {
+		maxLevel = 2
+	} else if maxLevel > 7 {
+		maxLevel = 7
+	}
 	views := a.commentViews(r, comments, roots[start:end], maxLevel)
 	pager := commentPagination{
 		Page:       page,
@@ -3904,14 +4147,16 @@ func (a *App) commentViews(r *http.Request, comments []models.Comment, roots []m
 }
 
 func (a *App) commentView(r *http.Request, comment models.Comment, level int) commentView {
+	comment = a.filterComment(r.Context(), comment)
 	return commentView{
 		Comment:    comment,
 		Level:      level,
-		BodyHTML:   a.renderCommentText(r, comment.Text),
+		BodyHTML:   a.renderCommentText(r, comment),
 		AuthorHTML: a.commentAuthorHTML(r, comment),
-		AvatarURL:  a.gravatarURL(r, comment.Mail),
+		AvatarURL:  a.commentAvatarURL(r.Context(), comment, 48),
 		ReplyURL:   commentReplyURL(r, comment.COID),
 		Anchor:     fmt.Sprintf("comment-%d", comment.COID),
+		Pending:    comment.Status == "waiting",
 	}
 }
 
@@ -4927,6 +5172,7 @@ type commentView struct {
 	AvatarURL  string
 	ReplyURL   string
 	Anchor     string
+	Pending    bool
 }
 
 type publicCommentIdentity struct {
@@ -5247,15 +5493,53 @@ func (a *App) previewToken(r *http.Request, c models.Content) string {
 	return base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
 }
 
-func (a *App) renderCommentText(r *http.Request, text string) template.HTML {
-	if a.option(r.Context(), "comments_markdown", "0") == "1" {
-		return render.MarkdownHTML(text)
+func (a *App) filterComment(ctx context.Context, comment models.Comment) models.Comment {
+	payload := plugin.CommentFilterPayload{Comment: comment}
+	out, err := a.Plugins.ApplyActive(ctx, plugin.HookCommentFilter, payload)
+	if err != nil {
+		return comment
 	}
-	allowedTags := a.option(r.Context(), "comments_html_tag_allowed", "")
-	if strings.TrimSpace(allowedTags) != "" {
-		return sanitizeCommentHTML(text, allowedTags, optionBool(a.option(r.Context(), "comments_url_nofollow", "1")))
+	if next, ok := out.(plugin.CommentFilterPayload); ok {
+		if filtered, ok := next.Comment.(models.Comment); ok {
+			return filtered
+		}
 	}
-	return render.PlainTextHTML(text)
+	return comment
+}
+
+func (a *App) renderCommentText(r *http.Request, comment models.Comment) template.HTML {
+	ctx := r.Context()
+	payload := plugin.CommentRenderPayload{Comment: comment, Text: comment.Text}
+	if out, err := a.Plugins.ApplyActive(ctx, plugin.HookCommentBeforeRender, payload); err == nil {
+		if next, ok := out.(plugin.CommentRenderPayload); ok {
+			payload = next
+		}
+	}
+	parser := plugin.CommentParserPayload{Comment: comment, Text: payload.Text, HTML: payload.HTML}
+	parserHook := plugin.HookCommentAutoParagraph
+	if a.option(ctx, "comments_markdown", "0") == "1" {
+		parserHook = plugin.HookCommentMarkdown
+	}
+	if out, err := a.Plugins.ApplyActive(ctx, parserHook, parser); err == nil {
+		if next, ok := out.(plugin.CommentParserPayload); ok {
+			parser = next
+		}
+	}
+	if parser.Handled {
+		payload.HTML = parser.HTML
+	} else if parserHook == plugin.HookCommentMarkdown {
+		payload.HTML = render.MarkdownHTML(parser.Text)
+	} else if allowedTags := a.option(ctx, "comments_html_tag_allowed", ""); strings.TrimSpace(allowedTags) != "" {
+		payload.HTML = sanitizeCommentHTML(parser.Text, allowedTags, optionBool(a.option(ctx, "comments_url_nofollow", "1")))
+	} else {
+		payload.HTML = render.PlainTextHTML(parser.Text)
+	}
+	if out, err := a.Plugins.ApplyActive(ctx, plugin.HookCommentAfterRender, payload); err == nil {
+		if next, ok := out.(plugin.CommentRenderPayload); ok {
+			payload = next
+		}
+	}
+	return payload.HTML
 }
 
 func (a *App) commentAuthorHTML(r *http.Request, comment models.Comment) template.HTML {
@@ -5275,6 +5559,20 @@ func (a *App) gravatarURL(r *http.Request, mail string) string {
 		return ""
 	}
 	return a.emailAvatarURL(r.Context(), mail, 48)
+}
+
+func (a *App) commentAvatarURL(ctx context.Context, comment models.Comment, size int) string {
+	url := ""
+	if a.option(ctx, "comments_avatar", "1") == "1" {
+		url = a.emailAvatarURL(ctx, comment.Mail, size)
+	}
+	payload := plugin.CommentAvatarPayload{Comment: comment, Mail: comment.Mail, Size: size, URL: url}
+	if out, err := a.Plugins.ApplyActive(ctx, plugin.HookCommentAvatar, payload); err == nil {
+		if next, ok := out.(plugin.CommentAvatarPayload); ok {
+			return next.URL
+		}
+	}
+	return url
 }
 
 func (a *App) emailAvatarURL(ctx context.Context, mail string, size int) string {

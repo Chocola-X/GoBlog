@@ -578,7 +578,7 @@ func (a *App) receivePingback(ctx context.Context, sourceURI, targetURI string) 
 	if text == "" {
 		text = sourceURI
 	}
-	if err := a.Comments.Save(ctx, services.SaveCommentInput{CID: content.CID, Author: author, URL: sourceURI, Text: text, Type: "pingback", Status: "approved"}, 0); err != nil {
+	if _, err := a.saveCommentWithHooks(ctx, services.SaveCommentInput{CID: content.CID, Author: author, URL: sourceURI, Text: text, Type: "pingback", Status: "approved"}, 0, "pingback", content); err != nil {
 		return "", errors.New("internal error")
 	}
 	return "Pingback registered.", nil
@@ -628,7 +628,7 @@ func (a *App) trackback(w http.ResponseWriter, r *http.Request) {
 	} else if title != "" {
 		text = title
 	}
-	if err := a.Comments.Save(r.Context(), services.SaveCommentInput{CID: cid, Author: author, URL: source, Text: text, Type: "trackback", Status: "approved", IP: clientIP(r), Agent: r.UserAgent()}, 0); err != nil {
+	if _, err := a.saveCommentWithHooks(r.Context(), services.SaveCommentInput{CID: cid, Author: author, URL: source, Text: text, Type: "trackback", Status: "approved", IP: clientIP(r), Agent: r.UserAgent()}, 0, "trackback", content); err != nil {
 		writeTrackbackResponse(w, 1, "internal error")
 		return
 	}

@@ -44,6 +44,11 @@
     </tr>{{else}}<tr><td colspan="7" class="muted">没有评论。</td></tr>{{end}}</tbody>
   </table></section>
 </form>
+<nav class="pagination" aria-label="评论分页">
+  {{if .Pagination.HasPrev}}<mdui-button href="{{.Pagination.PrevURL}}" variant="text"><mdui-icon slot="icon" name="chevron_left"></mdui-icon>上一页</mdui-button>{{end}}
+  <span class="muted">第 {{.Pagination.Page}} / {{.Pagination.TotalPages}} 页，共 {{.Pagination.Total}} 条</span>
+  {{if .Pagination.HasNext}}<mdui-button href="{{.Pagination.NextURL}}" variant="text">下一页<mdui-icon slot="end-icon" name="chevron_right"></mdui-icon></mdui-button>{{end}}
+</nav>
 <form method="post" action="/admin/comments/clear-spam" class="form-actions">
   <input type="hidden" name="_csrf" value="{{.CSRF}}">
   <mdui-button type="submit" variant="outlined">清空垃圾评论</mdui-button>

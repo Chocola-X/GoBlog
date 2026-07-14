@@ -1029,6 +1029,9 @@ func TestDiscussionSettingsSynchronizeModerationCompatibilityOptions(t *testing.
 		"comments_moderation_mode":      {"approved_author"},
 		"comments_post_interval_enable": {"1"},
 		"comments_post_interval":        {"90"},
+		"comments_list_size":            {"10"},
+		"comments_page_size":            {"20"},
+		"comments_max_nesting_levels":   {"3"},
 		"avatar_url_template":           {"https://weavatar.example/avatar/{hash}?s={size}"},
 	}
 	req := httptest.NewRequest(http.MethodPost, "/admin/options/discussion", strings.NewReader(form.Encode()))
@@ -1381,29 +1384,226 @@ func TestCommentPaginationKeepsThreadReplies(t *testing.T) {
 func TestPublicCommentNestingDepth(t *testing.T) {
 	app, _, adminID := newSecurityTestApp(t)
 	ctx := context.Background()
-	if err := app.Options.Set(ctx, "comments_max_nesting_levels", "1"); err != nil {
+	if err := app.Options.Set(ctx, "comments_max_nesting_levels", "2"); err != nil {
 		t.Fatal(err)
 	}
 	if err := app.Options.Set(ctx, "comments_post_interval_enable", "0"); err != nil {
 		t.Fatal(err)
 	}
 	postID := createPublishedPost(t, app, adminID, "comment-depth")
-	if err := app.Comments.Save(ctx, services.SaveCommentInput{CID: postID, Author: "Parent", Mail: "p@example.com", Text: "parent", Status: "approved"}, 0); err != nil {
+	rootID, err := app.Comments.SaveReturningID(ctx, services.SaveCommentInput{CID: postID, Author: "Root", Mail: "root@example.com", Text: "root", Status: "approved"}, 0)
+	if err != nil {
 		t.Fatal(err)
 	}
-	parentComments, err := app.Comments.List(ctx, "approved", "", postID)
-	if err != nil || len(parentComments) == 0 {
-		t.Fatalf("parent comment missing: %v %#v", err, parentComments)
+	parentID, err := app.Comments.SaveReturningID(ctx, services.SaveCommentInput{CID: postID, Author: "Parent", Mail: "p@example.com", Text: "parent", Status: "approved", Parent: rootID}, 0)
+	if err != nil {
+		t.Fatal(err)
 	}
 
 	rec := submitPublicComment(t, app, postID, url.Values{
 		"author": {"Child"},
 		"mail":   {"c@example.com"},
-		"text":   {"too deep"},
-		"parent": {itoa(parentComments[0].COID)},
+		"text":   {"normalized child"},
+		"parent": {itoa(parentID)},
 	}, "198.51.100.30")
-	if rec.Code != http.StatusSeeOther || !strings.Contains(rec.Header().Get("Location"), "comment_error=depth") {
+	if rec.Code != http.StatusSeeOther || !strings.Contains(rec.Header().Get("Location"), "comment_ok=1") {
 		t.Fatalf("depth response = %d %q", rec.Code, rec.Header().Get("Location"))
+	}
+	comments, err := app.Comments.List(ctx, "approved", "", postID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, comment := range comments {
+		if comment.Text == "normalized child" && comment.Parent != rootID {
+			t.Fatalf("normalized parent = %d, want root %d", comment.Parent, rootID)
+		}
+		if comment.Text == "normalized child" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("normalized child comment was not saved")
+	}
+}
+
+func TestWaitingCommentIsVisibleOnlyToSubmitter(t *testing.T) {
+	app, _, adminID := newSecurityTestApp(t)
+	ctx := context.Background()
+	if err := app.Options.Set(ctx, "comments_moderation_mode", "all"); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.Options.Set(ctx, "comments_post_interval_enable", "0"); err != nil {
+		t.Fatal(err)
+	}
+	postID := createPublishedPost(t, app, adminID, "waiting-self-visible")
+	rec := submitPublicComment(t, app, postID, url.Values{
+		"author": {"Pending Reader"},
+		"mail":   {"pending@example.com"},
+		"text":   {"private pending text"},
+	}, "198.51.100.31")
+	if rec.Code != http.StatusSeeOther || !strings.Contains(rec.Header().Get("Location"), "comment_status=waiting") {
+		t.Fatalf("waiting response = %d %q", rec.Code, rec.Header().Get("Location"))
+	}
+	post, err := app.Contents.ByID(ctx, postID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodGet, "/post/waiting-self-visible.html", nil)
+	var visibilityCookie *http.Cookie
+	for _, cookie := range rec.Result().Cookies() {
+		request.AddCookie(cookie)
+		if strings.HasSuffix(cookie.Name, "unapproved_comment") {
+			copy := *cookie
+			visibilityCookie = &copy
+		}
+	}
+	if visibilityCookie == nil {
+		t.Fatal("signed unapproved comment cookie was not set")
+	}
+	views, _, err := app.commentsForPost(request, post)
+	if err != nil || len(views) != 1 || views[0].Text != "private pending text" || !views[0].Pending {
+		t.Fatalf("submitter views = %#v, err = %v", views, err)
+	}
+
+	request = httptest.NewRequest(http.MethodGet, "/post/waiting-self-visible.html", nil)
+	views, _, err = app.commentsForPost(request, post)
+	if err != nil || len(views) != 0 {
+		t.Fatalf("anonymous outsider views = %#v, err = %v", views, err)
+	}
+
+	visibilityCookie.Value += "tampered"
+	request = httptest.NewRequest(http.MethodGet, "/post/waiting-self-visible.html", nil)
+	request.AddCookie(visibilityCookie)
+	views, _, err = app.commentsForPost(request, post)
+	if err != nil || len(views) != 0 {
+		t.Fatalf("tampered cookie views = %#v, err = %v", views, err)
+	}
+}
+
+func TestCommentPluginLifecycleAndRenderHooks(t *testing.T) {
+	app, _, adminID := newSecurityTestApp(t)
+	manager := plugin.NewManager()
+	app.Plugins = manager
+	ctx := context.Background()
+	postID := createPublishedPost(t, app, adminID, "comment-hooks")
+	var events []string
+	manager.RegisterHook(plugin.HookCommentBeforeSave, func(ctx context.Context, value any) (any, error) {
+		events = append(events, "before-save")
+		payload := value.(plugin.CommentSavePayload)
+		input := payload.Input.(services.SaveCommentInput)
+		input.Text += " filtered"
+		payload.Input = input
+		return payload, nil
+	})
+	manager.RegisterHook(plugin.HookCommentAfterSave, func(ctx context.Context, value any) (any, error) {
+		events = append(events, "after-save")
+		if value.(plugin.CommentSavePayload).Comment == nil {
+			t.Fatal("after-save hook did not receive saved comment")
+		}
+		return value, nil
+	})
+	manager.RegisterHook(plugin.HookCommentBeforeReply, func(ctx context.Context, value any) (any, error) {
+		events = append(events, "before-reply")
+		return value, nil
+	})
+	manager.RegisterHook(plugin.HookCommentAfterReply, func(ctx context.Context, value any) (any, error) {
+		events = append(events, "after-reply")
+		return value, nil
+	})
+	manager.RegisterHook(plugin.HookCommentBeforeMark, func(ctx context.Context, value any) (any, error) {
+		events = append(events, "before-mark")
+		return value, nil
+	})
+	manager.RegisterHook(plugin.HookCommentAfterMark, func(ctx context.Context, value any) (any, error) {
+		events = append(events, "after-mark")
+		return value, nil
+	})
+	manager.RegisterHook(plugin.HookCommentBeforeDelete, func(ctx context.Context, value any) (any, error) {
+		events = append(events, "before-delete")
+		return value, nil
+	})
+	manager.RegisterHook(plugin.HookCommentAfterDelete, func(ctx context.Context, value any) (any, error) {
+		events = append(events, "after-delete")
+		return value, nil
+	})
+
+	payload, err := app.saveCommentWithHooks(ctx, services.SaveCommentInput{CID: postID, Author: "Admin", Text: "reply", Status: "waiting", Agent: strings.Repeat("界", 600)}, 0, "reply", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	saved, err := app.Comments.ByID(ctx, payload.ID)
+	if err != nil || saved.Text != "reply filtered" || len([]rune(saved.Agent)) != 511 {
+		t.Fatalf("saved hooked comment = %#v, err = %v", saved, err)
+	}
+	if err := app.markCommentWithHooks(ctx, saved.COID, "approved"); err != nil {
+		t.Fatal(err)
+	}
+	content, err := app.Contents.ByID(ctx, postID)
+	if err != nil || content.CommentsNum != 1 {
+		t.Fatalf("incremental comment count = %d, err = %v", content.CommentsNum, err)
+	}
+
+	manager.RegisterHook(plugin.HookCommentFilter, func(ctx context.Context, value any) (any, error) {
+		payload := value.(plugin.CommentFilterPayload)
+		comment := payload.Comment.(models.Comment)
+		comment.Author = "Filtered Author"
+		payload.Comment = comment
+		return payload, nil
+	})
+	manager.RegisterHook(plugin.HookCommentMarkdown, func(ctx context.Context, value any) (any, error) {
+		payload := value.(plugin.CommentParserPayload)
+		payload.HTML = template.HTML("<strong>plugin comment</strong>")
+		payload.Handled = true
+		return payload, nil
+	})
+	manager.RegisterHook(plugin.HookCommentAvatar, func(ctx context.Context, value any) (any, error) {
+		payload := value.(plugin.CommentAvatarPayload)
+		payload.URL = "/plugin-avatar.png"
+		return payload, nil
+	})
+	if err := app.Options.Set(ctx, "comments_markdown", "1"); err != nil {
+		t.Fatal(err)
+	}
+	view := app.commentView(httptest.NewRequest(http.MethodGet, "/", nil), saved, 0)
+	if view.Author != "Filtered Author" || string(view.BodyHTML) != "<strong>plugin comment</strong>" || view.AvatarURL != "/plugin-avatar.png" {
+		t.Fatalf("hooked comment view = %#v", view)
+	}
+	if err := app.deleteCommentWithHooks(ctx, saved.COID); err != nil {
+		t.Fatal(err)
+	}
+	want := "before-save,before-reply,after-save,after-reply,before-mark,after-mark,before-delete,after-delete"
+	if got := strings.Join(events, ","); got != want {
+		t.Fatalf("comment hook events = %q, want %q", got, want)
+	}
+}
+
+func TestAdminCommentsPagination(t *testing.T) {
+	app, secret, adminID := newSecurityTestApp(t)
+	ctx := context.Background()
+	if err := app.Options.Set(ctx, "comments_list_size", "2"); err != nil {
+		t.Fatal(err)
+	}
+	postID := createPublishedPost(t, app, adminID, "admin-comment-pages")
+	for _, text := range []string{"oldest-comment", "middle-comment", "newest-comment"} {
+		if err := app.Comments.Save(ctx, services.SaveCommentInput{CID: postID, Author: "Reader", Text: text, Status: "approved"}, 0); err != nil {
+			t.Fatal(err)
+		}
+	}
+	request := httptest.NewRequest(http.MethodGet, "/admin/comments?page=1", nil)
+	setSession(t, request, secret, adminID)
+	rec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(rec, request)
+	body := rec.Body.String()
+	if rec.Code != http.StatusOK || !strings.Contains(body, "newest-comment") || !strings.Contains(body, "middle-comment") || strings.Contains(body, "oldest-comment") || !strings.Contains(body, "共 3 条") {
+		t.Fatalf("admin comments page 1 status=%d body=%s", rec.Code, body)
+	}
+	request = httptest.NewRequest(http.MethodGet, "/admin/comments?page=2", nil)
+	setSession(t, request, secret, adminID)
+	rec = httptest.NewRecorder()
+	app.Handler().ServeHTTP(rec, request)
+	if body = rec.Body.String(); rec.Code != http.StatusOK || !strings.Contains(body, "oldest-comment") || strings.Contains(body, "newest-comment") {
+		t.Fatalf("admin comments page 2 status=%d body=%s", rec.Code, body)
 	}
 }
 

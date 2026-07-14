@@ -65,7 +65,7 @@
       <header class="comment-header">
         {{if .AvatarURL}}<img class="comment-avatar" src="{{.AvatarURL}}" alt="">{{end}}
         <div>
-          <strong>{{.AuthorHTML}}</strong>
+          <strong>{{.AuthorHTML}}{{if .Pending}} <span class="comment-pending">等待审核</span>{{end}}</strong>
           <span>{{commentDate .Created}}</span>
         </div>
       </header>

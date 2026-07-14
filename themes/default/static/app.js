@@ -99,6 +99,29 @@
     });
   }
 
+  function initCommentDraft() {
+    const form = document.querySelector("#comment-form");
+    const field = form?.querySelector('[name="text"]');
+    const cid = form?.querySelector('[name="cid"]')?.value;
+    if (!form || !field || !cid || form.dataset.commentDraftBound) return;
+    form.dataset.commentDraftBound = "1";
+    const key = "goblog-comment-draft:" + cid;
+    try {
+      const params = new URLSearchParams(window.location.search);
+      if (params.get("comment_ok") === "1") {
+        localStorage.removeItem(key);
+      } else if (!field.value) {
+        field.value = localStorage.getItem(key) || "";
+      }
+      field.addEventListener("input", () => {
+        if (field.value) localStorage.setItem(key, field.value);
+        else localStorage.removeItem(key);
+      });
+    } catch (err) {
+      // Storage may be unavailable in private browsing or restricted contexts.
+    }
+  }
+
   function closeSearch(form, clear = false) {
     if (!form) return;
     const input = form.querySelector("input");
@@ -350,6 +373,7 @@
     highlightCode();
     wrapTables();
     codeCopy();
+    initCommentDraft();
     refreshBackTop();
     closeDrawer();
   }

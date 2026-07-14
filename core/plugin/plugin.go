@@ -61,6 +61,20 @@ const (
 	HookContentFieldReadOnly   = "content.field_read_only"
 	HookCommentBeforeSave      = "comment.before_save"
 	HookCommentAfterSave       = "comment.after_save"
+	HookCommentBeforeReply     = "comment.before_reply"
+	HookCommentAfterReply      = "comment.after_reply"
+	HookCommentBeforeEdit      = "comment.before_edit"
+	HookCommentAfterEdit       = "comment.after_edit"
+	HookCommentBeforeMark      = "comment.before_mark"
+	HookCommentAfterMark       = "comment.after_mark"
+	HookCommentBeforeDelete    = "comment.before_delete"
+	HookCommentAfterDelete     = "comment.after_delete"
+	HookCommentFilter          = "comment.filter"
+	HookCommentBeforeRender    = "comment.before_render"
+	HookCommentAfterRender     = "comment.after_render"
+	HookCommentMarkdown        = "comment.markdown"
+	HookCommentAutoParagraph   = "comment.auto_paragraph"
+	HookCommentAvatar          = "comment.avatar"
 	HookUploadBeforeSave       = "upload.before_save"
 	HookUploadAfterSave        = "upload.after_save"
 	HookAttachmentBeforeDelete = "attachment.before_delete"
@@ -142,9 +156,43 @@ type ExcerptPayload struct {
 }
 
 type CommentSavePayload struct {
-	ID      int64
-	Input   any
-	Content any
+	ID        int64
+	Operation string
+	Input     any
+	Content   any
+	Comment   any
+}
+
+type CommentActionPayload struct {
+	ID             int64
+	Status         string
+	PreviousStatus string
+	Comment        any
+	Content        any
+}
+
+type CommentFilterPayload struct {
+	Comment any
+}
+
+type CommentRenderPayload struct {
+	Comment any
+	Text    string
+	HTML    template.HTML
+}
+
+type CommentParserPayload struct {
+	Comment any
+	Text    string
+	HTML    template.HTML
+	Handled bool
+}
+
+type CommentAvatarPayload struct {
+	Comment any
+	Mail    string
+	Size    int
+	URL     string
 }
 
 type UploadPayload struct {

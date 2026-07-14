@@ -70,8 +70,8 @@
     <mdui-menu-item value="last">最后一页</mdui-menu-item>
   </mdui-select>
   <mdui-text-field name="comment_date_format" label="评论日期格式" value="{{index .Options "comment_date_format"}}"></mdui-text-field>
-  <mdui-text-field name="comments_list_size" label="最新评论列表数" type="number" min="1" step="1" value="{{index .Options "comments_list_size"}}"></mdui-text-field>
-  <mdui-text-field name="comments_page_size" label="每页评论数" type="number" min="1" step="1" value="{{index .Options "comments_page_size"}}"></mdui-text-field>
+  <mdui-text-field name="comments_list_size" label="后台每页评论数" type="number" min="1" max="100" step="1" value="{{index .Options "comments_list_size"}}"></mdui-text-field>
+  <mdui-text-field name="comments_page_size" label="前台每页评论数" type="number" min="1" max="1000" step="1" value="{{index .Options "comments_page_size"}}"></mdui-text-field>
   <mdui-text-field name="comments_max_nesting_levels" label="最大嵌套层级" type="number" min="2" max="7" step="1" value="{{index .Options "comments_max_nesting_levels"}}"></mdui-text-field>
   <mdui-text-field name="comments_html_tag_allowed" label="允许的 HTML 标签" helper="例如：a,code,strong；默认全部转义" value="{{index .Options "comments_html_tag_allowed"}}"></mdui-text-field>
   <div class="form-actions"><mdui-button type="submit">保存设置</mdui-button></div>
