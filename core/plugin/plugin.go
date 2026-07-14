@@ -22,9 +22,11 @@ type PublicContent struct {
 }
 
 type Runtime struct {
-	ListPublished func(context.Context, int, int) ([]PublicContent, error)
-	Option        func(context.Context, string) (string, error)
-	Config        func(context.Context, string) (map[string]string, error)
+	ListPublished     func(context.Context, int, int) ([]PublicContent, error)
+	ContentByID       func(context.Context, int64) (PublicContent, error)
+	IncrementIntField func(context.Context, int64, string, int64) (int64, error)
+	Option            func(context.Context, string) (string, error)
+	Config            func(context.Context, string) (map[string]string, error)
 }
 
 type RouteHandler func(*Runtime, http.ResponseWriter, *http.Request)
@@ -41,9 +43,22 @@ type HookFunc func(context.Context, any) (any, error)
 const (
 	HookContentBeforeSave      = "content.before_save"
 	HookContentAfterSave       = "content.after_save"
+	HookContentAfterDraftSave  = "content.after_draft_save"
+	HookContentAfterPublish    = "content.after_publish"
+	HookContentBeforeDelete    = "content.before_delete"
+	HookContentAfterDelete     = "content.after_delete"
+	HookContentBeforeStatus    = "content.before_status_change"
+	HookContentAfterStatus     = "content.after_status_change"
+	HookContentFilter          = "content.filter"
 	HookContentBeforeRender    = "content.before_render"
 	HookContentAfterRender     = "content.after_render"
+	HookContentTitle           = "content.title"
+	HookContentMarkdown        = "content.markdown"
+	HookContentAutoParagraph   = "content.auto_paragraph"
 	HookExcerpt                = "content.excerpt"
+	HookContentSearch          = "content.search"
+	HookContentFields          = "content.fields"
+	HookContentFieldReadOnly   = "content.field_read_only"
 	HookCommentBeforeSave      = "comment.before_save"
 	HookCommentAfterSave       = "comment.after_save"
 	HookUploadBeforeSave       = "upload.before_save"
@@ -56,15 +71,68 @@ const (
 )
 
 type ContentSavePayload struct {
-	ID       int64
-	AuthorID int64
-	Input    any
+	ID          int64
+	PublishedID int64
+	AuthorID    int64
+	Operation   string
+	Input       any
+	Content     any
+}
+
+type ContentDeletePayload struct {
+	ID      int64
+	Content any
+}
+
+type ContentStatusPayload struct {
+	ID             int64
+	PreviousStatus string
+	Status         string
+	Content        any
 }
 
 type ContentRenderPayload struct {
 	Content any
 	HTML    template.HTML
 	Data    map[string]any
+}
+
+type ContentFilterPayload struct {
+	Content any
+}
+
+type ContentTitlePayload struct {
+	Content any
+	Title   string
+}
+
+type ContentParserPayload struct {
+	Content any
+	Text    string
+	HTML    template.HTML
+	Handled bool
+}
+
+type ContentSearchPayload struct {
+	Stage    string
+	Keywords string
+	Query    any
+	Results  any
+	Total    int64
+	Handled  bool
+}
+
+type ContentFieldsPayload struct {
+	ContentID int64
+	Type      string
+	Fields    []FieldSchema
+}
+
+type ContentFieldReadOnlyPayload struct {
+	ContentID int64
+	Type      string
+	Name      string
+	ReadOnly  bool
 }
 
 type ExcerptPayload struct {
@@ -126,6 +194,7 @@ type FieldSchema struct {
 	Step        string
 	Options     []FieldOption
 	ForTypes    []string
+	ReadOnly    bool
 }
 
 type PluginInfo struct {
@@ -162,6 +231,10 @@ type ConfigProvider interface {
 
 type PersonalConfigProvider interface {
 	PersonalConfigSchema() []FieldSchema
+}
+
+type ContentFieldsProvider interface {
+	ContentFieldSchema() []FieldSchema
 }
 
 type Theme struct {

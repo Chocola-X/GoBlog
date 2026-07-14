@@ -3,10 +3,13 @@ package services
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"goblog/core/models"
@@ -15,7 +18,8 @@ import (
 )
 
 type ContentService struct {
-	db DB
+	db            DB
+	revisionLimit atomic.Int64
 }
 
 type SaveContentInput struct {
@@ -73,7 +77,19 @@ type SaveFieldInput struct {
 }
 
 func NewContentService(db any) *ContentService {
-	return &ContentService{db: WrapDB(db)}
+	service := &ContentService{db: WrapDB(db)}
+	service.revisionLimit.Store(20)
+	return service
+}
+
+func (s *ContentService) SetRevisionLimit(limit int) {
+	if limit < 1 {
+		limit = 20
+	}
+	if limit > 1000 {
+		limit = 1000
+	}
+	s.revisionLimit.Store(int64(limit))
 }
 
 func (s *ContentService) DB() *sql.DB {
@@ -143,6 +159,14 @@ func (s *ContentService) ListPublishedPlugin(ctx context.Context, limit, offset 
 		})
 	}
 	return out, nil
+}
+
+func (s *ContentService) ContentByIDPlugin(ctx context.Context, id int64) (plugin.PublicContent, error) {
+	content, err := s.ByID(ctx, id)
+	if err != nil {
+		return plugin.PublicContent{}, err
+	}
+	return plugin.PublicContent{CID: content.CID, Title: content.Title, Slug: content.Slug, Created: content.Created, Modified: content.Modified, Text: content.Text, Type: content.Type, Status: content.Status}, nil
 }
 
 func (s *ContentService) ListAll(ctx context.Context, limit, offset int) ([]models.Content, error) {
@@ -231,6 +255,21 @@ func (s *ContentService) PageBySlug(ctx context.Context, pageSlug string) (model
 	}
 	if slugID, err := strconv.ParseInt(pageSlug, 10, 64); err == nil && slugID > 0 {
 		return s.one(ctx, `WHERE slugId = ? AND type = ? AND status = ? AND created <= ? AND COALESCE(draftOf, 0) = 0`, slugID, models.ContentTypePage, models.ContentStatusPost, time.Now().Unix())
+	}
+	return models.Content{}, sql.ErrNoRows
+}
+
+func (s *ContentService) PrivateBySlugForAuthor(ctx context.Context, contentSlug, typ string, authorID int64) (models.Content, error) {
+	if authorID <= 0 || (typ != models.ContentTypePost && typ != models.ContentTypePage) {
+		return models.Content{}, sql.ErrNoRows
+	}
+	if content, err := s.one(ctx, `WHERE slug = ? AND slug <> '' AND type = ? AND status = 'private' AND authorId = ? AND COALESCE(draftOf, 0) = 0`, contentSlug, typ, authorID); err == nil {
+		return content, nil
+	} else if !errors.Is(err, sql.ErrNoRows) {
+		return models.Content{}, err
+	}
+	if slugID, err := strconv.ParseInt(contentSlug, 10, 64); err == nil && slugID > 0 {
+		return s.one(ctx, `WHERE slugId = ? AND type = ? AND status = 'private' AND authorId = ? AND COALESCE(draftOf, 0) = 0`, slugID, typ, authorID)
 	}
 	return models.Content{}, sql.ErrNoRows
 }
@@ -416,27 +455,39 @@ func (s *ContentService) MarkStatus(ctx context.Context, id int64, status string
 
 func (s *ContentService) Delete(ctx context.Context, id int64) error {
 	ctx = WithWriter(ctx)
-	if draft, err := s.DraftForContent(ctx, id); err == nil && draft.CID > 0 {
-		if err := s.DeleteDraft(ctx, draft.CID); err != nil {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var draftID int64
+	err = tx.QueryRowContext(ctx, models.Rebind(s.db.Dialect(), `SELECT cid FROM gb_contents WHERE draftOf = ? AND status = ? ORDER BY modified DESC, cid DESC LIMIT 1`), id, models.ContentStatusDraft).Scan(&draftID)
+	if err == nil {
+		if err := s.deleteDraftTx(ctx, tx, draftID); err != nil {
 			return err
 		}
-	} else if err != nil && !errors.Is(err, sql.ErrNoRows) {
+	} else if !errors.Is(err, sql.ErrNoRows) {
 		return err
 	}
-	if _, err := s.db.ExecContext(ctx, `DELETE FROM gb_relationships WHERE cid = ?`, id); err != nil {
+	if _, err := txExec(ctx, tx, s.db.Dialect(), `DELETE FROM gb_relationships WHERE cid = ?`, id); err != nil {
 		return err
 	}
-	if _, err := s.db.ExecContext(ctx, `DELETE FROM gb_comments WHERE cid = ?`, id); err != nil {
+	if _, err := txExec(ctx, tx, s.db.Dialect(), `DELETE FROM gb_comments WHERE cid = ?`, id); err != nil {
 		return err
 	}
-	if _, err := s.db.ExecContext(ctx, `DELETE FROM gb_fields WHERE cid = ?`, id); err != nil {
+	if _, err := txExec(ctx, tx, s.db.Dialect(), `DELETE FROM gb_fields WHERE cid = ?`, id); err != nil {
 		return err
 	}
-	if _, err := s.db.ExecContext(ctx, `DELETE FROM gb_revisions WHERE cid = ?`, id); err != nil {
+	if _, err := txExec(ctx, tx, s.db.Dialect(), `DELETE FROM gb_revisions WHERE cid = ?`, id); err != nil {
 		return err
 	}
-	_, err := s.db.ExecContext(ctx, `DELETE FROM gb_contents WHERE cid = ?`, id)
-	return err
+	if _, err := txExec(ctx, tx, s.db.Dialect(), `DELETE FROM gb_contents WHERE cid = ?`, id); err != nil {
+		return err
+	}
+	if err := s.cleanupMetasTx(ctx, txExecer{tx: tx, dialect: s.db.Dialect()}); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // DraftForContent returns the editing draft for a given published content ID.
@@ -490,6 +541,9 @@ func (s *ContentService) DeleteDraft(ctx context.Context, draftID int64) error {
 	}
 	defer tx.Rollback()
 	if err := s.deleteDraftTx(ctx, tx, draftID); err != nil {
+		return err
+	}
+	if err := s.cleanupMetasTx(ctx, txExecer{tx: tx, dialect: s.db.Dialect()}); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -659,7 +713,11 @@ func (s *ContentService) PublishDraft(ctx context.Context, draftID int64) error 
 	if err != nil {
 		return err
 	}
-	draftMetaIDs, err := s.MetaIDsForContent(ctx, draftID)
+	draftCategoryIDs, err := s.CategoriesForContentIDs(ctx, draftID)
+	if err != nil {
+		return err
+	}
+	draftTags, err := s.TagsForContentNames(ctx, draftID)
 	if err != nil {
 		return err
 	}
@@ -703,7 +761,8 @@ func (s *ContentService) PublishDraft(ctx context.Context, draftID int64) error 
 	}
 	relInput := SaveContentInput{
 		Type:        published.Type,
-		CategoryIDs: draftMetaIDs,
+		CategoryIDs: draftCategoryIDs,
+		Tags:        draftTags,
 	}
 	if err := s.syncRelationshipsTx(ctx, tx, publishedID, relInput); err != nil {
 		return err
@@ -791,7 +850,49 @@ func (s *ContentService) MetaIDsForContent(ctx context.Context, cid int64) ([]in
 
 func (s *ContentService) SaveFields(ctx context.Context, cid int64, fields []SaveFieldInput) error {
 	ctx = WithWriter(ctx)
-	return s.saveFieldsTxLike(ctx, s.db, cid, fields)
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if err := s.saveFieldsTx(ctx, tx, cid, fields); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func (s *ContentService) IncrementIntField(ctx context.Context, cid int64, name string, delta int64) (int64, error) {
+	ctx = WithWriter(ctx)
+	name = strings.TrimSpace(name)
+	if cid <= 0 || !validFieldName.MatchString(name) {
+		return 0, fmt.Errorf("invalid custom field")
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+	result, err := txExec(ctx, tx, s.db.Dialect(), `UPDATE gb_fields SET type = 'int', intValue = COALESCE(intValue, 0) + ? WHERE cid = ? AND name = ?`, delta, cid, name)
+	if err != nil {
+		return 0, err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return 0, err
+	}
+	if affected == 0 {
+		if _, err := txExec(ctx, tx, s.db.Dialect(), `INSERT INTO gb_fields (cid, name, type, strValue, intValue, floatValue) VALUES (?, ?, 'int', '', ?, 0)`, cid, name, delta); err != nil {
+			return 0, err
+		}
+	}
+	var value int64
+	if err := tx.QueryRowContext(ctx, models.Rebind(s.db.Dialect(), `SELECT intValue FROM gb_fields WHERE cid = ? AND name = ? ORDER BY fid DESC LIMIT 1`), cid, name).Scan(&value); err != nil {
+		return 0, err
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+	return value, nil
 }
 
 func (s *ContentService) saveFieldsTx(ctx context.Context, tx *sql.Tx, cid int64, fields []SaveFieldInput) error {
@@ -821,6 +922,20 @@ func txExec(ctx context.Context, tx *sql.Tx, dialect models.Dialect, query strin
 }
 
 func (s *ContentService) saveFieldsTxLike(ctx context.Context, db execer, cid int64, fields []SaveFieldInput) error {
+	seen := map[string]bool{}
+	for _, field := range fields {
+		name := strings.TrimSpace(field.Name)
+		if name == "" {
+			continue
+		}
+		if !validFieldName.MatchString(name) {
+			return fmt.Errorf("invalid custom field name %q", name)
+		}
+		if seen[name] {
+			return fmt.Errorf("duplicate custom field name %q", name)
+		}
+		seen[name] = true
+	}
 	if _, err := db.ExecContext(ctx, `DELETE FROM gb_fields WHERE cid = ?`, cid); err != nil {
 		return err
 	}
@@ -872,6 +987,13 @@ func (s *ContentService) FieldMap(ctx context.Context, cid int64) (map[string]an
 			out[f.Name] = f.IntValue
 		case "float":
 			out[f.Name] = f.FloatValue
+		case "json":
+			var value any
+			if err := json.Unmarshal([]byte(f.StrValue), &value); err == nil {
+				out[f.Name] = value
+			} else {
+				out[f.Name] = f.StrValue
+			}
 		default:
 			out[f.Name] = f.StrValue
 		}
@@ -936,12 +1058,16 @@ func (s *ContentService) saveRevisionTxLike(ctx context.Context, db execer, c mo
 	if err != nil {
 		return err
 	}
+	limit := s.revisionLimit.Load()
+	if limit < 1 {
+		limit = 20
+	}
 	_, _ = db.ExecContext(ctx, `
 		DELETE FROM gb_revisions
 		WHERE cid = ? AND rid NOT IN (
-			SELECT rid FROM gb_revisions WHERE cid = ? ORDER BY rid DESC LIMIT 20
+			SELECT rid FROM gb_revisions WHERE cid = ? ORDER BY rid DESC LIMIT ?
 		)
-	`, c.CID, c.CID)
+	`, c.CID, c.CID, limit)
 	return nil
 }
 
@@ -1102,6 +1228,13 @@ func (s *ContentService) syncRelationshipsTxLike(ctx context.Context, db execer,
 	if input.Type == models.ContentTypePost {
 		for _, mid := range input.CategoryIDs {
 			if mid > 0 {
+				var categoryID int64
+				if err := db.QueryRowContext(ctx, `SELECT mid FROM gb_metas WHERE mid = ? AND type = 'category'`, mid).Scan(&categoryID); err != nil {
+					if errors.Is(err, sql.ErrNoRows) {
+						return fmt.Errorf("category %d does not exist", mid)
+					}
+					return err
+				}
 				if s.db.Dialect() == models.DialectPostgres {
 					if _, err := db.ExecContext(ctx, `INSERT INTO gb_relationships (cid, mid) VALUES (?, ?) ON CONFLICT (cid, mid) DO NOTHING`, cid, mid); err != nil {
 						return err
@@ -1133,14 +1266,23 @@ func (s *ContentService) syncRelationshipsTxLike(ctx context.Context, db execer,
 			}
 		}
 	}
-	_, _ = db.ExecContext(ctx, `
+	return s.cleanupMetasTx(ctx, db)
+}
+
+func (s *ContentService) cleanupMetasTx(ctx context.Context, db execer) error {
+	if _, err := db.ExecContext(ctx, `DELETE FROM gb_metas WHERE type = 'tag' AND NOT EXISTS (SELECT 1 FROM gb_relationships r WHERE r.mid = gb_metas.mid)`); err != nil {
+		return err
+	}
+	_, err := db.ExecContext(ctx, `
 		UPDATE gb_metas SET count = (
 			SELECT COUNT(*) FROM gb_relationships r JOIN gb_contents c ON c.cid = r.cid
 			WHERE r.mid = gb_metas.mid AND c.type = 'post' AND c.status = 'publish' AND COALESCE(c.draftOf, 0) = 0
 		)
 	`)
-	return nil
+	return err
 }
+
+var validFieldName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
 func (s *ContentService) ensureTag(ctx context.Context, name string) (int64, error) {
 	return s.ensureTagTxLike(ctx, s.db, name)

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -248,6 +249,91 @@ func TestEditingDraftLifecyclePreservesPublishedUntilPublish(t *testing.T) {
 	}
 	if len(revisions) == 0 || revisions[0].Title != "Original" || revisions[0].Text != "published body" {
 		t.Fatalf("published snapshot missing before draft publish: %#v", revisions)
+	}
+}
+
+func TestContentFieldValidationJSONIncrementAndRevisionLimit(t *testing.T) {
+	service := newContentTestService(t)
+	ctx := context.Background()
+	if _, err := service.Create(ctx, SaveContentInput{
+		Title:  "Invalid field",
+		Type:   models.ContentTypePost,
+		Status: models.ContentStatusDraft,
+		Fields: []SaveFieldInput{{Name: "invalid-name", Type: "str", StrValue: "value"}},
+	}, 1); err == nil {
+		t.Fatal("invalid custom field name should be rejected")
+	}
+	if _, err := service.Create(ctx, SaveContentInput{
+		Title:       "Invalid category",
+		Type:        models.ContentTypePost,
+		Status:      models.ContentStatusDraft,
+		CategoryIDs: []int64{9999},
+	}, 1); err == nil {
+		t.Fatal("missing category should be rejected")
+	}
+
+	id, err := service.Create(ctx, SaveContentInput{
+		Title:  "Fields",
+		Type:   models.ContentTypePost,
+		Status: models.ContentStatusPost,
+		Fields: []SaveFieldInput{{Name: "metadata", Type: "json", StrValue: `{"enabled":true,"count":2}`}},
+	}, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fields, err := service.FieldMap(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	metadata, ok := fields["metadata"].(map[string]any)
+	if !ok || metadata["enabled"] != true || metadata["count"] != float64(2) {
+		t.Fatalf("decoded json field = %#v", fields["metadata"])
+	}
+	if value, err := service.IncrementIntField(ctx, id, "views", 2); err != nil || value != 2 {
+		t.Fatalf("first increment = %d, err = %v", value, err)
+	}
+	if value, err := service.IncrementIntField(ctx, id, "views", 3); err != nil || value != 5 {
+		t.Fatalf("second increment = %d, err = %v", value, err)
+	}
+	if err := service.SaveFields(ctx, id, []SaveFieldInput{{Name: "stable", Type: "str", StrValue: "kept"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.SaveFields(ctx, id, []SaveFieldInput{{Name: "invalid-name", Type: "str", StrValue: "bad"}}); err == nil {
+		t.Fatal("invalid SaveFields call should fail")
+	}
+	fields, err = service.FieldMap(ctx, id)
+	if err != nil || fields["stable"] != "kept" {
+		t.Fatalf("failed SaveFields call changed existing fields: %#v, err = %v", fields, err)
+	}
+
+	service.SetRevisionLimit(2)
+	for i := 0; i < 4; i++ {
+		if err := service.Update(ctx, id, SaveContentInput{Title: fmt.Sprintf("Revision %d", i), Type: models.ContentTypePost, Status: models.ContentStatusPost}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	revisions, err := service.Revisions(ctx, id)
+	if err != nil || len(revisions) != 2 {
+		t.Fatalf("revisions = %d, err = %v, want 2", len(revisions), err)
+	}
+}
+
+func TestDeletingContentCleansOrphanTags(t *testing.T) {
+	service := newContentTestService(t)
+	ctx := context.Background()
+	id, err := service.Create(ctx, SaveContentInput{Title: "Tagged", Type: models.ContentTypePost, Status: models.ContentStatusPost, Tags: []string{"temporary-tag"}}, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := service.Delete(ctx, id); err != nil {
+		t.Fatal(err)
+	}
+	var count int
+	if err := service.DB().QueryRowContext(ctx, `SELECT COUNT(*) FROM gb_metas WHERE type = 'tag' AND name = 'temporary-tag'`).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 0 {
+		t.Fatalf("orphan tag count = %d, want 0", count)
 	}
 }
 

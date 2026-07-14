@@ -155,7 +155,7 @@ func (s *MetaService) RefreshCounts(ctx context.Context) error {
 		UPDATE gb_metas SET count = (
 			SELECT COUNT(*) FROM gb_relationships r
 			JOIN gb_contents c ON c.cid = r.cid
-			WHERE r.mid = gb_metas.mid AND c.type = 'post'
+			WHERE r.mid = gb_metas.mid AND c.type = 'post' AND c.status = 'publish' AND COALESCE(c.draftOf, 0) = 0
 		)
 	`)
 	return err

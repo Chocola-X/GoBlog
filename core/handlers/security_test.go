@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"encoding/xml"
 	"errors"
+	"html/template"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
@@ -1049,6 +1050,199 @@ func TestDiscussionSettingsSynchronizeModerationCompatibilityOptions(t *testing.
 		if err != nil || got != want {
 			t.Fatalf("option %s = %q, err = %v, want %q", key, got, err, want)
 		}
+	}
+}
+
+func TestContentLifecycleAndRenderingPluginHooks(t *testing.T) {
+	app, _, adminID := newSecurityTestApp(t)
+	manager := plugin.NewManager()
+	app.Plugins = manager
+	ctx := context.Background()
+	var events []string
+	manager.RegisterHook(plugin.HookContentBeforeSave, func(ctx context.Context, value any) (any, error) {
+		events = append(events, "before-save")
+		payload := value.(plugin.ContentSavePayload)
+		input := payload.Input.(services.SaveContentInput)
+		input.Title += " filtered"
+		payload.Input = input
+		return payload, nil
+	})
+	manager.RegisterHook(plugin.HookContentAfterSave, func(ctx context.Context, value any) (any, error) {
+		events = append(events, "after-save")
+		return value, nil
+	})
+	manager.RegisterHook(plugin.HookContentAfterDraftSave, func(ctx context.Context, value any) (any, error) {
+		events = append(events, "after-draft")
+		return value, nil
+	})
+	manager.RegisterHook(plugin.HookContentBeforeStatus, func(ctx context.Context, value any) (any, error) {
+		events = append(events, "before-status")
+		return value, nil
+	})
+	manager.RegisterHook(plugin.HookContentAfterStatus, func(ctx context.Context, value any) (any, error) {
+		events = append(events, "after-status")
+		return value, nil
+	})
+	manager.RegisterHook(plugin.HookContentBeforeDelete, func(ctx context.Context, value any) (any, error) {
+		events = append(events, "before-delete")
+		return value, nil
+	})
+	manager.RegisterHook(plugin.HookContentAfterDelete, func(ctx context.Context, value any) (any, error) {
+		events = append(events, "after-delete")
+		return value, nil
+	})
+
+	id, err := app.saveContentWithHooks(ctx, 0, services.SaveContentInput{Title: "Hooked", Type: models.ContentTypePost, Status: models.ContentStatusDraft}, adminID, "draft")
+	if err != nil {
+		t.Fatal(err)
+	}
+	content, err := app.Contents.ByID(ctx, id)
+	if err != nil || content.Title != "Hooked filtered" {
+		t.Fatalf("filtered content = %#v, err = %v", content, err)
+	}
+	if err := app.markContentStatus(ctx, id, "hidden"); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.deleteContentWithAttachmentPolicy(ctx, id); err != nil {
+		t.Fatal(err)
+	}
+	wantEvents := []string{"before-save", "after-save", "after-draft", "before-status", "after-status", "before-delete", "after-delete"}
+	if strings.Join(events, ",") != strings.Join(wantEvents, ",") {
+		t.Fatalf("hook events = %#v, want %#v", events, wantEvents)
+	}
+
+	manager.RegisterHook(plugin.HookContentMarkdown, func(ctx context.Context, value any) (any, error) {
+		payload := value.(plugin.ContentParserPayload)
+		payload.HTML = template.HTML("<strong>plugin markdown</strong>")
+		payload.Handled = true
+		return payload, nil
+	})
+	manager.RegisterHook(plugin.HookContentTitle, func(ctx context.Context, value any) (any, error) {
+		payload := value.(plugin.ContentTitlePayload)
+		payload.Title = "[plugin] " + payload.Title
+		return payload, nil
+	})
+	html, err := app.renderContentHTML(ctx, models.Content{Title: "Render", Text: "**default**", Type: models.ContentTypePost}, nil)
+	if err != nil || string(html) != "<strong>plugin markdown</strong>" {
+		t.Fatalf("plugin markdown = %q, err = %v", html, err)
+	}
+	filtered, err := app.filterContentTitle(ctx, models.Content{Title: "Render"})
+	if err != nil || filtered.Title != "[plugin] Render" {
+		t.Fatalf("plugin title = %#v, err = %v", filtered, err)
+	}
+}
+
+func TestContentSearchAndReadOnlyFieldPluginHooks(t *testing.T) {
+	app, _, adminID := newSecurityTestApp(t)
+	manager := plugin.NewManager()
+	app.Plugins = manager
+	ctx := context.Background()
+	id, err := app.Contents.Create(ctx, services.SaveContentInput{
+		Title:  "Fields",
+		Type:   models.ContentTypePost,
+		Status: models.ContentStatusDraft,
+		Fields: []services.SaveFieldInput{{Name: "protected_value", Type: "str", StrValue: "original"}},
+	}, adminID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager.RegisterHook(plugin.HookContentFields, func(ctx context.Context, value any) (any, error) {
+		payload := value.(plugin.ContentFieldsPayload)
+		payload.Fields = append(payload.Fields, plugin.FieldSchema{Name: "plugin_field", Label: "Plugin field", Type: plugin.FieldText, Default: "default"})
+		return payload, nil
+	})
+	manager.RegisterHook(plugin.HookContentFieldReadOnly, func(ctx context.Context, value any) (any, error) {
+		payload := value.(plugin.ContentFieldReadOnlyPayload)
+		if payload.Name == "protected_value" {
+			payload.ReadOnly = true
+		}
+		return payload, nil
+	})
+	preserved, err := app.preserveReadOnlyFields(ctx, id, models.ContentTypePost, []services.SaveFieldInput{{Name: "protected_value", Type: "str", StrValue: "changed"}})
+	if err != nil || len(preserved) != 1 || preserved[0].StrValue != "original" {
+		t.Fatalf("preserved fields = %#v, err = %v", preserved, err)
+	}
+	existingFields, err := app.Contents.FieldsForContent(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	formFields, err := app.contentFormFields(ctx, models.ContentTypePost, id, existingFields)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fieldState := map[string]models.Field{}
+	for _, field := range formFields {
+		fieldState[field.Name] = field
+	}
+	if !fieldState["protected_value"].ReadOnly || fieldState["plugin_field"].StrValue != "default" {
+		t.Fatalf("plugin form fields = %#v", fieldState)
+	}
+
+	manager.RegisterHook(plugin.HookContentSearch, func(ctx context.Context, value any) (any, error) {
+		payload := value.(plugin.ContentSearchPayload)
+		if payload.Stage == "before" {
+			payload.Handled = true
+			payload.Results = []models.Content{{CID: 99, Title: "External result", Type: models.ContentTypePost, Status: models.ContentStatusPost}}
+			payload.Total = 1
+		}
+		return payload, nil
+	})
+	results, err := app.listContentsWithSearchHook(ctx, services.ContentQuery{Type: models.ContentTypePost, Keywords: "external"})
+	if err != nil || len(results) != 1 || results[0].CID != 99 {
+		t.Fatalf("plugin search results = %#v, err = %v", results, err)
+	}
+}
+
+func TestContributorPublishIsForcedToWaitingAndCannotSetPassword(t *testing.T) {
+	app, secret, _ := newSecurityTestApp(t)
+	ctx := context.Background()
+	contributorID, err := app.Users.Save(ctx, services.SaveUserInput{Name: "writer", Password: "secret123", Mail: "writer@example.com", Role: "contributor"}, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	form := url.Values{
+		"_csrf":        {adminToken(secret, contributorID)},
+		"title":        {"Contributor post"},
+		"text":         {"body"},
+		"status":       {models.ContentStatusPost},
+		"password":     {"should-not-be-stored"},
+		"allowComment": {"1"},
+	}
+	req := httptest.NewRequest(http.MethodPost, "/admin/posts/new", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	setSession(t, req, secret, contributorID)
+	rec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("contributor publish status = %d: %s", rec.Code, rec.Body.String())
+	}
+	posts, err := app.Contents.List(ctx, services.ContentQuery{Type: models.ContentTypePost, Status: "all", AuthorID: contributorID, Limit: 10})
+	if err != nil || len(posts) != 1 {
+		t.Fatalf("contributor posts = %#v, err = %v", posts, err)
+	}
+	if posts[0].Status != "waiting" || posts[0].Password != "" {
+		t.Fatalf("contributor post = %#v, want waiting without password", posts[0])
+	}
+}
+
+func TestPrivateContentIsVisibleOnlyToItsAuthor(t *testing.T) {
+	app, secret, adminID := newSecurityTestApp(t)
+	id, err := app.Contents.Create(context.Background(), services.SaveContentInput{Title: "Private post", Slug: "private-post", Text: "private body", Type: models.ContentTypePost, Status: "private"}, adminID)
+	if err != nil || id <= 0 {
+		t.Fatal(err)
+	}
+	guestReq := httptest.NewRequest(http.MethodGet, "/post/private-post.html", nil)
+	guestRec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(guestRec, guestReq)
+	if guestRec.Code != http.StatusNotFound {
+		t.Fatalf("guest private post status = %d, want 404", guestRec.Code)
+	}
+	authorReq := httptest.NewRequest(http.MethodGet, "/post/private-post.html", nil)
+	setSession(t, authorReq, secret, adminID)
+	authorRec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(authorRec, authorReq)
+	if authorRec.Code != http.StatusOK || !strings.Contains(authorRec.Body.String(), "private body") {
+		t.Fatalf("author private post response = %d: %s", authorRec.Code, authorRec.Body.String())
 	}
 }
 

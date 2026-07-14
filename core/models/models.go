@@ -69,6 +69,7 @@ type Field struct {
 	StrValue   string
 	IntValue   int64
 	FloatValue float64
+	ReadOnly   bool
 }
 
 type Revision struct {

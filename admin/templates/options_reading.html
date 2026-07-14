@@ -19,6 +19,7 @@
   </mdui-select>
   <mdui-text-field name="front_page_cid" label="首页页面 CID" type="number" helper="首页显示为指定页面时生效" value="{{index .Options "front_page_cid"}}"></mdui-text-field>
   <mdui-text-field name="posts_index_path" label="文章列表路径" helper="首页不是最新文章时可设置，例如 /blog" value="{{index .Options "posts_index_path"}}"></mdui-text-field>
+  <mdui-text-field name="revision_limit" label="每篇内容保留的修订版本数" type="number" min="1" max="1000" step="1" helper="默认 20，包含文章和独立页面" value="{{index .Options "revision_limit"}}"></mdui-text-field>
   <div class="form-actions"><mdui-button type="submit">保存设置</mdui-button></div>
 </form>
 {{end}}{{define "options_tabs"}}<div class="subnav"><mdui-button variant="tonal" href="/admin/options/general">基本</mdui-button><mdui-button variant="tonal" href="/admin/options/reading">阅读</mdui-button><mdui-button variant="tonal" href="/admin/options/discussion">评论</mdui-button><mdui-button variant="tonal" href="/admin/options/permalink">永久链接</mdui-button></div>{{end}}

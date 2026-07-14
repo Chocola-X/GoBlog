@@ -83,6 +83,7 @@ func (s *OptionService) EnsureDefaults(ctx context.Context) error {
 		"front_page_type":               "posts",
 		"front_page_cid":                "0",
 		"posts_index_path":              "/",
+		"revision_limit":                "20",
 		"comments_require_moderation":   "0",
 		"comments_moderation_mode":      "",
 		"comments_require_mail":         "1",

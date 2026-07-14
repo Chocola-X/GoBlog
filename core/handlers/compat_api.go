@@ -255,7 +255,7 @@ func (a *App) handleXMLRPCMethod(ctx context.Context, method string, params []xm
 		if !a.xmlRPCCanEdit(user, item) {
 			return nil, &xmlRPCFault{Code: 403, Message: "permission denied"}
 		}
-		if err := a.Contents.MarkStatus(ctx, item.CID, models.ContentStatusPost); err != nil {
+		if err := a.markContentStatus(ctx, item.CID, models.ContentStatusPost); err != nil {
 			return nil, &xmlRPCFault{Code: 500, Message: "internal error"}
 		}
 		return true, nil
@@ -276,7 +276,15 @@ func (a *App) handleXMLRPCMethod(ctx context.Context, method string, params []xm
 		if publishIndex >= 0 && len(params) > publishIndex && !params[publishIndex].Value.BoolValue() {
 			input.Status = models.ContentStatusDraft
 		}
-		id, err := a.Contents.Create(ctx, input, user.UID)
+		operation := "publish"
+		if input.Status != models.ContentStatusPost {
+			operation = "draft"
+		}
+		if roleRank(user.Role) < roleRank("editor") && input.Status == models.ContentStatusPost {
+			input.Status = "waiting"
+			input.Password = ""
+		}
+		id, err := a.saveContentWithHooks(ctx, 0, input, user.UID, operation)
 		if err != nil {
 			return nil, &xmlRPCFault{Code: 500, Message: "internal error"}
 		}
@@ -306,7 +314,17 @@ func (a *App) handleXMLRPCMethod(ctx context.Context, method string, params []xm
 		if publishIndex >= 0 && len(params) > publishIndex && !params[publishIndex].Value.BoolValue() {
 			input.Status = models.ContentStatusDraft
 		}
-		if err := a.Contents.Update(ctx, item.CID, input); err != nil {
+		operation := "publish"
+		if input.Status != models.ContentStatusPost {
+			operation = "draft"
+		}
+		if roleRank(user.Role) < roleRank("editor") {
+			input.Password = item.Password
+			if item.Status != models.ContentStatusPost && input.Status == models.ContentStatusPost {
+				input.Status = "waiting"
+			}
+		}
+		if _, err := a.saveContentWithHooks(ctx, item.CID, input, user.UID, operation); err != nil {
 			return nil, &xmlRPCFault{Code: 500, Message: "internal error"}
 		}
 		a.sendOutgoingPings(ctx, item.CID, input)
@@ -327,7 +345,7 @@ func (a *App) handleXMLRPCMethod(ctx context.Context, method string, params []xm
 		if !a.xmlRPCCanEdit(user, item) {
 			return nil, &xmlRPCFault{Code: 403, Message: "permission denied"}
 		}
-		if err := a.Contents.Delete(ctx, item.CID); err != nil {
+		if err := a.deleteContentWithAttachmentPolicy(ctx, item.CID); err != nil {
 			return nil, &xmlRPCFault{Code: 500, Message: "internal error"}
 		}
 		return true, nil

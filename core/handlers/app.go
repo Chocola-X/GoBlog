@@ -45,17 +45,19 @@ import (
 )
 
 type App struct {
-	Contents   *services.ContentService
-	Metas      *services.MetaService
-	Comments   *services.CommentService
-	Users      *services.UserService
-	Options    *services.OptionService
-	Plugins    *plugin.Manager
-	UploadDir  string
-	HTTPClient *compathttp.Client
-	HTTPFetch  func(context.Context, string) (string, error)
-	loginMu    sync.Mutex
-	loginNext  map[string]time.Time
+	Contents        *services.ContentService
+	Metas           *services.MetaService
+	Comments        *services.CommentService
+	Users           *services.UserService
+	Options         *services.OptionService
+	Plugins         *plugin.Manager
+	UploadDir       string
+	HTTPClient      *compathttp.Client
+	HTTPFetch       func(context.Context, string) (string, error)
+	loginMu         sync.Mutex
+	loginNext       map[string]time.Time
+	draftRepairOnce sync.Once
+	draftRepairErr  error
 }
 
 type contextKey string
@@ -71,9 +73,17 @@ func New(contents *services.ContentService, metas *services.MetaService, comment
 	return &App{Contents: contents, Metas: metas, Comments: comments, Users: users, Options: options, Plugins: plugins, UploadDir: uploadDir, HTTPClient: httpClient, loginNext: map[string]time.Time{}}
 }
 
+func (a *App) ensureDraftRepair(ctx context.Context) error {
+	a.draftRepairOnce.Do(func() {
+		a.draftRepairErr = a.Contents.RepairOrphanEditingDrafts(ctx)
+	})
+	return a.draftRepairErr
+}
+
 func (a *App) Handler() http.Handler {
 	mux := http.NewServeMux()
 	a.syncActivePlugins(context.Background())
+	a.Contents.SetRevisionLimit(optionInt(a.option(context.Background(), "revision_limit", "20"), 20))
 
 	adminAssets, _ := fs.Sub(admin.FS, "assets")
 	mux.Handle("/admin/assets/", http.StripPrefix("/admin/assets/", http.FileServer(http.FS(adminAssets))))
@@ -138,7 +148,7 @@ func (a *App) Handler() http.Handler {
 		mux.HandleFunc(route, a.requireAdmin(handler))
 	}
 
-	runtime := &plugin.Runtime{ListPublished: a.Contents.ListPublishedPlugin, Option: a.Options.Get, Config: a.pluginConfig}
+	runtime := &plugin.Runtime{ListPublished: a.Contents.ListPublishedPlugin, ContentByID: a.Contents.ContentByIDPlugin, IncrementIntField: a.Contents.IncrementIntField, Option: a.Options.Get, Config: a.pluginConfig}
 	for _, route := range a.Plugins.Routes() {
 		route := route
 		mux.HandleFunc(route.Pattern, func(w http.ResponseWriter, r *http.Request) {
@@ -344,7 +354,7 @@ func (a *App) adminDashboard(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	if err := a.Contents.RepairOrphanEditingDrafts(r.Context()); err != nil {
+	if err := a.ensureDraftRepair(r.Context()); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -367,7 +377,7 @@ func (a *App) adminPosts(w http.ResponseWriter, r *http.Request) {
 		methodNotAllowed(w, http.MethodGet)
 		return
 	}
-	if err := a.Contents.RepairOrphanEditingDrafts(r.Context()); err != nil {
+	if err := a.ensureDraftRepair(r.Context()); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -383,7 +393,7 @@ func (a *App) adminPosts(w http.ResponseWriter, r *http.Request) {
 	if roleRank(user.Role) < roleRank("editor") {
 		query.AuthorID = user.UID
 	}
-	posts, err := a.Contents.List(r.Context(), query)
+	posts, err := a.listContentsWithSearchHook(r.Context(), query)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -415,11 +425,11 @@ func (a *App) adminPages(w http.ResponseWriter, r *http.Request) {
 	if !a.requireRole(w, r, "editor") {
 		return
 	}
-	if err := a.Contents.RepairOrphanEditingDrafts(r.Context()); err != nil {
+	if err := a.ensureDraftRepair(r.Context()); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	pages, err := a.Contents.List(r.Context(), services.ContentQuery{Type: models.ContentTypePage, Status: r.URL.Query().Get("status"), Keywords: r.URL.Query().Get("keywords"), Limit: 200})
+	pages, err := a.listContentsWithSearchHook(r.Context(), services.ContentQuery{Type: models.ContentTypePage, Status: r.URL.Query().Get("status"), Keywords: r.URL.Query().Get("keywords"), Limit: 200})
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -524,6 +534,22 @@ func (a *App) contentRoutes(w http.ResponseWriter, r *http.Request, prefix, typ 
 			http.Error(w, itemErr.Error(), http.StatusInternalServerError)
 			return
 		}
+		currentUser, _ := a.currentUser(r)
+		if newStatus == models.ContentStatusPost && item.DraftOf == 0 && item.Status != models.ContentStatusPost && roleRank(currentUser.Role) < roleRank("editor") {
+			newStatus = "waiting"
+		}
+		statusPayload := plugin.ContentStatusPayload{ID: id, PreviousStatus: item.Status, Status: newStatus, Content: item}
+		if payload, hookErr := a.Plugins.ApplyActive(r.Context(), plugin.HookContentBeforeStatus, statusPayload); hookErr != nil {
+			http.Error(w, hookErr.Error(), http.StatusBadRequest)
+			return
+		} else if next, ok := payload.(plugin.ContentStatusPayload); ok {
+			statusPayload = next
+			newStatus = next.Status
+		}
+		if !validContentStatus(newStatus) {
+			http.Error(w, "invalid content status", http.StatusBadRequest)
+			return
+		}
 		// If marking a published article as draft, create an editing draft instead
 		if item.Status == models.ContentStatusPost && item.DraftOf == 0 && newStatus == models.ContentStatusDraft {
 			input := services.SaveContentInput{
@@ -541,7 +567,12 @@ func (a *App) contentRoutes(w http.ResponseWriter, r *http.Request, prefix, typ 
 				AllowFeed:    item.AllowFeed == "1",
 			}
 			uid, _ := a.currentUserID(r)
-			if _, err := a.Contents.SaveEditingDraft(r.Context(), id, input, uid); err != nil {
+			draftID, err := a.Contents.SaveEditingDraft(r.Context(), id, input, uid)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			if err := a.runContentStatusAfter(r.Context(), statusPayload, draftID); err != nil {
 				http.Error(w, err.Error(), http.StatusInternalServerError)
 				return
 			}
@@ -554,10 +585,18 @@ func (a *App) contentRoutes(w http.ResponseWriter, r *http.Request, prefix, typ 
 				http.Error(w, err.Error(), http.StatusInternalServerError)
 				return
 			}
+			if err := a.runContentStatusAfter(r.Context(), statusPayload, item.DraftOf); err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
 			a.flashRedirect(w, r, contentListURL(typ), http.StatusSeeOther, flashNotice{Type: "success", Message: "内容已发布。"})
 			return
 		}
 		if err := a.Contents.MarkStatus(r.Context(), id, newStatus); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if err := a.runContentStatusAfter(r.Context(), statusPayload, id); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
@@ -628,12 +667,17 @@ func (a *App) contentForm(w http.ResponseWriter, r *http.Request, typ string, id
 
 	switch r.Method {
 	case http.MethodGet:
+		formUser, _ := a.currentUser(r)
 		categories, _ := a.Metas.List(r.Context(), "category")
 		pages, _ := a.Contents.List(r.Context(), services.ContentQuery{Type: models.ContentTypePage, Limit: 200})
 		selectedCategories, _ := a.Metas.CategoriesForContent(r.Context(), loadID)
 		selectedTags, _ := a.Metas.TagsForContent(r.Context(), loadID)
 		fields, _ := a.Contents.FieldsForContent(r.Context(), loadID)
-		fields = mergeThemeFields(a.themeContentFields(r.Context(), typ), fields)
+		fields, err = a.contentFormFields(r.Context(), typ, loadID, fields)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
 		actionID := id
 		formCID := item.CID
 		revisionID := id
@@ -648,22 +692,23 @@ func (a *App) contentForm(w http.ResponseWriter, r *http.Request, typ string, id
 			preview = ""
 		}
 		a.renderAdmin(w, r, "content_form.html", map[string]any{
-			"Title":              contentFormTitle(typ, id),
-			"Content":            item,
-			"Type":               typ,
-			"Action":             contentActionURL(typ, actionID),
-			"FormCID":            formCID,
-			"PublishedID":        publishedID,
-			"Saved":              r.URL.Query().Get("saved") == "1",
-			"Categories":         categories,
-			"Pages":              pages,
-			"SelectedCategories": selectedCategories,
-			"SelectedTags":       selectedTags,
-			"Fields":             fields,
-			"Revisions":          revisions,
-			"PreviewURL":         preview,
-			"EditorMediaSources": a.editorMediaSources(r),
-			"EditingDraft":       editingDraft,
+			"Title":                 contentFormTitle(typ, id),
+			"Content":               item,
+			"Type":                  typ,
+			"Action":                contentActionURL(typ, actionID),
+			"FormCID":               formCID,
+			"PublishedID":           publishedID,
+			"Saved":                 r.URL.Query().Get("saved") == "1",
+			"Categories":            categories,
+			"Pages":                 pages,
+			"SelectedCategories":    selectedCategories,
+			"SelectedTags":          selectedTags,
+			"Fields":                fields,
+			"Revisions":             revisions,
+			"PreviewURL":            preview,
+			"EditorMediaSources":    a.editorMediaSources(r),
+			"EditingDraft":          editingDraft,
+			"CanSetContentPassword": roleRank(formUser.Role) >= roleRank("editor"),
 		})
 	case http.MethodPost:
 		if err := r.ParseForm(); err != nil {
@@ -675,6 +720,19 @@ func (a *App) contentForm(w http.ResponseWriter, r *http.Request, typ string, id
 			return
 		}
 		input, err := parseContentForm(r, typ)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		formUser, _ := a.currentUser(r)
+		if roleRank(formUser.Role) < roleRank("editor") {
+			if loadID > 0 {
+				input.Password = item.Password
+			} else {
+				input.Password = ""
+			}
+		}
+		input.Fields, err = a.preserveReadOnlyFields(r.Context(), loadID, typ, input.Fields)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
@@ -693,7 +751,7 @@ func (a *App) contentForm(w http.ResponseWriter, r *http.Request, typ string, id
 				id = draftID
 			}
 		}
-		uid, _ := a.currentUserID(r)
+		uid := formUser.UID
 
 		if id > 0 {
 			existing, existErr := a.Contents.ByID(r.Context(), id)
@@ -704,6 +762,24 @@ func (a *App) contentForm(w http.ResponseWriter, r *http.Request, typ string, id
 			} else if existErr != nil {
 				http.Error(w, existErr.Error(), http.StatusInternalServerError)
 				return
+			}
+		}
+		publishRequested := input.Status == models.ContentStatusPost
+		if publishRequested && publishedID == 0 && roleRank(formUser.Role) < roleRank("editor") {
+			input.Status = "waiting"
+		}
+		operation := "draft"
+		if publishRequested {
+			operation = "publish"
+		}
+		savePayload := plugin.ContentSavePayload{ID: id, PublishedID: publishedID, AuthorID: uid, Operation: operation, Input: input}
+		if payload, hookErr := a.Plugins.ApplyActive(r.Context(), plugin.HookContentBeforeSave, savePayload); hookErr != nil {
+			http.Error(w, hookErr.Error(), http.StatusBadRequest)
+			return
+		} else if next, ok := payload.(plugin.ContentSavePayload); ok {
+			savePayload = next
+			if nextInput, ok := next.Input.(services.SaveContentInput); ok {
+				input = nextInput
 			}
 		}
 
@@ -718,23 +794,21 @@ func (a *App) contentForm(w http.ResponseWriter, r *http.Request, typ string, id
 					http.Error(w, err.Error(), http.StatusInternalServerError)
 					return
 				}
+				if err := a.runContentAfterSave(r.Context(), savePayload, publishedID, plugin.HookContentAfterPublish); err != nil {
+					http.Error(w, err.Error(), http.StatusInternalServerError)
+					return
+				}
 				a.flashRedirect(w, r, contentActionURL(typ, publishedID), http.StatusSeeOther, flashNotice{Type: "success", Message: "内容已发布。"})
 			} else {
+				if err := a.runContentAfterSave(r.Context(), savePayload, draftID, plugin.HookContentAfterDraftSave); err != nil {
+					http.Error(w, err.Error(), http.StatusInternalServerError)
+					return
+				}
 				a.flashRedirect(w, r, contentActionURL(typ, publishedID), http.StatusSeeOther, flashNotice{Type: "success", Message: "草稿已保存。"})
 			}
 			return
 		}
 
-		savePayload := plugin.ContentSavePayload{ID: id, AuthorID: uid, Input: input}
-		if payload, err := a.Plugins.ApplyActive(r.Context(), plugin.HookContentBeforeSave, savePayload); err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		} else if next, ok := payload.(plugin.ContentSavePayload); ok {
-			savePayload = next
-			if nextInput, ok := next.Input.(services.SaveContentInput); ok {
-				input = nextInput
-			}
-		}
 		if id == 0 {
 			id, err = a.Contents.Create(r.Context(), input, uid)
 		} else {
@@ -744,9 +818,11 @@ func (a *App) contentForm(w http.ResponseWriter, r *http.Request, typ string, id
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		savePayload.ID = id
-		savePayload.Input = input
-		if _, err := a.Plugins.ApplyActive(r.Context(), plugin.HookContentAfterSave, savePayload); err != nil {
+		specificHook := plugin.HookContentAfterDraftSave
+		if operation == "publish" {
+			specificHook = plugin.HookContentAfterPublish
+		}
+		if err := a.runContentAfterSave(r.Context(), savePayload, id, specificHook); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
@@ -801,6 +877,85 @@ func (a *App) discardContentDraftFromForm(w http.ResponseWriter, r *http.Request
 	a.flashRedirect(w, r, redirectTo, http.StatusSeeOther, flashNotice{Type: "success", Message: "草稿已丢弃。"})
 }
 
+func (a *App) runContentAfterSave(ctx context.Context, payload plugin.ContentSavePayload, id int64, specificHook string) error {
+	payload.ID = id
+	if content, err := a.Contents.ByID(ctx, id); err == nil {
+		payload.Content = content
+	}
+	if _, err := a.Plugins.ApplyActive(ctx, plugin.HookContentAfterSave, payload); err != nil {
+		return err
+	}
+	if specificHook == "" {
+		return nil
+	}
+	_, err := a.Plugins.ApplyActive(ctx, specificHook, payload)
+	return err
+}
+
+func (a *App) saveContentWithHooks(ctx context.Context, id int64, input services.SaveContentInput, authorID int64, operation string) (int64, error) {
+	payload := plugin.ContentSavePayload{ID: id, AuthorID: authorID, Operation: operation, Input: input}
+	if out, err := a.Plugins.ApplyActive(ctx, plugin.HookContentBeforeSave, payload); err != nil {
+		return id, err
+	} else if next, ok := out.(plugin.ContentSavePayload); ok {
+		payload = next
+		if nextInput, ok := next.Input.(services.SaveContentInput); ok {
+			input = nextInput
+		}
+	}
+	var err error
+	if id == 0 {
+		id, err = a.Contents.Create(ctx, input, authorID)
+	} else {
+		err = a.Contents.Update(ctx, id, input)
+	}
+	if err != nil {
+		return id, err
+	}
+	specificHook := ""
+	switch operation {
+	case "publish":
+		specificHook = plugin.HookContentAfterPublish
+	case "draft", "autosave":
+		specificHook = plugin.HookContentAfterDraftSave
+	}
+	return id, a.runContentAfterSave(ctx, payload, id, specificHook)
+}
+
+func (a *App) runContentStatusAfter(ctx context.Context, payload plugin.ContentStatusPayload, id int64) error {
+	payload.ID = id
+	if content, err := a.Contents.ByID(ctx, id); err == nil {
+		payload.Content = content
+		payload.Status = content.Status
+	}
+	_, err := a.Plugins.ApplyActive(ctx, plugin.HookContentAfterStatus, payload)
+	return err
+}
+
+func (a *App) markContentStatus(ctx context.Context, id int64, status string) error {
+	item, err := a.Contents.ByID(ctx, id)
+	if err != nil {
+		return err
+	}
+	payload := plugin.ContentStatusPayload{ID: id, PreviousStatus: item.Status, Status: status, Content: item}
+	if out, err := a.Plugins.ApplyActive(ctx, plugin.HookContentBeforeStatus, payload); err != nil {
+		return err
+	} else if next, ok := out.(plugin.ContentStatusPayload); ok {
+		payload = next
+		status = next.Status
+	}
+	if !validContentStatus(status) {
+		return fmt.Errorf("invalid content status %q", status)
+	}
+	if err := a.Contents.MarkStatus(ctx, id, status); err != nil {
+		return err
+	}
+	targetID := id
+	if item.DraftOf > 0 && status == models.ContentStatusPost {
+		targetID = item.DraftOf
+	}
+	return a.runContentStatusAfter(ctx, payload, targetID)
+}
+
 func (a *App) contentRevisions(w http.ResponseWriter, r *http.Request, typ string, id int64) {
 	if r.Method != http.MethodGet {
 		methodNotAllowed(w, http.MethodGet)
@@ -820,6 +975,7 @@ func (a *App) contentRevisions(w http.ResponseWriter, r *http.Request, typ strin
 }
 
 func (a *App) renderContentForm(w http.ResponseWriter, r *http.Request, typ string, id int64, item models.Content, selectedCategories, selectedTags []models.Meta, fields []models.Field, errs validate.Errors) {
+	formUser, _ := a.currentUser(r)
 	categories, _ := a.Metas.List(r.Context(), "category")
 	pages, _ := a.Contents.List(r.Context(), services.ContentQuery{Type: models.ContentTypePage, Limit: 200})
 	publishedID := item.DraftOf
@@ -844,29 +1000,35 @@ func (a *App) renderContentForm(w http.ResponseWriter, r *http.Request, typ stri
 	if fields == nil {
 		fields, _ = a.Contents.FieldsForContent(r.Context(), loadID)
 	}
-	fields = mergeThemeFields(a.themeContentFields(r.Context(), typ), fields)
+	var err error
+	fields, err = a.contentFormFields(r.Context(), typ, loadID, fields)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 	revisionID := id
 	if publishedID > 0 {
 		revisionID = publishedID
 	}
 	revisions, _ := a.Contents.Revisions(r.Context(), revisionID)
 	a.renderAdmin(w, r, "content_form.html", map[string]any{
-		"Title":              contentFormTitle(typ, id),
-		"Content":            item,
-		"Type":               typ,
-		"Action":             contentActionURL(typ, actionID),
-		"FormCID":            formCID,
-		"PublishedID":        publishedID,
-		"Categories":         categories,
-		"Pages":              pages,
-		"SelectedCategories": selectedCategories,
-		"SelectedTags":       selectedTags,
-		"Errors":             errs,
-		"Fields":             fields,
-		"Revisions":          revisions,
-		"PreviewURL":         a.previewURL(r, item),
-		"EditorMediaSources": a.editorMediaSources(r),
-		"EditingDraft":       publishedID > 0,
+		"Title":                 contentFormTitle(typ, id),
+		"Content":               item,
+		"Type":                  typ,
+		"Action":                contentActionURL(typ, actionID),
+		"FormCID":               formCID,
+		"PublishedID":           publishedID,
+		"Categories":            categories,
+		"Pages":                 pages,
+		"SelectedCategories":    selectedCategories,
+		"SelectedTags":          selectedTags,
+		"Errors":                errs,
+		"Fields":                fields,
+		"Revisions":             revisions,
+		"PreviewURL":            a.previewURL(r, item),
+		"EditorMediaSources":    a.editorMediaSources(r),
+		"EditingDraft":          publishedID > 0,
+		"CanSetContentPassword": roleRank(formUser.Role) >= roleRank("editor"),
 	})
 }
 
@@ -1400,7 +1562,19 @@ func (a *App) adminOptionsReading(w http.ResponseWriter, r *http.Request) {
 	if !a.requireRole(w, r, "administrator") {
 		return
 	}
-	a.optionsForm(w, r, "阅读设置", "options_reading.html", []string{"post_date_format", "page_size", "posts_list_size", "content_render_mode", "feed_full_text", "front_page_type", "front_page_cid", "posts_index_path"})
+	if r.Method == http.MethodPost {
+		if err := r.ParseForm(); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		limit := optionInt(r.FormValue("revision_limit"), 20)
+		if limit < 1 || limit > 1000 {
+			http.Error(w, "修订版本数必须是 1 到 1000 的整数", http.StatusBadRequest)
+			return
+		}
+		a.Contents.SetRevisionLimit(limit)
+	}
+	a.optionsForm(w, r, "阅读设置", "options_reading.html", []string{"post_date_format", "page_size", "posts_list_size", "content_render_mode", "feed_full_text", "front_page_type", "front_page_cid", "posts_index_path", "revision_limit"})
 }
 
 func (a *App) adminOptionsDiscussion(w http.ResponseWriter, r *http.Request) {
@@ -2040,7 +2214,22 @@ func (a *App) adminAutosave(w http.ResponseWriter, r *http.Request) {
 		input.Title = "自动保存草稿"
 	}
 	input.Status = models.ContentStatusDraft
+	input.Fields, err = a.preserveReadOnlyFields(r.Context(), id, typ, input.Fields)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 	user, _ := a.currentUser(r)
+	savePayload := plugin.ContentSavePayload{ID: id, AuthorID: user.UID, Operation: "autosave", Input: input}
+	if payload, hookErr := a.Plugins.ApplyActive(r.Context(), plugin.HookContentBeforeSave, savePayload); hookErr != nil {
+		http.Error(w, hookErr.Error(), http.StatusBadRequest)
+		return
+	} else if next, ok := payload.(plugin.ContentSavePayload); ok {
+		savePayload = next
+		if nextInput, ok := next.Input.(services.SaveContentInput); ok {
+			input = nextInput
+		}
+	}
 
 	responseID := id
 	previewID := id
@@ -2069,6 +2258,11 @@ func (a *App) adminAutosave(w http.ResponseWriter, r *http.Request) {
 		previewID = id
 	}
 	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	savePayload.PublishedID = responseID
+	if err := a.runContentAfterSave(r.Context(), savePayload, previewID, plugin.HookContentAfterDraftSave); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -2642,6 +2836,10 @@ func (a *App) deleteContentWithAttachmentPolicy(ctx context.Context, cid int64) 
 	if err != nil {
 		return err
 	}
+	contentPayload := plugin.ContentDeletePayload{ID: cid, Content: item}
+	if _, err := a.Plugins.ApplyActive(ctx, plugin.HookContentBeforeDelete, contentPayload); err != nil {
+		return err
+	}
 	policy := a.option(ctx, "attachment_delete_policy", "keep")
 	var attachments []models.Content
 	if item.Type == models.ContentTypePost || item.Type == models.ContentTypePage {
@@ -2670,7 +2868,8 @@ func (a *App) deleteContentWithAttachmentPolicy(ctx context.Context, cid int64) 
 	if err := a.Contents.Delete(ctx, cid); err != nil {
 		return err
 	}
-	return nil
+	_, err = a.Plugins.ApplyActive(ctx, plugin.HookContentAfterDelete, contentPayload)
+	return err
 }
 
 func (a *App) detachContentAttachments(ctx context.Context, item models.Content, attachments []models.Content) error {
@@ -2949,6 +3148,11 @@ func (a *App) frontPost(w http.ResponseWriter, r *http.Request) {
 	postSlug := path.Base(strings.TrimSuffix(r.URL.Path, "/"))
 	postSlug = strings.TrimSuffix(postSlug, ".html")
 	post, err := a.Contents.BySlug(r.Context(), postSlug)
+	if errors.Is(err, sql.ErrNoRows) {
+		if user, ok := a.currentUser(r); ok {
+			post, err = a.Contents.PrivateBySlugForAuthor(r.Context(), postSlug, models.ContentTypePost, user.UID)
+		}
+	}
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			a.renderThemeStatus(w, r, "404.html", map[string]any{}, http.StatusNotFound)
@@ -2968,6 +3172,12 @@ func (a *App) frontPost(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *App) renderPostContent(w http.ResponseWriter, r *http.Request, post models.Content) {
+	var err error
+	post, err = a.filterContentTitle(r.Context(), post)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 	comments, commentPager, _ := a.commentsForPost(r, post)
 	categories, _ := a.Metas.CategoriesForContent(r.Context(), post.CID)
 	tags, _ := a.Metas.TagsForContent(r.Context(), post.CID)
@@ -2978,6 +3188,15 @@ func (a *App) renderPostContent(w http.ResponseWriter, r *http.Request, post mod
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
+	}
+	if prev.CID > 0 {
+		prev, _ = a.filterContentTitle(r.Context(), prev)
+	}
+	if next.CID > 0 {
+		next, _ = a.filterContentTitle(r.Context(), next)
+	}
+	for i := range related {
+		related[i], _ = a.filterContentTitle(r.Context(), related[i])
 	}
 	a.renderTheme(w, r, "post.html", map[string]any{
 		"Post":                post,
@@ -3006,6 +3225,11 @@ func (a *App) frontPage(w http.ResponseWriter, r *http.Request) {
 	pageSlug := path.Base(strings.TrimSuffix(r.URL.Path, "/"))
 	pageSlug = strings.TrimSuffix(pageSlug, ".html")
 	pageData, err := a.Contents.PageBySlug(r.Context(), pageSlug)
+	if errors.Is(err, sql.ErrNoRows) {
+		if user, ok := a.currentUser(r); ok {
+			pageData, err = a.Contents.PrivateBySlugForAuthor(r.Context(), pageSlug, models.ContentTypePage, user.UID)
+		}
+	}
 	if err != nil {
 		a.renderThemeStatus(w, r, "404.html", map[string]any{}, http.StatusNotFound)
 		return
@@ -3017,6 +3241,12 @@ func (a *App) frontPage(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *App) renderPageContent(w http.ResponseWriter, r *http.Request, pageData models.Content, extra ...map[string]any) {
+	var err error
+	pageData, err = a.filterContentTitle(r.Context(), pageData)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 	comments, commentPager, _ := a.commentsForPost(r, pageData)
 	fields, _ := a.Contents.FieldMap(r.Context(), pageData.CID)
 	contentHTML, err := a.renderContentHTML(r.Context(), pageData, nil)
@@ -3059,6 +3289,11 @@ func (a *App) frontPreview(w http.ResponseWriter, r *http.Request) {
 	item, err := a.Contents.ByID(r.Context(), id)
 	if err != nil || (item.Type != models.ContentTypePost && item.Type != models.ContentTypePage) {
 		http.NotFound(w, r)
+		return
+	}
+	item, err = a.filterContentTitle(r.Context(), item)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 	if !a.validPreviewToken(r, item) {
@@ -3351,6 +3586,11 @@ func (a *App) frontRSS(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	for i := range posts {
+		if filtered, filterErr := a.filterContentTitle(r.Context(), posts[i]); filterErr == nil {
+			posts[i] = filtered
+		}
+	}
 	a.writeRSS(w, r, posts, nil, a.option(r.Context(), "site_title", "GoBlog"), a.option(r.Context(), "site_description", ""), "/feed.xml")
 }
 
@@ -3413,6 +3653,11 @@ func (a *App) frontAtom(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	for i := range posts {
+		if filtered, filterErr := a.filterContentTitle(r.Context(), posts[i]); filterErr == nil {
+			posts[i] = filtered
+		}
+	}
 	site, _ := a.Options.All(r.Context())
 	baseURL := strings.TrimRight(site["base_url"], "/")
 	feed := atomFeed{Xmlns: "http://www.w3.org/2005/Atom", ID: baseURL + "/", Title: site["site_title"], Updated: time.Now().Format(time.RFC3339), Links: []atomLink{{Href: baseURL + "/atom.xml", Rel: "self"}, {Href: baseURL + "/", Rel: "alternate"}}}
@@ -3439,6 +3684,51 @@ func (a *App) renderPostList(w http.ResponseWriter, r *http.Request, query servi
 	a.renderPostListWithData(w, r, query, title, nil)
 }
 
+func (a *App) listContentsWithSearchHook(ctx context.Context, query services.ContentQuery) ([]models.Content, error) {
+	if query.Keywords == "" {
+		return a.Contents.List(ctx, query)
+	}
+	payload := plugin.ContentSearchPayload{Stage: "before", Keywords: query.Keywords, Query: query}
+	out, err := a.Plugins.ApplyActive(ctx, plugin.HookContentSearch, payload)
+	if err != nil {
+		return nil, err
+	}
+	var results []models.Content
+	if next, ok := out.(plugin.ContentSearchPayload); ok {
+		payload = next
+		if nextQuery, ok := next.Query.(services.ContentQuery); ok {
+			query = nextQuery
+		}
+		if next.Handled {
+			if results, ok := next.Results.([]models.Content); ok {
+				payload.Results = results
+			} else {
+				payload.Results = []models.Content{}
+			}
+		}
+	}
+	if payload.Handled {
+		results, _ = payload.Results.([]models.Content)
+	} else {
+		results, err = a.Contents.List(ctx, query)
+		if err != nil {
+			return nil, err
+		}
+	}
+	payload.Stage = "after"
+	payload.Query = query
+	payload.Results = results
+	payload.Total = int64(len(results))
+	if out, err = a.Plugins.ApplyActive(ctx, plugin.HookContentSearch, payload); err != nil {
+		return nil, err
+	} else if next, ok := out.(plugin.ContentSearchPayload); ok {
+		if filtered, ok := next.Results.([]models.Content); ok {
+			results = filtered
+		}
+	}
+	return results, nil
+}
+
 func (a *App) renderPostListWithData(w http.ResponseWriter, r *http.Request, query services.ContentQuery, title string, extra map[string]any) {
 	page := optionInt(r.URL.Query().Get("page"), 1)
 	if page < 1 {
@@ -3451,15 +3741,64 @@ func (a *App) renderPostListWithData(w http.ResponseWriter, r *http.Request, que
 	query.Limit = size
 	query.Offset = (page - 1) * size
 	query.ExcludeFuture = true
-	total, err := a.Contents.CountList(r.Context(), query)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
+	var total int64
+	var posts []models.Content
+	searchPayload := plugin.ContentSearchPayload{Stage: "before", Keywords: query.Keywords, Query: query}
+	if query.Keywords != "" {
+		out, err := a.Plugins.ApplyActive(r.Context(), plugin.HookContentSearch, searchPayload)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if next, ok := out.(plugin.ContentSearchPayload); ok {
+			searchPayload = next
+			if nextQuery, ok := next.Query.(services.ContentQuery); ok {
+				query = nextQuery
+			}
+			if next.Handled {
+				posts, _ = next.Results.([]models.Content)
+				total = next.Total
+				if total == 0 {
+					total = int64(len(posts))
+				}
+			}
+		}
 	}
-	posts, err := a.Contents.List(r.Context(), query)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
+	if !searchPayload.Handled {
+		var err error
+		total, err = a.Contents.CountList(r.Context(), query)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		posts, err = a.Contents.List(r.Context(), query)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+	}
+	if query.Keywords != "" {
+		searchPayload.Stage = "after"
+		searchPayload.Query = query
+		searchPayload.Results = posts
+		searchPayload.Total = total
+		if out, err := a.Plugins.ApplyActive(r.Context(), plugin.HookContentSearch, searchPayload); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		} else if next, ok := out.(plugin.ContentSearchPayload); ok {
+			if nextPosts, ok := next.Results.([]models.Content); ok {
+				posts = nextPosts
+			}
+			total = next.Total
+		}
+	}
+	for i := range posts {
+		filtered, err := a.filterContentTitle(r.Context(), posts[i])
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		posts[i] = filtered
 	}
 	totalPages := int((total + int64(size) - 1) / int64(size))
 	data := map[string]any{
@@ -5173,7 +5512,30 @@ func (a *App) renderContentHTML(ctx context.Context, content models.Content, dat
 		}
 	}
 	payload.Content = content
-	payload.HTML = render.ContentHTML(content.Text, a.option(ctx, "content_render_mode", "markdown"))
+	mode := a.option(ctx, "content_render_mode", "markdown")
+	parserHook := ""
+	switch {
+	case strings.HasPrefix(content.Text, "<!--markdown-->"):
+		parserHook = plugin.HookContentMarkdown
+	case strings.HasPrefix(content.Text, "<!--plaintext-->"):
+		parserHook = plugin.HookContentAutoParagraph
+	case mode == "autop" || mode == "plaintext" || mode == "plain":
+		parserHook = plugin.HookContentAutoParagraph
+	case mode != "html":
+		parserHook = plugin.HookContentMarkdown
+	}
+	if parserHook != "" {
+		parserPayload := plugin.ContentParserPayload{Content: content, Text: content.Text}
+		if out, err := a.Plugins.ApplyActive(ctx, parserHook, parserPayload); err != nil {
+			return "", err
+		} else if next, ok := out.(plugin.ContentParserPayload); ok && next.Handled {
+			payload.HTML = next.HTML
+		} else {
+			payload.HTML = render.ContentHTML(content.Text, mode)
+		}
+	} else {
+		payload.HTML = render.ContentHTML(content.Text, mode)
+	}
 	if out, err := a.Plugins.ApplyActive(ctx, plugin.HookContentAfterRender, payload); err != nil {
 		return "", err
 	} else {
@@ -5182,6 +5544,26 @@ func (a *App) renderContentHTML(ctx context.Context, content models.Content, dat
 		}
 	}
 	return payload.HTML, nil
+}
+
+func (a *App) filterContentTitle(ctx context.Context, content models.Content) (models.Content, error) {
+	filterPayload := plugin.ContentFilterPayload{Content: content}
+	if out, err := a.Plugins.ApplyActive(ctx, plugin.HookContentFilter, filterPayload); err != nil {
+		return content, err
+	} else if next, ok := out.(plugin.ContentFilterPayload); ok {
+		if filtered, ok := next.Content.(models.Content); ok {
+			content = filtered
+		}
+	}
+	payload := plugin.ContentTitlePayload{Content: content, Title: content.Title}
+	out, err := a.Plugins.ApplyActive(ctx, plugin.HookContentTitle, payload)
+	if err != nil {
+		return content, err
+	}
+	if next, ok := out.(plugin.ContentTitlePayload); ok {
+		content.Title = next.Title
+	}
+	return content, nil
 }
 
 func (a *App) excerpt(ctx context.Context, text string, limit int) string {
@@ -5477,15 +5859,33 @@ func validateContentInput(input services.SaveContentInput) validate.Errors {
 	if input.Type == models.ContentTypePage {
 		v.MaxLength("template", input.Template, 32)
 	}
+	fieldNames := map[string]bool{}
 	for _, field := range input.Fields {
 		v.Required("field_name", field.Name).
+			MaxLength("field_name", field.Name, 150).
 			In("field_type", field.Type, "str", "int", "float", "json").
 			SafeText("field_value", field.StrValue)
+		if !contentFieldNamePattern.MatchString(field.Name) {
+			v.Errors.Add("field_name", "字段名只能以字母或下划线开头，并且只能包含字母、数字和下划线")
+		}
+		if fieldNames[field.Name] {
+			v.Errors.Add("field_name", "字段名不能重复")
+		}
+		fieldNames[field.Name] = true
 		if field.Type == "json" && strings.TrimSpace(field.StrValue) != "" && !json.Valid([]byte(field.StrValue)) {
 			v.Errors.Add("field_value", "JSON 格式不正确")
 		}
 	}
 	return v.Errors
+}
+
+func validContentStatus(status string) bool {
+	switch status {
+	case models.ContentStatusPost, models.ContentStatusDraft, "hidden", "waiting", "private":
+		return true
+	default:
+		return false
+	}
 }
 
 func validateMetaInput(input services.SaveMetaInput) validate.Errors {
@@ -6525,23 +6925,153 @@ func (a *App) themeContentFields(ctx context.Context, typ string) []plugin.Field
 	return fields
 }
 
+func (a *App) contentFieldSchemas(ctx context.Context, typ string, contentID int64) ([]plugin.FieldSchema, error) {
+	fields := append([]plugin.FieldSchema(nil), a.themeContentFields(ctx, typ)...)
+	for _, registered := range a.Plugins.Plugins() {
+		if !a.Plugins.IsActive(registered.Name()) {
+			continue
+		}
+		if provider, ok := registered.(plugin.ContentFieldsProvider); ok {
+			fields = append(fields, provider.ContentFieldSchema()...)
+		}
+	}
+	payload := plugin.ContentFieldsPayload{ContentID: contentID, Type: typ, Fields: fields}
+	if out, err := a.Plugins.ApplyActive(ctx, plugin.HookContentFields, payload); err != nil {
+		return nil, err
+	} else if next, ok := out.(plugin.ContentFieldsPayload); ok {
+		fields = next.Fields
+	}
+	filtered := make([]plugin.FieldSchema, 0, len(fields))
+	seen := map[string]bool{}
+	for _, field := range fields {
+		field.Name = strings.TrimSpace(field.Name)
+		if field.Name == "" || seen[field.Name] || !contentFieldNamePattern.MatchString(field.Name) {
+			continue
+		}
+		if len(field.ForTypes) > 0 && !containsString(field.ForTypes, typ) {
+			continue
+		}
+		seen[field.Name] = true
+		filtered = append(filtered, field)
+	}
+	return filtered, nil
+}
+
+func (a *App) contentFormFields(ctx context.Context, typ string, contentID int64, fields []models.Field) ([]models.Field, error) {
+	schema, err := a.contentFieldSchemas(ctx, typ, contentID)
+	if err != nil {
+		return nil, err
+	}
+	fields = mergeThemeFields(schema, fields)
+	readOnlySchema := map[string]bool{}
+	for _, field := range schema {
+		readOnlySchema[field.Name] = field.ReadOnly
+	}
+	for i := range fields {
+		readOnly, err := a.isContentFieldReadOnly(ctx, contentID, typ, fields[i].Name, readOnlySchema[fields[i].Name])
+		if err != nil {
+			return nil, err
+		}
+		fields[i].ReadOnly = readOnly
+	}
+	return fields, nil
+}
+
+func (a *App) preserveReadOnlyFields(ctx context.Context, contentID int64, typ string, incoming []services.SaveFieldInput) ([]services.SaveFieldInput, error) {
+	if contentID > 0 {
+		if item, err := a.Contents.ByID(ctx, contentID); err == nil && item.Status == models.ContentStatusPost && item.DraftOf == 0 {
+			if draft, draftErr := a.Contents.DraftForContent(ctx, contentID); draftErr == nil {
+				contentID = draft.CID
+			}
+		}
+	}
+	existingFields, _ := a.Contents.FieldsForContent(ctx, contentID)
+	existing := make(map[string]services.SaveFieldInput, len(existingFields))
+	for _, field := range existingFields {
+		existing[field.Name] = saveFieldFromModel(field)
+	}
+	schema, err := a.contentFieldSchemas(ctx, typ, contentID)
+	if err != nil {
+		return nil, err
+	}
+	schemaByName := make(map[string]plugin.FieldSchema, len(schema))
+	for _, field := range schema {
+		schemaByName[field.Name] = field
+	}
+	out := make([]services.SaveFieldInput, 0, len(incoming)+len(existing))
+	seen := map[string]bool{}
+	for _, field := range incoming {
+		seen[field.Name] = true
+		defaultReadOnly := schemaByName[field.Name].ReadOnly
+		readOnly, err := a.isContentFieldReadOnly(ctx, contentID, typ, field.Name, defaultReadOnly)
+		if err != nil {
+			return nil, err
+		}
+		if readOnly {
+			if saved, ok := existing[field.Name]; ok {
+				out = append(out, saved)
+			} else if item, ok := schemaByName[field.Name]; ok && item.Default != "" {
+				out = append(out, services.SaveFieldInput{Name: item.Name, Type: "str", StrValue: item.Default})
+			}
+			continue
+		}
+		out = append(out, field)
+	}
+	for name, saved := range existing {
+		if seen[name] {
+			continue
+		}
+		readOnly, err := a.isContentFieldReadOnly(ctx, contentID, typ, name, schemaByName[name].ReadOnly)
+		if err != nil {
+			return nil, err
+		}
+		if readOnly {
+			out = append(out, saved)
+		}
+	}
+	return out, nil
+}
+
+func (a *App) isContentFieldReadOnly(ctx context.Context, contentID int64, typ, name string, readOnly bool) (bool, error) {
+	payload := plugin.ContentFieldReadOnlyPayload{ContentID: contentID, Type: typ, Name: name, ReadOnly: readOnly}
+	out, err := a.Plugins.ApplyActive(ctx, plugin.HookContentFieldReadOnly, payload)
+	if err != nil {
+		return false, err
+	}
+	if next, ok := out.(plugin.ContentFieldReadOnlyPayload); ok {
+		return next.ReadOnly, nil
+	}
+	return readOnly, nil
+}
+
 func mergeThemeFields(schema []plugin.FieldSchema, fields []models.Field) []models.Field {
 	if len(schema) == 0 {
 		return fields
 	}
 	seen := map[string]bool{}
-	for _, field := range fields {
+	readOnly := map[string]bool{}
+	for _, item := range schema {
+		readOnly[item.Name] = item.ReadOnly
+	}
+	for i, field := range fields {
 		seen[field.Name] = true
+		fields[i].ReadOnly = readOnly[field.Name]
 	}
 	out := append([]models.Field(nil), fields...)
 	for _, item := range schema {
 		if item.Name == "" || seen[item.Name] {
 			continue
 		}
-		out = append(out, models.Field{Name: item.Name, Type: "str", StrValue: item.Default})
+		out = append(out, models.Field{Name: item.Name, Type: "str", StrValue: item.Default, ReadOnly: item.ReadOnly})
 	}
 	return out
 }
+
+func saveFieldFromModel(field models.Field) services.SaveFieldInput {
+	return services.SaveFieldInput{Name: field.Name, Type: field.Type, StrValue: field.StrValue, IntValue: field.IntValue, FloatValue: field.FloatValue}
+}
+
+var contentFieldNamePattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
 func containsString(items []string, want string) bool {
 	for _, item := range items {

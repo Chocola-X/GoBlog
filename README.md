@@ -18,6 +18,8 @@
 - **RSS/Atom 订阅** — 文章和评论的 RSS/Atom Feed
 - **Sitemap** — 内置 Sitemap 插件
 
+内容生命周期、搜索、渲染和字段扩展接口见 [内容插件钩子](docs/plugin-hooks.md)。
+
 ## 快速开始
 
 ### 编译
