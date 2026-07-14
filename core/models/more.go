@@ -31,15 +31,16 @@ type Comment struct {
 }
 
 type AttachmentMeta struct {
-	Name    string `json:"name"`
-	Path    string `json:"path"`
-	URL     string `json:"url"`
-	Size    int64  `json:"size"`
-	Type    string `json:"type"`
-	MIME    string `json:"mime"`
-	IsImage bool   `json:"isImage"`
-	Width   int    `json:"width"`
-	Height  int    `json:"height"`
+	Name        string `json:"name"`
+	Path        string `json:"path"`
+	URL         string `json:"url"`
+	Size        int64  `json:"size"`
+	Type        string `json:"type"`
+	MIME        string `json:"mime"`
+	Description string `json:"description,omitempty"`
+	IsImage     bool   `json:"isImage"`
+	Width       int    `json:"width"`
+	Height      int    `json:"height"`
 }
 
 type Relationship struct {

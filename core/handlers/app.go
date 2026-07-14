@@ -2847,16 +2847,33 @@ func (a *App) adminMedias(w http.ResponseWriter, r *http.Request) {
 	user, _ := a.currentUser(r)
 	switch r.Method {
 	case http.MethodGet:
-		query := services.ContentQuery{Type: models.ContentTypeAttach, Status: "all", Limit: 200}
-		postQuery := services.ContentQuery{Type: models.ContentTypePost, Status: "all", Limit: 200}
-		if roleRank(user.Role) < roleRank("editor") {
-			query.AuthorID = user.UID
-			postQuery.AuthorID = user.UID
+		kind := mediaFilterValue(r.URL.Query().Get("kind"))
+		author := mediaFilterValue(r.URL.Query().Get("author"))
+		page := optionInt(r.URL.Query().Get("page"), 1)
+		if page < 1 {
+			page = 1
 		}
-		medias, err := a.Contents.List(r.Context(), query)
+		const pageSize = 20
+		medias, total, err := a.mediaPage(r.Context(), user, kind, author, r.URL.Query().Get("keywords"), page, pageSize)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
+		}
+		totalPages := int((total + pageSize - 1) / pageSize)
+		if totalPages < 1 {
+			totalPages = 1
+		}
+		if page > totalPages {
+			page = totalPages
+			medias, total, err = a.mediaPage(r.Context(), user, kind, author, r.URL.Query().Get("keywords"), page, pageSize)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+		}
+		postQuery := services.ContentQuery{Type: models.ContentTypePost, Status: "all", Limit: 200}
+		if roleRank(user.Role) < roleRank("editor") {
+			postQuery.AuthorID = user.UID
 		}
 		posts, _ := a.Contents.List(r.Context(), postQuery)
 		var pages []models.Content
@@ -2864,11 +2881,9 @@ func (a *App) adminMedias(w http.ResponseWriter, r *http.Request) {
 			pages, _ = a.Contents.List(r.Context(), services.ContentQuery{Type: models.ContentTypePage, Status: "all", Limit: 200})
 		}
 		users, _ := a.Users.List(r.Context(), "")
-		views := a.mediaViews(medias, posts, pages, users)
-		kind := mediaFilterValue(r.URL.Query().Get("kind"))
-		author := mediaFilterValue(r.URL.Query().Get("author"))
-		views = filterMediaViews(views, kind, author, r.URL.Query().Get("keywords"))
-		a.renderAdmin(w, r, "medias.html", map[string]any{"Title": "附件", "Medias": views, "Posts": posts, "Pages": pages, "Saved": r.URL.Query().Get("saved") == "1", "Kind": kind, "Author": author, "Keywords": r.URL.Query().Get("keywords"), "Users": users})
+		views := a.mediaViews(r.Context(), medias, posts, pages, users)
+		pager := pagination{Page: page, PageSize: pageSize, Total: total, TotalPages: totalPages, PrevURL: pageURL(r, page-1), NextURL: pageURL(r, page+1), HasPrev: page > 1, HasNext: page < totalPages}
+		a.renderAdmin(w, r, "medias.html", map[string]any{"Title": "附件", "Medias": views, "Posts": posts, "Pages": pages, "Saved": r.URL.Query().Get("saved") == "1", "Kind": kind, "Author": author, "Keywords": r.URL.Query().Get("keywords"), "Users": users, "Pagination": pager})
 	case http.MethodPost:
 		if err := r.ParseMultipartForm(32 << 20); err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
@@ -2897,6 +2912,9 @@ func (a *App) adminMedias(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if wantsJSON(r) {
+			if item, itemErr := a.Contents.ByID(r.Context(), id); itemErr == nil {
+				meta = a.attachmentMeta(r.Context(), item)
+			}
 			w.Header().Set("Content-Type", "application/json; charset=utf-8")
 			_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "cid": id, "url": meta.URL, "markdown": attachmentMarkdown(meta), "warning": saved.Warning})
 			return
@@ -2916,6 +2934,14 @@ func (a *App) adminMediaRoutes(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	clean := strings.Trim(strings.TrimPrefix(r.URL.Path, "/admin/medias/"), "/")
+	switch clean {
+	case "batch":
+		a.adminMediaBatch(w, r)
+		return
+	case "clear-unattached":
+		a.adminMediaClearUnattached(w, r)
+		return
+	}
 	parts := strings.Split(clean, "/")
 	if len(parts) < 2 {
 		http.NotFound(w, r)
@@ -2937,23 +2963,17 @@ func (a *App) adminMediaRoutes(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	switch parts[1] {
+	case "edit":
+		a.adminMediaEdit(w, r, item)
 	case "delete":
 		if r.Method != http.MethodPost {
 			methodNotAllowed(w, http.MethodPost)
 			return
 		}
-		meta := parseAttachmentMeta(item)
-		payload := plugin.AttachmentPayload{Content: item, Meta: meta}
-		if _, err := a.Plugins.ApplyActive(r.Context(), plugin.HookAttachmentBeforeDelete, payload); err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-		if err := a.Contents.Delete(r.Context(), id); err != nil {
+		if err := a.deleteAttachmentWithHooks(r.Context(), item, true); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		a.removeAttachmentFile(meta)
-		_, _ = a.Plugins.ApplyActive(r.Context(), plugin.HookAttachmentAfterDelete, payload)
 		a.flashRedirect(w, r, "/admin/medias", http.StatusSeeOther, flashNotice{Type: "success", Message: "附件已删除。"})
 	case "replace":
 		if r.Method != http.MethodPost {
@@ -2970,7 +2990,7 @@ func (a *App) adminMediaRoutes(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		defer file.Close()
-		saved, err := a.replaceUpload(r.Context(), file, header.Filename, item.Parent, parseAttachmentMeta(item))
+		saved, err := a.replaceUpload(r.Context(), file, header.Filename, item.Parent, item, parseAttachmentMeta(item))
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
@@ -2991,17 +3011,229 @@ func (a *App) adminMediaRoutes(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func (a *App) mediaPage(ctx context.Context, user models.User, kind, author, keywords string, page, pageSize int) ([]models.Content, int64, error) {
+	query := services.ContentQuery{Type: models.ContentTypeAttach, Status: "all", Keywords: strings.TrimSpace(keywords)}
+	if roleRank(user.Role) < roleRank("editor") {
+		query.AuthorID = user.UID
+	} else if authorID, _ := strconv.ParseInt(author, 10, 64); authorID > 0 {
+		query.AuthorID = authorID
+	}
+	if kind == "all" || kind == "" {
+		total, err := a.Contents.CountList(ctx, query)
+		if err != nil {
+			return nil, 0, err
+		}
+		query.Limit = pageSize
+		query.Offset = (page - 1) * pageSize
+		items, err := a.Contents.List(ctx, query)
+		return items, total, err
+	}
+	const batchSize = 500
+	wantedStart := (page - 1) * pageSize
+	wantedEnd := wantedStart + pageSize
+	var selected []models.Content
+	matched := 0
+	for offset := 0; ; offset += batchSize {
+		query.Limit = batchSize
+		query.Offset = offset
+		items, err := a.Contents.List(ctx, query)
+		if err != nil {
+			return nil, 0, err
+		}
+		for _, item := range items {
+			if mediaKind(parseAttachmentMeta(item)) != kind {
+				continue
+			}
+			if matched >= wantedStart && matched < wantedEnd {
+				selected = append(selected, item)
+			}
+			matched++
+		}
+		if len(items) < batchSize {
+			break
+		}
+	}
+	return selected, int64(matched), nil
+}
+
+func (a *App) adminMediaEdit(w http.ResponseWriter, r *http.Request, item models.Content) {
+	meta := parseAttachmentMeta(item)
+	switch r.Method {
+	case http.MethodGet:
+		a.renderAdmin(w, r, "media_form.html", map[string]any{"Title": "编辑附件", "Media": item, "Meta": meta, "Action": r.URL.Path})
+	case http.MethodPost:
+		if err := r.ParseForm(); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		title := strings.TrimSpace(r.FormValue("title"))
+		description := strings.TrimSpace(r.FormValue("description"))
+		if title == "" {
+			a.renderAdmin(w, r, "media_form.html", map[string]any{"Title": "编辑附件", "Media": item, "Meta": meta, "Action": r.URL.Path, "Error": "附件标题不能为空。"})
+			return
+		}
+		payload := plugin.AttachmentEditPayload{Content: item, Title: title, Description: description, Meta: meta}
+		if out, err := a.Plugins.ApplyActive(r.Context(), plugin.HookAttachmentBeforeEdit, payload); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		} else if next, ok := out.(plugin.AttachmentEditPayload); ok {
+			payload = next
+			title = strings.TrimSpace(next.Title)
+			description = strings.TrimSpace(next.Description)
+			if nextMeta, ok := next.Meta.(models.AttachmentMeta); ok {
+				meta = nextMeta
+			}
+		}
+		if title == "" {
+			http.Error(w, "附件标题不能为空", http.StatusBadRequest)
+			return
+		}
+		meta.Description = description
+		text, _ := json.Marshal(meta)
+		slug := item.Slug
+		if slug == "" {
+			slug = strings.TrimSuffix(filepath.Base(meta.Name), filepath.Ext(meta.Name))
+		}
+		if err := a.Contents.UpdateAttachmentMeta(r.Context(), item.CID, title, slug, string(text), item.Parent); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		updated, _ := a.Contents.ByID(r.Context(), item.CID)
+		payload.Content = updated
+		payload.Title = title
+		payload.Description = description
+		payload.Meta = meta
+		if _, err := a.Plugins.ApplyActive(r.Context(), plugin.HookAttachmentAfterEdit, payload); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		a.flashRedirect(w, r, "/admin/medias", http.StatusSeeOther, flashNotice{Type: "success", Message: "附件信息已更新。"})
+	default:
+		methodNotAllowed(w, http.MethodGet+", "+http.MethodPost)
+	}
+}
+
+func (a *App) adminMediaBatch(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w, http.MethodPost)
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if r.FormValue("action") != "delete" {
+		http.Error(w, "unsupported media action", http.StatusBadRequest)
+		return
+	}
+	user, _ := a.currentUser(r)
+	for _, id := range parseInt64Values(r.Form["id"]) {
+		item, err := a.Contents.ByID(r.Context(), id)
+		if err != nil || item.Type != models.ContentTypeAttach {
+			continue
+		}
+		if roleRank(user.Role) < roleRank("editor") && item.AuthorID != user.UID {
+			http.Error(w, "permission denied", http.StatusForbidden)
+			return
+		}
+		if err := a.deleteAttachmentWithHooks(r.Context(), item, true); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+	}
+	a.flashRedirect(w, r, "/admin/medias", http.StatusSeeOther, flashNotice{Type: "success", Message: "附件已批量删除。"})
+}
+
+func (a *App) adminMediaClearUnattached(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w, http.MethodPost)
+		return
+	}
+	user, _ := a.currentUser(r)
+	query := services.ContentQuery{Type: models.ContentTypeAttach, Status: "all"}
+	if roleRank(user.Role) < roleRank("editor") {
+		query.AuthorID = user.UID
+	}
+	var unattached []models.Content
+	for offset := 0; ; offset += 500 {
+		query.Limit = 500
+		query.Offset = offset
+		items, err := a.Contents.List(r.Context(), query)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		for _, item := range items {
+			if item.Parent == 0 {
+				unattached = append(unattached, item)
+			}
+		}
+		if len(items) < 500 {
+			break
+		}
+	}
+	for _, item := range unattached {
+		if err := a.deleteAttachmentWithHooks(r.Context(), item, true); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+	}
+	message := fmt.Sprintf("已清理 %d 个孤立附件。", len(unattached))
+	a.flashRedirect(w, r, "/admin/medias", http.StatusSeeOther, flashNotice{Type: "success", Message: message})
+}
+
 func (a *App) removeAttachmentFile(meta models.AttachmentMeta) {
+	_ = a.deleteLocalAttachmentFile(meta)
+}
+
+func (a *App) deleteLocalAttachmentFile(meta models.AttachmentMeta) error {
 	rel := meta.Path
 	if rel == "" && strings.HasPrefix(meta.URL, "/uploads/") {
 		rel = strings.TrimPrefix(meta.URL, "/uploads/")
 	}
 	if rel == "" {
-		return
+		return nil
 	}
-	fullPath := filepath.Join(a.UploadDir, filepath.FromSlash(rel))
-	_ = os.Remove(fullPath)
+	fullPath, err := a.attachmentLocalPath(models.AttachmentMeta{Path: rel})
+	if err != nil {
+		return err
+	}
+	if err := os.Remove(fullPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
 	a.removeImageThumbnails(fullPath)
+	return nil
+}
+
+func (a *App) deleteAttachmentWithHooks(ctx context.Context, item models.Content, removeFile bool) error {
+	meta := parseAttachmentMeta(item)
+	payload := plugin.AttachmentPayload{Content: item, Meta: meta}
+	if out, err := a.Plugins.ApplyActive(ctx, plugin.HookAttachmentBeforeDelete, payload); err != nil {
+		return err
+	} else if next, ok := out.(plugin.AttachmentPayload); ok {
+		payload = next
+		if nextMeta, ok := next.Meta.(models.AttachmentMeta); ok {
+			meta = nextMeta
+		}
+	}
+	if err := a.Contents.Delete(ctx, item.CID); err != nil {
+		return err
+	}
+	if removeFile {
+		handle := plugin.AttachmentDeleteHandlePayload{Content: item, Meta: meta}
+		if out, err := a.Plugins.ApplyActive(ctx, plugin.HookAttachmentDeleteHandle, handle); err != nil {
+			return err
+		} else if next, ok := out.(plugin.AttachmentDeleteHandlePayload); ok {
+			handle = next
+		}
+		if !handle.Handled {
+			if err := a.deleteLocalAttachmentFile(meta); err != nil {
+				return err
+			}
+		}
+	}
+	_, err := a.Plugins.ApplyActive(ctx, plugin.HookAttachmentAfterDelete, payload)
+	return err
 }
 
 func (a *App) deleteContentWithAttachmentPolicy(ctx context.Context, cid int64) error {
@@ -3020,18 +3252,9 @@ func (a *App) deleteContentWithAttachmentPolicy(ctx context.Context, cid int64) 
 	}
 	if policy == "record" || policy == "file" {
 		for _, attachment := range attachments {
-			meta := parseAttachmentMeta(attachment)
-			payload := plugin.AttachmentPayload{Content: attachment, Meta: meta}
-			if _, err := a.Plugins.ApplyActive(ctx, plugin.HookAttachmentBeforeDelete, payload); err != nil {
+			if err := a.deleteAttachmentWithHooks(ctx, attachment, policy == "file"); err != nil {
 				return err
 			}
-			if err := a.Contents.Delete(ctx, attachment.CID); err != nil {
-				return err
-			}
-			if policy == "file" {
-				a.removeAttachmentFile(meta)
-			}
-			_, _ = a.Plugins.ApplyActive(ctx, plugin.HookAttachmentAfterDelete, payload)
 		}
 	} else if policy == "keep" {
 		if err := a.detachContentAttachments(ctx, item, attachments); err != nil {
@@ -4199,7 +4422,7 @@ func (a *App) relatedPosts(ctx context.Context, post models.Content, categories,
 	return out, nil
 }
 
-func (a *App) mediaViews(items, posts, pages []models.Content, users []models.User) []mediaView {
+func (a *App) mediaViews(ctx context.Context, items, posts, pages []models.Content, users []models.User) []mediaView {
 	parents := map[int64]string{}
 	for _, post := range posts {
 		parents[post.CID] = post.Title
@@ -4217,20 +4440,24 @@ func (a *App) mediaViews(items, posts, pages []models.Content, users []models.Us
 	}
 	out := make([]mediaView, 0, len(items))
 	for _, item := range items {
-		meta := parseAttachmentMeta(item)
+		meta := a.attachmentMeta(ctx, item)
+		markdownMeta := meta
+		if item.Title != "" {
+			markdownMeta.Name = item.Title
+		}
 		view := mediaView{
 			Content:      item,
 			Meta:         meta,
-			Name:         meta.Name,
+			Name:         item.Title,
 			URL:          meta.URL,
-			ThumbnailURL: adminThumbnailURL(meta.URL),
+			ThumbnailURL: adminThumbnailURLForAttachment(item.CID, meta.URL),
 			Kind:         mediaKind(meta),
 			Icon:         mediaIcon(meta),
 			MIME:         meta.MIME,
 			SizeLabel:    formatBytes(meta.Size),
 			AuthorName:   authors[item.AuthorID],
 			ParentTitle:  parents[item.Parent],
-			Markdown:     attachmentMarkdown(meta),
+			Markdown:     attachmentMarkdown(markdownMeta),
 		}
 		if view.Name == "" {
 			view.Name = item.Title
@@ -4245,18 +4472,18 @@ func (a *App) mediaViews(items, posts, pages []models.Content, users []models.Us
 
 func (a *App) editorMediaLibrary(r *http.Request) ([]mediaView, error) {
 	user, _ := a.currentUser(r)
-	query := services.ContentQuery{Type: models.ContentTypeAttach, Status: "all", Limit: 50}
+	query := services.ContentQuery{Type: models.ContentTypeAttach, Status: "all"}
 	if roleRank(user.Role) < roleRank("editor") {
 		query.AuthorID = user.UID
 	}
-	items, err := a.Contents.List(r.Context(), query)
+	items, err := a.listAllContents(r.Context(), query)
 	if err != nil {
 		return nil, err
 	}
 	posts, _ := a.Contents.List(r.Context(), services.ContentQuery{Type: models.ContentTypePost, Status: "all", Limit: 200})
 	pages, _ := a.Contents.List(r.Context(), services.ContentQuery{Type: models.ContentTypePage, Status: "all", Limit: 200})
 	users, _ := a.Users.List(r.Context(), "")
-	return a.mediaViews(items, posts, pages, users), nil
+	return a.mediaViews(r.Context(), items, posts, pages, users), nil
 }
 
 func (a *App) editorMediaSources(r *http.Request) []editorMediaSource {
@@ -4316,7 +4543,7 @@ func (a *App) adminEditorMedia(w http.ResponseWriter, r *http.Request) {
 func (a *App) editorMediaForSource(r *http.Request) ([]models.Content, error) {
 	user, _ := a.currentUser(r)
 	source := strings.TrimSpace(r.URL.Query().Get("source"))
-	query := services.ContentQuery{Type: models.ContentTypeAttach, Status: "all", Limit: 200}
+	query := services.ContentQuery{Type: models.ContentTypeAttach, Status: "all"}
 	if roleRank(user.Role) < roleRank("editor") {
 		query.AuthorID = user.UID
 	}
@@ -4324,7 +4551,7 @@ func (a *App) editorMediaForSource(r *http.Request) ([]models.Content, error) {
 	case source == "" || source == "__none":
 		return []models.Content{}, nil
 	case source == "__unattached":
-		items, err := a.Contents.List(r.Context(), query)
+		items, err := a.listAllContents(r.Context(), query)
 		if err != nil {
 			return nil, err
 		}
@@ -4344,7 +4571,7 @@ func (a *App) editorMediaForSource(r *http.Request) ([]models.Content, error) {
 			return nil, fmt.Errorf("permission denied")
 		}
 		query.Parent = parentID
-		return a.Contents.List(r.Context(), query)
+		return a.listAllContents(r.Context(), query)
 	case strings.HasPrefix(source, "content:"):
 		parentID, err := strconv.ParseInt(strings.TrimPrefix(source, "content:"), 10, 64)
 		if err != nil || parentID <= 0 {
@@ -4354,9 +4581,26 @@ func (a *App) editorMediaForSource(r *http.Request) ([]models.Content, error) {
 			return nil, fmt.Errorf("permission denied")
 		}
 		query.Parent = parentID
-		return a.Contents.List(r.Context(), query)
+		return a.listAllContents(r.Context(), query)
 	default:
 		return nil, fmt.Errorf("invalid media source")
+	}
+}
+
+func (a *App) listAllContents(ctx context.Context, query services.ContentQuery) ([]models.Content, error) {
+	const batchSize = 500
+	var out []models.Content
+	for offset := 0; ; offset += batchSize {
+		query.Limit = batchSize
+		query.Offset = offset
+		items, err := a.Contents.List(ctx, query)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, items...)
+		if len(items) < batchSize {
+			return out, nil
+		}
 	}
 }
 
@@ -4382,7 +4626,7 @@ func (a *App) mediaViewsForRequest(r *http.Request, items []models.Content) []me
 	posts, _ := a.Contents.List(r.Context(), services.ContentQuery{Type: models.ContentTypePost, Status: "all", Limit: 200})
 	pages, _ := a.Contents.List(r.Context(), services.ContentQuery{Type: models.ContentTypePage, Status: "all", Limit: 200})
 	users, _ := a.Users.List(r.Context(), "")
-	return a.mediaViews(items, posts, pages, users)
+	return a.mediaViews(r.Context(), items, posts, pages, users)
 }
 
 func editorMediaItems(views []mediaView, baseURL string) []editorMediaItem {
@@ -4408,38 +4652,6 @@ func editorMediaItems(views []mediaView, baseURL string) []editorMediaItem {
 		})
 	}
 	return items
-}
-
-func filterMediaViews(items []mediaView, kind, author, keywords string) []mediaView {
-	kind = strings.TrimSpace(kind)
-	if kind == "all" {
-		kind = ""
-	}
-	if strings.TrimSpace(author) == "all" {
-		author = ""
-	}
-	authorID, _ := strconv.ParseInt(author, 10, 64)
-	keywords = strings.ToLower(strings.TrimSpace(keywords))
-	if kind == "" && authorID <= 0 && keywords == "" {
-		return items
-	}
-	out := make([]mediaView, 0, len(items))
-	for _, item := range items {
-		if kind != "" && item.Kind != kind {
-			continue
-		}
-		if authorID > 0 && item.AuthorID != authorID {
-			continue
-		}
-		if keywords != "" {
-			haystack := strings.ToLower(item.Name + " " + item.URL + " " + item.ParentTitle)
-			if !strings.Contains(haystack, keywords) {
-				continue
-			}
-		}
-		out = append(out, item)
-	}
-	return out
 }
 
 func mediaFilterValue(value string) string {
@@ -4469,6 +4681,37 @@ func parseAttachmentMeta(item models.Content) models.AttachmentMeta {
 		meta.IsImage = imageExt(meta.Type)
 	}
 	return meta
+}
+
+func (a *App) attachmentMeta(ctx context.Context, item models.Content) models.AttachmentMeta {
+	meta := parseAttachmentMeta(item)
+	payload := plugin.AttachmentURLPayload{Content: item, Meta: meta, URL: meta.URL}
+	if out, err := a.Plugins.ApplyActive(ctx, plugin.HookAttachmentURL, payload); err == nil {
+		if next, ok := out.(plugin.AttachmentURLPayload); ok {
+			if nextMeta, ok := next.Meta.(models.AttachmentMeta); ok {
+				meta = nextMeta
+			}
+			meta.URL = next.URL
+		}
+	}
+	return meta
+}
+
+func (a *App) attachmentData(ctx context.Context, item models.Content) ([]byte, error) {
+	meta := parseAttachmentMeta(item)
+	payload := plugin.AttachmentDataPayload{Content: item, Meta: meta}
+	if out, err := a.Plugins.ApplyActive(ctx, plugin.HookAttachmentData, payload); err != nil {
+		return nil, err
+	} else if next, ok := out.(plugin.AttachmentDataPayload); ok {
+		if next.Handled {
+			return next.Data, nil
+		}
+	}
+	fullPath, err := a.attachmentLocalPath(meta)
+	if err != nil {
+		return nil, err
+	}
+	return os.ReadFile(fullPath)
 }
 
 func mediaKind(meta models.AttachmentMeta) string {
@@ -4570,18 +4813,86 @@ type savedSettingsUpload struct {
 	Warning string
 }
 
+type stagedUpload struct {
+	path string
+	size int64
+}
+
+func stageUpload(src io.Reader, maxSize int64) (stagedUpload, error) {
+	tmp, err := os.CreateTemp("", "goblog-upload-*")
+	if err != nil {
+		return stagedUpload{}, err
+	}
+	tmpPath := tmp.Name()
+	cleanup := func() {
+		_ = tmp.Close()
+		_ = os.Remove(tmpPath)
+	}
+	written, err := io.Copy(tmp, io.LimitReader(src, maxSize+1))
+	if err != nil {
+		cleanup()
+		return stagedUpload{}, err
+	}
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tmpPath)
+		return stagedUpload{}, err
+	}
+	if written > maxSize {
+		_ = os.Remove(tmpPath)
+		return stagedUpload{}, fmt.Errorf("文件超过大小限制")
+	}
+	return stagedUpload{path: tmpPath, size: written}, nil
+}
+
+func (s stagedUpload) Open() (io.ReadCloser, error) {
+	return os.Open(s.path)
+}
+
+func (s *stagedUpload) replace(data []byte) error {
+	if err := os.WriteFile(s.path, data, 0600); err != nil {
+		return err
+	}
+	s.size = int64(len(data))
+	return nil
+}
+
+func (s stagedUpload) contentType() (string, error) {
+	file, err := s.Open()
+	if err != nil {
+		return "", err
+	}
+	defer file.Close()
+	head := make([]byte, 512)
+	n, err := file.Read(head)
+	if err != nil && !errors.Is(err, io.EOF) {
+		return "", err
+	}
+	return http.DetectContentType(head[:n]), nil
+}
+
+func copyStagedUpload(target string, staged stagedUpload) error {
+	source, err := staged.Open()
+	if err != nil {
+		return err
+	}
+	defer source.Close()
+	destination, err := os.OpenFile(target, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0644)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(destination, source); err != nil {
+		_ = destination.Close()
+		_ = os.Remove(target)
+		return err
+	}
+	return destination.Close()
+}
+
 func (a *App) saveUpload(ctx context.Context, src io.Reader, original string, parent int64) (savedUpload, error) {
 	var result savedUpload
 	maxSize := int64(optionInt(a.option(ctx, "upload_max_size", "10485760"), 10485760))
 	if maxSize <= 0 {
 		maxSize = 10 << 20
-	}
-	data, err := io.ReadAll(io.LimitReader(src, maxSize+1))
-	if err != nil {
-		return result, err
-	}
-	if int64(len(data)) > maxSize {
-		return result, fmt.Errorf("文件超过大小限制")
 	}
 	name := sanitizeFilename(original)
 	if name == "" {
@@ -4599,16 +4910,31 @@ func (a *App) saveUpload(ctx context.Context, src io.Reader, original string, pa
 	if dangerousUpload(name) || !allowedUploadExt(name, a.option(ctx, "upload_allowed_exts", "")) {
 		return result, fmt.Errorf("不允许上传该文件类型")
 	}
-	mimeType := http.DetectContentType(data)
+	staged, err := stageUpload(src, maxSize)
+	if err != nil {
+		return result, err
+	}
+	defer os.Remove(staged.path)
+	mimeType, err := staged.contentType()
+	if err != nil {
+		return result, err
+	}
 	ext := strings.ToLower(strings.TrimPrefix(filepath.Ext(name), "."))
 	if !mimeAllowedForExt(ext, mimeType) {
 		return result, fmt.Errorf("文件内容与扩展名不匹配")
 	}
 	if imageExt(ext) {
+		data, err := os.ReadFile(staged.path)
+		if err != nil {
+			return result, err
+		}
 		processed, err := imageproc.ProcessUpload(data, name, a.option(ctx, "upload_image_processing", imageproc.UploadOriginal), optionInt(a.option(ctx, "upload_webp_quality", "85"), imageproc.DefaultWebPQuality), a.imageProcessingMemoryLimit(ctx))
 		if err != nil {
 			result.Warning = imageProcessingFallbackWarning
 		} else {
+			if err := staged.replace(processed.Data); err != nil {
+				return result, err
+			}
 			data = processed.Data
 			name = processed.Name
 			ext = processed.Extension
@@ -4619,41 +4945,74 @@ func (a *App) saveUpload(ctx context.Context, src io.Reader, original string, pa
 	if err != nil {
 		return result, err
 	}
-	dir := filepath.Join(a.UploadDir, bucket)
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		return result, err
-	}
-	targetName := uniqueUploadName(dir, name)
-	fullPath := filepath.Join(dir, targetName)
-	dst, err := os.OpenFile(fullPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0644)
-	if err != nil {
-		return result, err
-	}
-	defer dst.Close()
-	if _, err := io.Copy(dst, bytes.NewReader(data)); err != nil {
-		return result, err
-	}
-	relPath := path.Join(bucket, targetName)
-	result.Meta = models.AttachmentMeta{
+	meta := models.AttachmentMeta{
 		Name: name,
-		Path: relPath,
-		URL:  "/uploads/" + relPath,
-		Size: int64(len(data)),
+		Size: staged.size,
 		Type: ext,
 		MIME: mimeType,
 	}
-	if cfg, _, err := image.DecodeConfig(bytes.NewReader(data)); err == nil {
-		result.Meta.IsImage = true
-		result.Meta.Width = cfg.Width
-		result.Meta.Height = cfg.Height
+	if imageExt(ext) {
+		file, openErr := staged.Open()
+		if openErr == nil {
+			cfg, _, decodeErr := image.DecodeConfig(file)
+			_ = file.Close()
+			if decodeErr == nil {
+				meta.IsImage = true
+				meta.Width = cfg.Width
+				meta.Height = cfg.Height
+			}
+		}
 	} else if strings.HasPrefix(mimeType, "image/") {
-		result.Meta.IsImage = true
+		meta.IsImage = true
 	}
+	handlePayload := plugin.UploadHandlePayload{Name: name, ParentID: parent, Bucket: bucket, Size: staged.size, MIME: mimeType, Open: staged.Open, Meta: meta}
+	handled := false
+	if out, err := a.Plugins.ApplyActive(ctx, plugin.HookUploadHandle, handlePayload); err != nil {
+		return result, err
+	} else if next, ok := out.(plugin.UploadHandlePayload); ok {
+		handlePayload = next
+		handled = next.Handled
+		if nextMeta, ok := next.Meta.(models.AttachmentMeta); ok {
+			meta = nextMeta
+		}
+	}
+	if handled {
+		if strings.TrimSpace(meta.URL) == "" {
+			return result, fmt.Errorf("上传处理钩子未返回附件 URL")
+		}
+		if meta.Name == "" {
+			meta.Name = name
+		}
+		if meta.Size <= 0 {
+			meta.Size = staged.size
+		}
+	} else {
+		dir := filepath.Join(a.UploadDir, bucket)
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			return result, err
+		}
+		targetName := uniqueUploadName(dir, name)
+		fullPath := filepath.Join(dir, targetName)
+		if err := copyStagedUpload(fullPath, staged); err != nil {
+			return result, err
+		}
+		relPath := path.Join(bucket, targetName)
+		meta.Path = relPath
+		meta.URL = "/uploads/" + relPath
+	}
+	result.Meta = meta
 	uploadPayload.Name = name
 	uploadPayload.ParentID = parent
 	uploadPayload.Meta = result.Meta
-	if _, err := a.Plugins.ApplyActive(ctx, plugin.HookUploadAfterSave, uploadPayload); err != nil {
+	if out, err := a.Plugins.ApplyActive(ctx, plugin.HookUploadAfterSave, uploadPayload); err != nil {
+		if !handled {
+			a.removeAttachmentFile(result.Meta)
+		}
 		return result, err
+	} else if next, ok := out.(plugin.UploadPayload); ok {
+		if nextMeta, ok := next.Meta.(models.AttachmentMeta); ok {
+			result.Meta = nextMeta
+		}
 	}
 	return result, nil
 }
@@ -4754,9 +5113,52 @@ func adminSettingImageExt(ext string) bool {
 	}
 }
 
-func (a *App) replaceUpload(ctx context.Context, src io.Reader, original string, parent int64, old models.AttachmentMeta) (savedUpload, error) {
+func (a *App) replaceUpload(ctx context.Context, src io.Reader, original string, parent int64, content models.Content, old models.AttachmentMeta) (savedUpload, error) {
+	maxSize := int64(optionInt(a.option(ctx, "upload_max_size", "10485760"), 10485760))
+	if maxSize <= 0 {
+		maxSize = 10 << 20
+	}
+	staged, err := stageUpload(src, maxSize)
+	if err != nil {
+		return savedUpload{}, err
+	}
+	defer os.Remove(staged.path)
+	name := sanitizeFilename(original)
+	if name == "" {
+		name = "file"
+	}
+	payload := plugin.AttachmentReplacePayload{Content: content, PreviousMeta: old, Name: name, ParentID: parent, Size: staged.size, Open: staged.Open}
+	if out, err := a.Plugins.ApplyActive(ctx, plugin.HookAttachmentBeforeReplace, payload); err != nil {
+		return savedUpload{}, err
+	} else if next, ok := out.(plugin.AttachmentReplacePayload); ok {
+		payload = next
+		name = sanitizeFilename(next.Name)
+		parent = next.ParentID
+	}
+	if out, err := a.Plugins.ApplyActive(ctx, plugin.HookAttachmentReplaceHandle, payload); err != nil {
+		return savedUpload{}, err
+	} else if next, ok := out.(plugin.AttachmentReplacePayload); ok {
+		payload = next
+	}
+	if payload.Handled {
+		meta, ok := payload.Meta.(models.AttachmentMeta)
+		if !ok || strings.TrimSpace(meta.URL) == "" {
+			return savedUpload{}, fmt.Errorf("替换处理钩子未返回附件元数据")
+		}
+		result := savedUpload{Meta: meta, Warning: payload.Warning}
+		payload.Meta = result.Meta
+		if out, err := a.Plugins.ApplyActive(ctx, plugin.HookAttachmentAfterReplace, payload); err != nil {
+			return result, err
+		} else if next, ok := out.(plugin.AttachmentReplacePayload); ok {
+			if nextMeta, ok := next.Meta.(models.AttachmentMeta); ok {
+				result.Meta = nextMeta
+			}
+			result.Warning = next.Warning
+		}
+		return result, nil
+	}
 	if optionBool(a.option(ctx, "upload_replace_same_ext_only", "1")) && old.Type != "" {
-		newExt := strings.ToLower(strings.TrimPrefix(filepath.Ext(original), "."))
+		newExt := strings.ToLower(strings.TrimPrefix(filepath.Ext(name), "."))
 		mode := a.option(ctx, "upload_image_processing", imageproc.UploadOriginal)
 		if imageExt(newExt) && newExt != "svg" && mode != imageproc.UploadOriginal {
 			newExt = "webp"
@@ -4765,7 +5167,12 @@ func (a *App) replaceUpload(ctx context.Context, src io.Reader, original string,
 			return savedUpload{}, fmt.Errorf("替换文件必须保持相同扩展名")
 		}
 	}
-	result, err := a.saveUpload(ctx, src, original, parent)
+	stagedSource, err := staged.Open()
+	if err != nil {
+		return savedUpload{}, err
+	}
+	result, err := a.saveUpload(ctx, stagedSource, name, parent)
+	_ = stagedSource.Close()
 	if err != nil {
 		return result, err
 	}
@@ -4773,12 +5180,84 @@ func (a *App) replaceUpload(ctx context.Context, src io.Reader, original string,
 		a.removeAttachmentFile(result.Meta)
 		return savedUpload{}, fmt.Errorf("替换文件必须保持相同扩展名")
 	}
-	if old.Path != "" {
-		oldPath := filepath.Join(a.UploadDir, filepath.FromSlash(old.Path))
-		_ = os.Remove(oldPath)
-		a.removeImageThumbnails(oldPath)
+	if old.Path != "" && result.Meta.Path != "" && sameUploadExtension(result.Meta.Type, old.Type) {
+		if err := a.moveReplacementIntoOriginalPath(old, &result.Meta); err != nil {
+			a.removeAttachmentFile(result.Meta)
+			return savedUpload{}, err
+		}
+	} else if old.Path != "" {
+		a.removeAttachmentFile(old)
+	}
+	payload.Meta = result.Meta
+	payload.Warning = result.Warning
+	if out, err := a.Plugins.ApplyActive(ctx, plugin.HookAttachmentAfterReplace, payload); err != nil {
+		return result, err
+	} else if next, ok := out.(plugin.AttachmentReplacePayload); ok {
+		if nextMeta, ok := next.Meta.(models.AttachmentMeta); ok {
+			result.Meta = nextMeta
+		}
+		result.Warning = next.Warning
 	}
 	return result, nil
+}
+
+func (a *App) moveReplacementIntoOriginalPath(old models.AttachmentMeta, next *models.AttachmentMeta) error {
+	oldPath, err := a.attachmentLocalPath(old)
+	if err != nil {
+		return err
+	}
+	newPath, err := a.attachmentLocalPath(*next)
+	if err != nil {
+		return err
+	}
+	if oldPath == newPath {
+		return nil
+	}
+	backupPath := oldPath + ".replace-backup-" + strconv.FormatInt(time.Now().UnixNano(), 10)
+	oldExists := true
+	if err := os.Rename(oldPath, backupPath); err != nil {
+		if !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		oldExists = false
+	}
+	if err := os.Rename(newPath, oldPath); err != nil {
+		if oldExists {
+			_ = os.Rename(backupPath, oldPath)
+		}
+		return err
+	}
+	if oldExists {
+		_ = os.Remove(backupPath)
+	}
+	a.removeImageThumbnails(oldPath)
+	next.Path = old.Path
+	if strings.HasPrefix(old.URL, "/uploads/") || old.URL == "" {
+		next.URL = "/uploads/" + strings.TrimPrefix(old.Path, "/")
+	} else {
+		next.URL = old.URL
+	}
+	return nil
+}
+
+func (a *App) attachmentLocalPath(meta models.AttachmentMeta) (string, error) {
+	rel := strings.TrimPrefix(path.Clean(strings.TrimSpace(meta.Path)), "/")
+	if rel == "" || rel == "." || rel == ".." || strings.HasPrefix(rel, "../") {
+		return "", fmt.Errorf("invalid attachment path")
+	}
+	root, err := filepath.Abs(a.UploadDir)
+	if err != nil {
+		return "", err
+	}
+	fullPath, err := filepath.Abs(filepath.Join(root, filepath.FromSlash(rel)))
+	if err != nil {
+		return "", err
+	}
+	within, err := filepath.Rel(root, fullPath)
+	if err != nil || within == ".." || strings.HasPrefix(within, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("attachment path escapes upload root")
+	}
+	return fullPath, nil
 }
 
 func sameUploadExtension(left, right string) bool {

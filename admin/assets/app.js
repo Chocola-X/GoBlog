@@ -109,6 +109,7 @@
     initTagInputs(root);
     initMediaPicker(root);
     initEditorUpload(root);
+    initMediaUploadProgress(root);
     initMarkdownEditor(root);
     initNativeFileButtons(root);
     initCopyButtons(root);
@@ -609,18 +610,10 @@
           } else if (cid && cid.value) {
             data.set("cid", cid.value);
           }
-          setButtonLabel(button, "上传中");
-          return fetch("/admin/medias", {
-            method: "POST",
-            body: data,
-            headers: { "Accept": "application/json" },
-            credentials: "same-origin"
+          setButtonLabel(button, "上传 0%");
+          return uploadJSON("/admin/medias", data, function (percent) {
+            setButtonLabel(button, "上传 " + percent + "%");
           });
-        }).then(function (res) {
-          if (!res.ok) {
-            throw new Error("upload failed");
-          }
-          return res.json();
         }).then(function (payload) {
           appendToEditor(payload.markdown || payload.url || "");
           document.dispatchEvent(new CustomEvent("goblog:media-uploaded", { detail: payload }));
@@ -636,6 +629,80 @@
           button.loading = false;
         });
       });
+    });
+  }
+
+  function initMediaUploadProgress(root) {
+    query(root, ".media-upload-form").forEach(function (form) {
+      if (bound(form, "adminMediaUploadBound")) {
+        return;
+      }
+      var input = form.querySelector('input[type="file"]');
+      var button = form.querySelector(".media-upload-button");
+      if (!input || !button) {
+        return;
+      }
+      form.addEventListener("submit", function (event) {
+        var file = input.files && input.files.length ? input.files[0] : null;
+        if (!file) {
+          return;
+        }
+        event.preventDefault();
+        var data = new FormData(form);
+        data.set("_csrf", csrfToken());
+        button.loading = true;
+        setButtonLabel(button, "上传 0%");
+        uploadJSON(form.action || "/admin/medias", data, function (percent) {
+          setButtonLabel(button, "上传 " + percent + "%");
+        }).then(function (payload) {
+          if (payload.warning) {
+            showMessage(payload.warning, { type: "info" });
+          } else {
+            showMessage("附件已上传", { type: "success" });
+          }
+          pjaxVisit(window.location.href, { history: false, replace: true });
+        }).catch(function (err) {
+          showMessage("上传失败：" + err.message);
+        }).finally(function () {
+          input.value = "";
+          button.loading = false;
+          setButtonLabel(button, "上传附件");
+        });
+      });
+    });
+  }
+
+  function uploadJSON(url, data, onProgress) {
+    return new Promise(function (resolve, reject) {
+      var xhr = new XMLHttpRequest();
+      xhr.open("POST", url, true);
+      xhr.withCredentials = true;
+      xhr.setRequestHeader("Accept", "application/json");
+      xhr.upload.addEventListener("progress", function (event) {
+        if (event.lengthComputable && typeof onProgress === "function") {
+          onProgress(Math.min(100, Math.round(event.loaded * 100 / event.total)));
+        }
+      });
+      xhr.upload.addEventListener("load", function () {
+        if (typeof onProgress === "function") {
+          onProgress(100);
+        }
+      });
+      xhr.addEventListener("load", function () {
+        if (xhr.status < 200 || xhr.status >= 300) {
+          reject(new Error((xhr.responseText || "upload failed").trim()));
+          return;
+        }
+        try {
+          resolve(JSON.parse(xhr.responseText || "{}"));
+        } catch (err) {
+          reject(err);
+        }
+      });
+      xhr.addEventListener("error", function () {
+        reject(new Error("network error"));
+      });
+      xhr.send(data);
     });
   }
 

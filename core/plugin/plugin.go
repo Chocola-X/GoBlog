@@ -3,6 +3,7 @@ package plugin
 import (
 	"context"
 	"html/template"
+	"io"
 	"io/fs"
 	"net/http"
 	"sync"
@@ -41,47 +42,56 @@ type Route struct {
 type HookFunc func(context.Context, any) (any, error)
 
 const (
-	HookContentBeforeSave      = "content.before_save"
-	HookContentAfterSave       = "content.after_save"
-	HookContentAfterDraftSave  = "content.after_draft_save"
-	HookContentAfterPublish    = "content.after_publish"
-	HookContentBeforeDelete    = "content.before_delete"
-	HookContentAfterDelete     = "content.after_delete"
-	HookContentBeforeStatus    = "content.before_status_change"
-	HookContentAfterStatus     = "content.after_status_change"
-	HookContentFilter          = "content.filter"
-	HookContentBeforeRender    = "content.before_render"
-	HookContentAfterRender     = "content.after_render"
-	HookContentTitle           = "content.title"
-	HookContentMarkdown        = "content.markdown"
-	HookContentAutoParagraph   = "content.auto_paragraph"
-	HookExcerpt                = "content.excerpt"
-	HookContentSearch          = "content.search"
-	HookContentFields          = "content.fields"
-	HookContentFieldReadOnly   = "content.field_read_only"
-	HookCommentBeforeSave      = "comment.before_save"
-	HookCommentAfterSave       = "comment.after_save"
-	HookCommentBeforeReply     = "comment.before_reply"
-	HookCommentAfterReply      = "comment.after_reply"
-	HookCommentBeforeEdit      = "comment.before_edit"
-	HookCommentAfterEdit       = "comment.after_edit"
-	HookCommentBeforeMark      = "comment.before_mark"
-	HookCommentAfterMark       = "comment.after_mark"
-	HookCommentBeforeDelete    = "comment.before_delete"
-	HookCommentAfterDelete     = "comment.after_delete"
-	HookCommentFilter          = "comment.filter"
-	HookCommentBeforeRender    = "comment.before_render"
-	HookCommentAfterRender     = "comment.after_render"
-	HookCommentMarkdown        = "comment.markdown"
-	HookCommentAutoParagraph   = "comment.auto_paragraph"
-	HookCommentAvatar          = "comment.avatar"
-	HookUploadBeforeSave       = "upload.before_save"
-	HookUploadAfterSave        = "upload.after_save"
-	HookAttachmentBeforeDelete = "attachment.before_delete"
-	HookAttachmentAfterDelete  = "attachment.after_delete"
-	HookAdminMenu              = "admin.menu"
-	HookFrontendHead           = "frontend.head"
-	HookFrontendFooter         = "frontend.footer"
+	HookContentBeforeSave       = "content.before_save"
+	HookContentAfterSave        = "content.after_save"
+	HookContentAfterDraftSave   = "content.after_draft_save"
+	HookContentAfterPublish     = "content.after_publish"
+	HookContentBeforeDelete     = "content.before_delete"
+	HookContentAfterDelete      = "content.after_delete"
+	HookContentBeforeStatus     = "content.before_status_change"
+	HookContentAfterStatus      = "content.after_status_change"
+	HookContentFilter           = "content.filter"
+	HookContentBeforeRender     = "content.before_render"
+	HookContentAfterRender      = "content.after_render"
+	HookContentTitle            = "content.title"
+	HookContentMarkdown         = "content.markdown"
+	HookContentAutoParagraph    = "content.auto_paragraph"
+	HookExcerpt                 = "content.excerpt"
+	HookContentSearch           = "content.search"
+	HookContentFields           = "content.fields"
+	HookContentFieldReadOnly    = "content.field_read_only"
+	HookCommentBeforeSave       = "comment.before_save"
+	HookCommentAfterSave        = "comment.after_save"
+	HookCommentBeforeReply      = "comment.before_reply"
+	HookCommentAfterReply       = "comment.after_reply"
+	HookCommentBeforeEdit       = "comment.before_edit"
+	HookCommentAfterEdit        = "comment.after_edit"
+	HookCommentBeforeMark       = "comment.before_mark"
+	HookCommentAfterMark        = "comment.after_mark"
+	HookCommentBeforeDelete     = "comment.before_delete"
+	HookCommentAfterDelete      = "comment.after_delete"
+	HookCommentFilter           = "comment.filter"
+	HookCommentBeforeRender     = "comment.before_render"
+	HookCommentAfterRender      = "comment.after_render"
+	HookCommentMarkdown         = "comment.markdown"
+	HookCommentAutoParagraph    = "comment.auto_paragraph"
+	HookCommentAvatar           = "comment.avatar"
+	HookUploadBeforeSave        = "upload.before_save"
+	HookUploadHandle            = "upload.handle"
+	HookUploadAfterSave         = "upload.after_save"
+	HookAttachmentBeforeEdit    = "attachment.before_edit"
+	HookAttachmentAfterEdit     = "attachment.after_edit"
+	HookAttachmentBeforeReplace = "attachment.before_replace"
+	HookAttachmentReplaceHandle = "attachment.replace_handle"
+	HookAttachmentAfterReplace  = "attachment.after_replace"
+	HookAttachmentBeforeDelete  = "attachment.before_delete"
+	HookAttachmentDeleteHandle  = "attachment.delete_handle"
+	HookAttachmentAfterDelete   = "attachment.after_delete"
+	HookAttachmentURL           = "attachment.url"
+	HookAttachmentData          = "attachment.data"
+	HookAdminMenu               = "admin.menu"
+	HookFrontendHead            = "frontend.head"
+	HookFrontendFooter          = "frontend.footer"
 )
 
 type ContentSavePayload struct {
@@ -201,9 +211,58 @@ type UploadPayload struct {
 	Meta     any
 }
 
+type UploadHandlePayload struct {
+	Name     string
+	ParentID int64
+	Bucket   string
+	Size     int64
+	MIME     string
+	Open     func() (io.ReadCloser, error)
+	Meta     any
+	Handled  bool
+}
+
 type AttachmentPayload struct {
 	Content any
 	Meta    any
+}
+
+type AttachmentEditPayload struct {
+	Content     any
+	Title       string
+	Description string
+	Meta        any
+}
+
+type AttachmentReplacePayload struct {
+	Content      any
+	PreviousMeta any
+	Name         string
+	ParentID     int64
+	Size         int64
+	Open         func() (io.ReadCloser, error)
+	Meta         any
+	Warning      string
+	Handled      bool
+}
+
+type AttachmentDeleteHandlePayload struct {
+	Content any
+	Meta    any
+	Handled bool
+}
+
+type AttachmentURLPayload struct {
+	Content any
+	Meta    any
+	URL     string
+}
+
+type AttachmentDataPayload struct {
+	Content any
+	Meta    any
+	Data    []byte
+	Handled bool
 }
 
 type AdminMenuItem struct {
@@ -387,6 +446,17 @@ func (m *Manager) ApplyActive(ctx context.Context, name string, payload any) (an
 		}
 	}
 	return payload, nil
+}
+
+func (m *Manager) HasActiveHook(name string) bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	for _, hook := range m.hooks[name] {
+		if hook.Plugin == "" || m.activePlugins[hook.Plugin] {
+			return true
+		}
+	}
+	return false
 }
 
 func (m *Manager) RegisterRoute(method, pattern string, handler RouteHandler) {

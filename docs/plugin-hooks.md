@@ -84,3 +84,32 @@
 | `HookCommentAvatar` | `CommentAvatarPayload` | 修改或清空头像 URL |
 
 渲染钩子返回的 `template.HTML` 被视为受信任的插件输出。插件如果处理访客输入，必须自行完成转义或净化。
+
+## 附件存储
+
+附件默认写入本地 `uploads` 目录。存储插件可以在处理钩子中设置 `Handled=true`，完全接管对象存储操作；未接管时继续执行内置文件系统实现。文件大小、危险扩展名和 MIME 一致性仍由核心校验，存储插件不能绕过这些安全边界。
+
+| 常量 | Payload | 用途 |
+|---|---|---|
+| `HookUploadBeforeSave` | `UploadPayload` | 上传校验和处理前修改名称或父内容 ID |
+| `HookUploadHandle` | `UploadHandlePayload` | 接管实际写入，返回完整 `models.AttachmentMeta` |
+| `HookUploadAfterSave` | `UploadPayload` | 文件写入完成、附件记录创建前过滤元数据 |
+| `HookAttachmentBeforeReplace` | `AttachmentReplacePayload` | 替换开始前检查或修改输入 |
+| `HookAttachmentReplaceHandle` | `AttachmentReplacePayload` | 接管实际替换，返回新的附件元数据 |
+| `HookAttachmentAfterReplace` | `AttachmentReplacePayload` | 替换完成、附件记录更新前过滤结果 |
+| `HookAttachmentBeforeDelete` | `AttachmentPayload` | 附件记录删除前，可返回错误阻止删除 |
+| `HookAttachmentDeleteHandle` | `AttachmentDeleteHandlePayload` | 接管实际文件删除 |
+| `HookAttachmentAfterDelete` | `AttachmentPayload` | 附件记录和文件删除完成后 |
+| `HookAttachmentURL` | `AttachmentURLPayload` | 动态生成公开 URL，适合签名 URL 或 CDN 域名 |
+| `HookAttachmentData` | `AttachmentDataPayload` | 提供文件内容，供远程图片生成后台缩略图 |
+
+`UploadHandlePayload.Open` 和 `AttachmentReplacePayload.Open` 返回本次上传暂存文件的新读取流。该函数及读取流只允许在当前同步钩子调用期间使用，插件不能保存后异步读取。处理钩子应至少返回 `Name`、`URL`、`Size`、`Type` 和 `MIME`；远程存储可将 `Path` 用作对象键。
+
+## 附件信息
+
+| 常量 | Payload | 用途 |
+|---|---|---|
+| `HookAttachmentBeforeEdit` | `AttachmentEditPayload` | 修改标题和描述前，可过滤或阻止保存 |
+| `HookAttachmentAfterEdit` | `AttachmentEditPayload` | 附件信息保存后 |
+
+附件描述保存在 `AttachmentMeta.Description` 中，不增加数据库专用列，现有附件 JSON、备份和导入流程保持兼容。本地同扩展名替换会保留原始 `Path` 和 URL，避免正文中已经插入的链接失效。

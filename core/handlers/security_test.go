@@ -2115,15 +2115,15 @@ func TestMediaReplaceSameExtensionPolicy(t *testing.T) {
 	if rec.Code != http.StatusSeeOther {
 		t.Fatalf("replace same ext status = %d, want 303: %s", rec.Code, rec.Body.String())
 	}
-	if _, err := os.Stat(oldPath); !os.IsNotExist(err) {
-		t.Fatalf("old file still exists after successful replace: %v", err)
+	if _, err := os.Stat(oldPath); err != nil {
+		t.Fatalf("stable replacement path missing after successful replace: %v", err)
 	}
 	updated, err := app.Contents.ByID(ctx, attachment.CID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	updatedMeta := parseAttachmentMeta(updated)
-	if updatedMeta.Path == meta.Path || updatedMeta.Type != "png" {
+	if updatedMeta.Path != meta.Path || updatedMeta.URL != meta.URL || updatedMeta.Type != "png" {
 		t.Fatalf("updated metadata = %#v, old = %#v", updatedMeta, meta)
 	}
 }

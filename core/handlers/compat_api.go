@@ -402,6 +402,9 @@ func (a *App) handleXMLRPCMethod(ctx context.Context, method string, params []xm
 		if err != nil {
 			return nil, &xmlRPCFault{Code: 500, Message: "internal error"}
 		}
+		if item, itemErr := a.Contents.ByID(ctx, id); itemErr == nil {
+			meta = a.attachmentMeta(ctx, item)
+		}
 		site := a.siteOptions(ctx)
 		return map[string]any{"id": strconv.FormatInt(id, 10), "file": meta.Path, "url": absolutePublicURL(strings.TrimRight(site["base_url"], "/"), meta.URL), "type": meta.MIME}, nil
 	default:

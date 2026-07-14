@@ -10,7 +10,9 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
+	"goblog/core/plugin"
 	"goblog/pkg/imageproc"
 )
 
@@ -30,12 +32,28 @@ func adminThumbnailURL(rawURL string) string {
 	return "/admin/thumbnail?src=" + url.QueryEscape(rawURL)
 }
 
+func adminThumbnailURLForAttachment(cid int64, rawURL string) string {
+	if cid <= 0 {
+		return adminThumbnailURL(rawURL)
+	}
+	ext := strings.ToLower(strings.TrimPrefix(path.Ext(rawURL), "."))
+	if ext == "svg" {
+		return rawURL
+	}
+	return "/admin/thumbnail?cid=" + strconv.FormatInt(cid, 10) + "&src=" + url.QueryEscape(rawURL)
+}
+
 func (a *App) adminThumbnail(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		methodNotAllowed(w, http.MethodGet)
 		return
 	}
 	if !a.requireRole(w, r, "contributor") {
+		return
+	}
+
+	if cid, _ := strconv.ParseInt(r.URL.Query().Get("cid"), 10, 64); cid > 0 {
+		a.adminAttachmentThumbnail(w, r, cid)
 		return
 	}
 
@@ -67,6 +85,54 @@ func (a *App) adminThumbnail(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", mimeType)
 	w.Header().Set("Cache-Control", "private, max-age=86400")
 	http.ServeContent(w, r, filepath.Base(cachePath), sourceInfo.ModTime(), bytes.NewReader(data))
+}
+
+func (a *App) adminAttachmentThumbnail(w http.ResponseWriter, r *http.Request, cid int64) {
+	item, err := a.Contents.ByID(r.Context(), cid)
+	if err != nil || item.Type != "attachment" {
+		http.NotFound(w, r)
+		return
+	}
+	user, _ := a.currentUser(r)
+	if roleRank(user.Role) < roleRank("editor") && item.AuthorID != user.UID {
+		http.Error(w, "permission denied", http.StatusForbidden)
+		return
+	}
+	meta := a.attachmentMeta(r.Context(), item)
+	rawFormat := a.option(r.Context(), "thumbnail_format", imageproc.ThumbnailJPEG)
+	if rawFormat == imageproc.ThumbnailDisabled {
+		http.Redirect(w, r, meta.URL, http.StatusTemporaryRedirect)
+		return
+	}
+	format := imageproc.NormalizeThumbnailFormat(rawFormat)
+	quality := imageproc.ClampQuality(optionInt(a.option(r.Context(), "thumbnail_quality", ""), 0), imageproc.DefaultThumbnailQuality)
+	if !a.Plugins.HasActiveHook(plugin.HookAttachmentData) {
+		if sourcePath, pathErr := a.attachmentLocalPath(parseAttachmentMeta(item)); pathErr == nil {
+			if sourceInfo, statErr := os.Stat(sourcePath); statErr == nil && sourceInfo.Mode().IsRegular() {
+				cachePath := thumbnailCachePath(sourcePath, format, quality)
+				data, mimeType, thumbErr := cachedThumbnail(sourcePath, sourceInfo, cachePath, format, quality, a.imageProcessingMemoryLimit(r.Context()))
+				if thumbErr == nil {
+					w.Header().Set("Content-Type", mimeType)
+					w.Header().Set("Cache-Control", "private, max-age=86400")
+					http.ServeContent(w, r, filepath.Base(cachePath), sourceInfo.ModTime(), bytes.NewReader(data))
+					return
+				}
+			}
+		}
+	}
+	data, err := a.attachmentData(r.Context(), item)
+	if err != nil {
+		http.Redirect(w, r, meta.URL, http.StatusTemporaryRedirect)
+		return
+	}
+	thumbnail, mimeType, err := imageproc.Thumbnail(bytes.NewReader(data), format, quality, adminThumbnailWidth, adminThumbnailHeight, a.imageProcessingMemoryLimit(r.Context()))
+	if err != nil {
+		http.Redirect(w, r, meta.URL, http.StatusTemporaryRedirect)
+		return
+	}
+	w.Header().Set("Content-Type", mimeType)
+	w.Header().Set("Cache-Control", "private, max-age=86400")
+	http.ServeContent(w, r, meta.Name, time.Unix(item.Modified, 0), bytes.NewReader(thumbnail))
 }
 
 func (a *App) secureUploadPath(rawURL string) (string, error) {
