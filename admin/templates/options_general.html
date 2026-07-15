@@ -55,9 +55,8 @@
     </mdui-select>
   </fieldset>
 
-  <fieldset class="fieldset">
+  <fieldset class="fieldset upload-attachment-settings">
     <legend>上传和附件</legend>
-    <mdui-text-field name="upload_allowed_exts" label="{{T "Allowed upload extensions"}}" helper="jpg,png,webp" value="{{index .Options "upload_allowed_exts"}}"></mdui-text-field>
     <mdui-text-field name="upload_max_size_mb" label="上传文件大小上限（MB）" type="number" min="1" max="2048" step="1" value="{{index .Options "upload_max_size_mb"}}"></mdui-text-field>
     <mdui-select name="upload_replace_same_ext_only" label="{{T "Replacement extension policy"}}" value="{{index .Options "upload_replace_same_ext_only"}}">
       <mdui-menu-item value="1">{{T "Same extension required"}}</mdui-menu-item>
@@ -68,6 +67,7 @@
       <mdui-menu-item value="record">{{T "Delete records"}}</mdui-menu-item>
       <mdui-menu-item value="file">{{T "Delete records and files"}}</mdui-menu-item>
     </mdui-select>
+    <mdui-text-field class="full-span" name="upload_allowed_exts" label="{{T "Allowed upload extensions"}}" helper="jpg,png,webp" value="{{index .Options "upload_allowed_exts"}}"></mdui-text-field>
   </fieldset>
 
   <fieldset class="fieldset image-processing-options" data-image-processing-options>

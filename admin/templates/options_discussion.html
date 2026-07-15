@@ -3,34 +3,34 @@
 {{template "options_tabs" .}}
 {{if .Error}}<div class="notice danger">{{.Error}}</div>{{end}}
 <form method="post" class="form-panel field-stack">
-  <fieldset class="fieldset comment-processing-options" data-comment-processing-options>
+  <fieldset class="fieldset comment-processing-options comment-processing-layout" data-comment-processing-options>
     <legend>评论处理</legend>
-    <mdui-select name="comments_moderation_mode" label="评论处理方式" value="{{index .Options "comments_moderation_mode"}}">
+    <mdui-select class="comment-processing-primary" name="comments_moderation_mode" label="评论处理方式" value="{{index .Options "comments_moderation_mode"}}">
       <mdui-menu-item value="open">评论不需要审核</mdui-menu-item>
       <mdui-menu-item value="all">所有评论必须审核</mdui-menu-item>
       <mdui-menu-item value="approved_author">评论者须有评论通过审核</mdui-menu-item>
     </mdui-select>
-    <div class="comment-option-row">
+    <mdui-text-field class="comment-processing-primary" name="comments_auto_close" label="自动关闭评论天数" type="number" min="0" step="1" helper="0 表示不自动关闭" value="{{index .Options "comments_auto_close"}}"></mdui-text-field>
+    <div class="comment-processing-primary" data-comment-interval {{if ne (index .Options "comments_post_interval_enable") "1"}}hidden{{end}}>
+      <mdui-text-field name="comments_post_interval" label="评论间隔秒数" type="number" min="1" max="86400" step="1" value="{{index .Options "comments_post_interval"}}" helper="登录的编辑者和内容作者不受此限制"></mdui-text-field>
+    </div>
+    <div class="comment-option-row comment-processing-toggle">
       <mdui-checkbox name="comments_post_interval_enable" value="1" {{if eq (index .Options "comments_post_interval_enable") "1"}}checked{{end}}>限制同一内容、同一 IP 的评论间隔</mdui-checkbox>
       <input type="hidden" name="comments_post_interval_enable" value="0">
     </div>
-    <div data-comment-interval {{if ne (index .Options "comments_post_interval_enable") "1"}}hidden{{end}}>
-      <mdui-text-field name="comments_post_interval" label="评论间隔秒数" type="number" min="1" max="86400" step="1" value="{{index .Options "comments_post_interval"}}" helper="登录的编辑者和内容作者不受此限制"></mdui-text-field>
-    </div>
-    <div class="comment-option-row">
+    <div class="comment-option-row comment-processing-toggle">
       <mdui-checkbox name="comments_check_referer" value="1" {{if eq (index .Options "comments_check_referer") "1"}}checked{{end}}>检查评论来源页与内容链接一致</mdui-checkbox>
       <input type="hidden" name="comments_check_referer" value="0">
     </div>
-    <div class="comment-option-row">
+    <div class="comment-option-row comment-processing-toggle">
       <mdui-checkbox name="comments_antispam" value="1" {{if eq (index .Options "comments_antispam") "1"}}checked{{end}}>启用基础反垃圾处理</mdui-checkbox>
       <input type="hidden" name="comments_antispam" value="0">
     </div>
-    <mdui-text-field name="comments_auto_close" label="自动关闭评论天数" type="number" min="0" step="1" helper="0 表示不自动关闭" value="{{index .Options "comments_auto_close"}}"></mdui-text-field>
-    <mdui-text-field name="comments_stop_words" label="停用词" rows="3" helper="每行或逗号分隔；命中后进入垃圾评论">{{index .Options "comments_stop_words"}}</mdui-text-field>
-    <mdui-text-field name="comments_ip_blacklist" label="IP 黑名单" rows="3" helper="每行或逗号分隔；支持以 * 结尾的网段前缀">{{index .Options "comments_ip_blacklist"}}</mdui-text-field>
+    <mdui-text-field class="comment-processing-wide" name="comments_stop_words" label="停用词" rows="3" helper="每行或逗号分隔；命中后进入垃圾评论">{{index .Options "comments_stop_words"}}</mdui-text-field>
+    <mdui-text-field class="comment-processing-wide" name="comments_ip_blacklist" label="IP 黑名单" rows="3" helper="每行或逗号分隔；支持以 * 结尾的网段前缀">{{index .Options "comments_ip_blacklist"}}</mdui-text-field>
   </fieldset>
 
-  <fieldset class="fieldset">
+  <fieldset class="fieldset settings-grid-two">
     <legend>访客身份</legend>
     <div class="comment-option-row">
       <mdui-checkbox name="comments_require_mail" value="1" {{if eq (index .Options "comments_require_mail") "1"}}checked{{end}}>访客必须填写邮箱</mdui-checkbox>
@@ -81,13 +81,13 @@
     <mdui-text-field name="comments_max_nesting_levels" label="最大嵌套层级" type="number" min="2" max="7" step="1" value="{{index .Options "comments_max_nesting_levels"}}"></mdui-text-field>
   </fieldset>
 
-  <fieldset class="fieldset">
+  <fieldset class="fieldset comment-format-settings">
     <legend>内容格式</legend>
     <div class="comment-option-row">
       <mdui-checkbox name="comments_markdown" value="1" {{if eq (index .Options "comments_markdown") "1"}}checked{{end}}>评论支持 Markdown</mdui-checkbox>
       <input type="hidden" name="comments_markdown" value="0">
     </div>
-    <mdui-text-field name="comments_html_tag_allowed" label="允许的 HTML 标签" helper="例如：a,code,strong；默认全部转义" value="{{index .Options "comments_html_tag_allowed"}}"></mdui-text-field>
+    <mdui-text-field class="full-span" name="comments_html_tag_allowed" label="允许的 HTML 标签" helper="例如：a,code,strong；默认全部转义" value="{{index .Options "comments_html_tag_allowed"}}"></mdui-text-field>
   </fieldset>
   <div class="form-actions"><mdui-button type="submit">保存设置</mdui-button></div>
 </form>

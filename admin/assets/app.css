@@ -578,6 +578,35 @@ mdui-select::part(text-field__container) {
   width: 100%;
 }
 
+@media (min-width: 721px) {
+  .settings-grid-two {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .comment-processing-layout {
+    grid-template-columns: repeat(6, minmax(0, 1fr));
+  }
+
+  .comment-processing-layout > .comment-processing-primary {
+    grid-row: 1;
+    grid-column: span 2;
+  }
+
+  .comment-processing-layout > .comment-processing-toggle {
+    grid-row: 2;
+    grid-column: span 2;
+  }
+
+  .comment-processing-layout > .comment-processing-wide {
+    grid-row: 3;
+    grid-column: span 3;
+  }
+
+  .comment-format-settings {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
 .custom-fields,
 .custom-field-list {
   display: grid;

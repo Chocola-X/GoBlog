@@ -1,7 +1,7 @@
 {{define "content"}}
 <div class="page-head"><div><h1>阅读设置</h1></div></div>{{template "options_tabs" .}}{{if .Saved}}<div class="notice">设置已保存。</div>{{end}}
 <form method="post" class="form-panel field-stack">
-  <fieldset class="fieldset">
+  <fieldset class="fieldset settings-grid-two">
     <legend>文章显示</legend>
     <mdui-text-field name="post_date_format" label="文章日期格式" value="{{index .Options "post_date_format"}}"></mdui-text-field>
     <mdui-text-field name="posts_list_size" label="文章列表数目" type="number" value="{{index .Options "posts_list_size"}}"></mdui-text-field>
@@ -13,7 +13,7 @@
     </mdui-select>
   </fieldset>
 
-  <fieldset class="fieldset">
+  <fieldset class="fieldset settings-grid-two">
     <legend>首页和聚合</legend>
     <mdui-select name="feed_full_text" label="聚合全文输出" value="{{index .Options "feed_full_text"}}">
       <mdui-menu-item value="0">仅输出摘要</mdui-menu-item>
