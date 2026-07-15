@@ -297,6 +297,10 @@ type AdminMenuItem struct {
 	Icon  string
 }
 
+type AdminMenuProvider interface {
+	AdminMenuItems(context.Context) []AdminMenuItem
+}
+
 type FieldType string
 
 const (
@@ -396,6 +400,7 @@ type Manager struct {
 	pluginNames   map[string]Plugin
 	hooks         map[string][]ownedHook
 	routes        []ownedRoute
+	adminMenus    []ownedAdminMenu
 	themes        map[string]Theme
 	activePlugins map[string]bool
 	registering   string
@@ -495,6 +500,12 @@ func (m *Manager) RegisterRoute(method, pattern string, handler RouteHandler) {
 	m.routes = append(m.routes, ownedRoute{Plugin: m.registering, Route: Route{Method: method, Pattern: pattern, Handler: handler}})
 }
 
+func (m *Manager) RegisterAdminMenu(item AdminMenuItem) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.adminMenus = append(m.adminMenus, ownedAdminMenu{Plugin: m.registering, Item: item})
+}
+
 func (m *Manager) Routes() []Route {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -513,6 +524,32 @@ func (m *Manager) ActiveRoutes() []Route {
 		if route.Plugin == "" || m.activePlugins[route.Plugin] {
 			out = append(out, route.withOwner())
 		}
+	}
+	return out
+}
+
+func (m *Manager) ActiveAdminMenuItems(ctx context.Context) []AdminMenuItem {
+	m.mu.RLock()
+	registered := append([]ownedAdminMenu(nil), m.adminMenus...)
+	plugins := append([]Plugin(nil), m.plugins...)
+	active := copyBoolMap(m.activePlugins)
+	m.mu.RUnlock()
+	out := make([]AdminMenuItem, 0, len(registered))
+	for _, item := range registered {
+		if item.Plugin == "" || active[item.Plugin] {
+			out = append(out, item.Item)
+		}
+	}
+	for _, p := range plugins {
+		name := p.Name()
+		if name == "" || !active[name] {
+			continue
+		}
+		provider, ok := p.(AdminMenuProvider)
+		if !ok {
+			continue
+		}
+		out = append(out, provider.AdminMenuItems(ctx)...)
 	}
 	return out
 }
@@ -605,6 +642,11 @@ type ownedHook struct {
 type ownedRoute struct {
 	Plugin string
 	Route  Route
+}
+
+type ownedAdminMenu struct {
+	Plugin string
+	Item   AdminMenuItem
 }
 
 func (r ownedRoute) withOwner() Route {

@@ -3492,6 +3492,49 @@ func TestPluginRuntimeProvidesConsistentCapabilities(t *testing.T) {
 	}
 }
 
+func TestPluginAdminMenuOnlyShowsRegisteredEntries(t *testing.T) {
+	app, secret, adminID := newSecurityTestApp(t)
+	mgr := plugin.NewManager()
+	mgr.Register(phase6Plugin{})
+	app.Plugins = mgr
+	ctx := context.Background()
+	if err := app.Options.Set(ctx, "active_plugins", `["phase6"]`); err != nil {
+		t.Fatal(err)
+	}
+	handler := app.Handler()
+
+	req := httptest.NewRequest(http.MethodGet, "/admin", nil)
+	setSession(t, req, secret, adminID)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("dashboard status = %d: %s", rec.Code, rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "插件扩展") {
+		t.Fatalf("simple plugin unexpectedly rendered admin menu section: %s", rec.Body.String())
+	}
+
+	mgr = plugin.NewManager()
+	mgr.Register(phase6Plugin{})
+	mgr.Register(adminMenuPlugin{})
+	app.Plugins = mgr
+	if err := app.Options.Set(ctx, "active_plugins", `["phase6","adminmenu"]`); err != nil {
+		t.Fatal(err)
+	}
+	handler = app.Handler()
+	req = httptest.NewRequest(http.MethodGet, "/admin", nil)
+	setSession(t, req, secret, adminID)
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	body := rec.Body.String()
+	if rec.Code != http.StatusOK {
+		t.Fatalf("dashboard with menu status = %d: %s", rec.Code, body)
+	}
+	if !strings.Contains(body, "插件扩展") || !strings.Contains(body, `/admin/adminmenu`) || !strings.Contains(body, `name="analytics"`) || !strings.Contains(body, "菜单插件") {
+		t.Fatalf("registered plugin admin menu missing from sidebar: %s", body)
+	}
+}
+
 func TestPluginConfigSavesJSON(t *testing.T) {
 	app, secret, adminID := newSecurityTestApp(t)
 	mgr := plugin.NewManager()
@@ -3982,6 +4025,18 @@ func (phase6Plugin) Init(m *plugin.Manager) {
 		value := payload.(plugin.ExcerptPayload)
 		value.Output = "phase6:" + value.Output
 		return value, nil
+	})
+}
+
+type adminMenuPlugin struct{}
+
+func (adminMenuPlugin) Name() string        { return "adminmenu" }
+func (adminMenuPlugin) Version() string     { return "1.0.0" }
+func (adminMenuPlugin) Description() string { return "admin menu test plugin" }
+func (adminMenuPlugin) Init(m *plugin.Manager) {
+	m.RegisterAdminMenu(plugin.AdminMenuItem{Label: "菜单插件", URL: "/admin/adminmenu", Icon: "analytics"})
+	m.RegisterRoute(http.MethodGet, "/admin/adminmenu", func(_ *plugin.Runtime, w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("admin menu plugin"))
 	})
 }
 

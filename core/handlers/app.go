@@ -6828,12 +6828,13 @@ func (a *App) renderAdmin(w http.ResponseWriter, r *http.Request, page string, d
 	if notices := a.consumeFlash(w, r); len(notices) > 0 {
 		data["Notices"] = notices
 	}
-	if out, err := a.Plugins.ApplyActive(r.Context(), plugin.HookAdminMenu, []plugin.AdminMenuItem{}); err != nil {
+	adminMenu := a.pluginAdminMenuItems(r.Context())
+	if out, err := a.Plugins.ApplyActive(r.Context(), plugin.HookAdminMenu, adminMenu); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	} else {
 		if items, ok := out.([]plugin.AdminMenuItem); ok {
-			data["AdminMenu"] = items
+			data["AdminMenu"] = normalizeAdminMenuItems(items)
 		}
 	}
 	data["CSRF"] = a.csrfToken(r)
@@ -6843,6 +6844,27 @@ func (a *App) renderAdmin(w http.ResponseWriter, r *http.Request, page string, d
 	if err := tmpl.ExecuteTemplate(w, "base", data); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 	}
+}
+
+func (a *App) pluginAdminMenuItems(ctx context.Context) []plugin.AdminMenuItem {
+	return normalizeAdminMenuItems(a.Plugins.ActiveAdminMenuItems(ctx))
+}
+
+func normalizeAdminMenuItems(items []plugin.AdminMenuItem) []plugin.AdminMenuItem {
+	out := make([]plugin.AdminMenuItem, 0, len(items))
+	for _, item := range items {
+		item.Label = strings.TrimSpace(item.Label)
+		item.URL = strings.TrimSpace(item.URL)
+		item.Icon = strings.TrimSpace(item.Icon)
+		if item.Label == "" || item.URL == "" {
+			continue
+		}
+		if item.Icon == "" {
+			item.Icon = "extension"
+		}
+		out = append(out, item)
+	}
+	return out
 }
 
 func (a *App) enrichAdminAppearance(ctx context.Context, data map[string]any) {
