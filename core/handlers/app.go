@@ -144,7 +144,6 @@ func (a *App) Handler() http.Handler {
 		"/admin/medias":                  a.adminMedias,
 		"/admin/medias/":                 a.adminMediaRoutes,
 		"/admin/backup":                  a.adminBackup,
-		"/admin/upgrade":                 a.adminUpgrade,
 		"/admin/autosave":                a.adminAutosave,
 		"/admin/markdown/preview":        a.adminMarkdownPreview,
 		"/admin/thumbnail":               a.adminThumbnail,
@@ -407,6 +406,7 @@ func (a *App) adminDashboard(w http.ResponseWriter, r *http.Request) {
 	if theme, ok := a.activeTheme(r.Context()); ok {
 		themeView = dashboardThemeView{
 			Name:        theme.Name,
+			DisplayName: theme.DisplayName,
 			Version:     theme.Version,
 			Author:      theme.Author,
 			Description: theme.Description,
@@ -444,11 +444,19 @@ type dashboardPluginStats struct {
 
 type dashboardThemeView struct {
 	Name        string
+	DisplayName string
 	Version     string
 	Author      string
 	Description string
 	HasConfig   bool
 	Editable    bool
+}
+
+func themeDisplayName(theme plugin.Theme) string {
+	if name := strings.TrimSpace(theme.DisplayName); name != "" {
+		return name
+	}
+	return theme.Name
 }
 
 func (a *App) dashboardContentStats(ctx context.Context, typ string) (dashboardContentStats, error) {
@@ -2175,25 +2183,6 @@ func requiredQuality(raw string) (int, error) {
 	return quality, nil
 }
 
-func (a *App) adminUpgrade(w http.ResponseWriter, r *http.Request) {
-	if !a.requireRole(w, r, "administrator") {
-		return
-	}
-	current := optionInt(a.option(r.Context(), "schema_version", "0"), 0)
-	switch r.Method {
-	case http.MethodGet:
-		a.renderAdmin(w, r, "upgrade.html", map[string]any{"Title": "升级", "CurrentVersion": current, "TargetVersion": models.CurrentSchemaVersion})
-	case http.MethodPost:
-		if err := models.RunVersionedMigrations(r.Context(), a.Contents.DB()); err != nil {
-			a.renderAdmin(w, r, "upgrade.html", map[string]any{"Title": "升级", "CurrentVersion": current, "TargetVersion": models.CurrentSchemaVersion, "Error": err.Error()})
-			return
-		}
-		a.flashRedirect(w, r, "/admin/upgrade", http.StatusSeeOther, flashNotice{Type: "success", Message: "升级检查已完成。"})
-	default:
-		methodNotAllowed(w, http.MethodGet+", "+http.MethodPost)
-	}
-}
-
 func (a *App) adminOptionsReading(w http.ResponseWriter, r *http.Request) {
 	if !a.requireRole(w, r, "administrator") {
 		return
@@ -2769,7 +2758,7 @@ func (a *App) adminThemeConfig(w http.ResponseWriter, r *http.Request, name stri
 		})
 	}
 	a.schemaForm(w, r, schemaFormConfig{
-		Title:        "主题设置：" + name,
+		Title:        "主题设置：" + themeDisplayName(theme),
 		Template:     "schema_form.html",
 		BackURL:      "/admin/themes",
 		OptionKey:    themeOptionKey(name),
@@ -2792,14 +2781,15 @@ func (a *App) adminManagement(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.schemaForm(w, r, schemaFormConfig{
-		Title:     "管理设置",
-		Template:  "schema_form.html",
-		BackURL:   "/admin",
-		OptionKey: adminAppearanceOptionKey,
-		Schema:    adminAppearanceSchema(),
-		SavedURL:  r.URL.Path,
-		Saved:     r.URL.Query().Get("saved") == "1",
-		UploadURL: "/admin/management/upload",
+		Title:       "后台个性化",
+		Description: "调整管理后台的配色、透明度、背景与界面素材。",
+		Template:    "schema_form.html",
+		BackURL:     "/admin",
+		OptionKey:   adminAppearanceOptionKey,
+		Schema:      adminAppearanceSchema(),
+		SavedURL:    r.URL.Path,
+		Saved:       r.URL.Query().Get("saved") == "1",
+		UploadURL:   "/admin/management/upload",
 		AssetManager: a.settingsAssetManager(r.Context(), settingsAssetManagerConfig{
 			Title:       "后台个性化素材",
 			Description: "管理后台设置中上传到 /uploads/admin-settings/ 的图片素材。",
@@ -2817,18 +2807,21 @@ func adminAppearanceSchema() []plugin.FieldSchema {
 		{
 			Name:        "admin_bg_image",
 			Label:       "电脑端后台背景图 URL",
+			Group:       "背景图设置",
 			Type:        plugin.FieldImage,
 			Description: "用于桌面端后台背景。上传文件会保存到后台设置专用目录。",
 		},
 		{
 			Name:        "admin_mobile_bg_image",
 			Label:       "手机端后台背景图 URL",
+			Group:       "背景图设置",
 			Type:        plugin.FieldImage,
 			Description: "用于窄屏和手机端后台背景；留空时沿用电脑端背景。",
 		},
 		{
 			Name:        "admin_card_opacity",
 			Label:       "后台卡片背景透明度",
+			Group:       "透明度设置",
 			Type:        plugin.FieldNumber,
 			Default:     "0.84",
 			Description: "取值 0 到 1，仅影响后台卡片背景透明度。",
@@ -2839,6 +2832,7 @@ func adminAppearanceSchema() []plugin.FieldSchema {
 		{
 			Name:        "admin_sidebar_opacity",
 			Label:       "后台侧边栏背景透明度",
+			Group:       "透明度设置",
 			Type:        plugin.FieldNumber,
 			Default:     "0.90",
 			Description: "取值 0 到 1，仅影响后台侧边栏背景透明度。",
@@ -2849,6 +2843,7 @@ func adminAppearanceSchema() []plugin.FieldSchema {
 		{
 			Name:        "admin_topbar_opacity",
 			Label:       "后台顶栏背景透明度",
+			Group:       "透明度设置",
 			Type:        plugin.FieldNumber,
 			Default:     "0.92",
 			Description: "取值 0 到 1，仅影响后台顶栏主题色背景透明度。",
@@ -2859,6 +2854,7 @@ func adminAppearanceSchema() []plugin.FieldSchema {
 		{
 			Name:        "admin_input_opacity",
 			Label:       "后台输入框背景透明度",
+			Group:       "透明度设置",
 			Type:        plugin.FieldNumber,
 			Default:     "0.62",
 			Description: "取值 0 到 1，仅影响后台输入框和选择框背景透明度。",
@@ -2869,6 +2865,7 @@ func adminAppearanceSchema() []plugin.FieldSchema {
 		{
 			Name:        "admin_bg_mask_opacity",
 			Label:       "后台背景蒙版透明度",
+			Group:       "透明度设置",
 			Type:        plugin.FieldNumber,
 			Default:     "0.54",
 			Description: "取值 0 到 1，控制背景图片上方的 MDUI 背景色蒙版。",
@@ -2879,6 +2876,7 @@ func adminAppearanceSchema() []plugin.FieldSchema {
 		{
 			Name:        "admin_primary_preset",
 			Label:       "后台常用主题色",
+			Group:       "颜色设置",
 			Type:        plugin.FieldSelect,
 			Default:     "#6750a4",
 			Description: "用于 MDUI2 生成后台配色方案。",
@@ -2887,6 +2885,7 @@ func adminAppearanceSchema() []plugin.FieldSchema {
 		{
 			Name:        "admin_custom_primary",
 			Label:       "后台自定义主题色",
+			Group:       "颜色设置",
 			Type:        plugin.FieldColor,
 			Description: "填写 #RRGGBB 后会覆盖上方预设色。",
 			Options:     colorOptions,
@@ -2897,7 +2896,7 @@ func adminAppearanceSchema() []plugin.FieldSchema {
 func adminAppearanceColorOptions() []plugin.FieldOption {
 	return []plugin.FieldOption{
 		{Label: "MDUI 紫", Value: "#6750a4"},
-		{Label: "Cuckoo 粉", Value: "#ff4081"},
+		{Label: "玫红", Value: "#ff4081"},
 		{Label: "蓝色", Value: "#1976d2"},
 		{Label: "青色", Value: "#00838f"},
 		{Label: "绿色", Value: "#2e7d32"},
@@ -2956,6 +2955,7 @@ func (a *App) adminThemeFiles(w http.ResponseWriter, r *http.Request, name strin
 
 type schemaFormConfig struct {
 	Title        string
+	Description  string
 	Template     string
 	BackURL      string
 	OptionKey    string
@@ -2992,7 +2992,11 @@ func (a *App) schemaForm(w http.ResponseWriter, r *http.Request, cfg schemaFormC
 		if uploadURL == "" {
 			uploadURL = "/admin/schema/upload"
 		}
-		a.renderAdmin(w, r, cfg.Template, map[string]any{"Title": cfg.Title, "BackURL": cfg.BackURL, "Schema": cfg.Schema, "SchemaGroups": schemaGroups(cfg.Schema, values), "Values": values, "Saved": cfg.Saved, "UploadURL": uploadURL, "AssetManager": cfg.AssetManager})
+		description := cfg.Description
+		if description == "" {
+			description = "在此调整当前功能的配置选项。"
+		}
+		a.renderAdmin(w, r, cfg.Template, map[string]any{"Title": cfg.Title, "Description": description, "BackURL": cfg.BackURL, "Schema": cfg.Schema, "SchemaGroups": schemaGroups(cfg.Schema, values), "Values": values, "Saved": cfg.Saved, "UploadURL": uploadURL, "AssetManager": cfg.AssetManager})
 	case http.MethodPost:
 		if err := r.ParseForm(); err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)

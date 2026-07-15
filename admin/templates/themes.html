@@ -10,7 +10,7 @@
   {{range .Themes}}
   <article class="stat-panel">
     {{if .Screenshot}}<img class="theme-shot" src="{{.Screenshot}}" alt="">{{end}}
-    <strong>{{.Name}}</strong>
+    <strong>{{if .DisplayName}}{{.DisplayName}}{{else}}{{.Name}}{{end}}</strong>
     <p class="muted">{{.Description}}</p>
     <p class="muted">版本 {{.Version}} {{if .Author}}/ {{.Author}}{{end}}</p>
     <div class="row-actions">

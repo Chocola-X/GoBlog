@@ -2,12 +2,12 @@
 
 一个用 Go 编写的极简博客系统，功能对标 Typecho。
 
-> **注意：** 项目仍在早期开发阶段（v0.1.0），架构和代码可能会有较大变动。本文档现阶段仅作参考。
+> **注意：** 当前项目版本为 v0.5.0，仍在持续完善中。本文档现阶段仅作参考。
 
 ## 特性
 
 - **多数据库支持** — SQLite（零配置）、MySQL/MariaDB、PostgreSQL，支持读写分离
-- **完整后台管理** — 文章、页面、分类、标签、评论、用户、附件、备份、升级
+- **完整后台管理** — 文章、页面、分类、标签、评论、用户、附件与备份
 - **编辑草稿机制** — 已发布内容的修改先保存为草稿，发布时合并回原文，支持自动保存
 - **修订版本** — 自动保留历史修订（默认最多 20 条），可随时回滚
 - **插件/主题系统** — 钩子驱动的插件架构（51 个预定义钩子点），支持主题配置、自定义字段、模板函数扩展
@@ -103,17 +103,17 @@ goblog/
 │   │   ├── app.js           # 后台逻辑
 │   │   ├── markdown-editor.js # Markdown 编辑器
 │   │   └── vendor/          # 第三方库（MDUI2、Material Icons）
-│   └── templates/           # 后台 HTML 模板（37 个）
+│   └── templates/           # 后台 HTML 模板（32 个）
 ├── core/                    # 核心业务逻辑
 │   ├── handlers/            # HTTP 路由与处理器
 │   │   ├── app.go           # 核心路由、中间件、所有前后台处理器
 │   │   ├── compat_api.go    # XML-RPC/Pingback/Trackback 兼容层
 │   │   ├── images.go        # 图片缩略图处理
 │   │   └── waf.go           # WAF 安全中间件
-│   ├── models/              # 数据模型与迁移
+│   ├── models/              # 数据模型与数据库初始化
 │   │   ├── models.go        # Content, User, Option, Field, Revision
 │   │   ├── more.go          # Meta, Comment, AttachmentMeta, Relationship, Stats
-│   │   ├── migrate.go       # 数据库 Schema 与版本化迁移（V1-V6）
+│   │   ├── schema.go        # 数据库 Schema 初始化（版本 1）
 │   │   └── query.go         # SQL 方言抽象（Rebind, UpsertOptionSQL, LimitOffset）
 │   ├── plugin/              # 插件/主题管理器与钩子系统
 │   │   └── plugin.go        # Plugin 接口、Manager、Runtime、51 个钩子常量
@@ -135,7 +135,7 @@ goblog/
 ├── plugins/                 # 内置插件
 │   └── sitemap/             # Sitemap 生成插件
 ├── themes/                  # 内置主题
-│   └── default/             # 默认 Cuckoo 主题（MDUI2）
+│   └── default/             # Default Theme（MDUI2）
 │       ├── theme.go         # 主题注册、配置 Schema、模板函数
 │       ├── static/          # 主题静态资源
 │       └── templates/       # 主题模板（base/index/post/404）
@@ -162,7 +162,7 @@ goblog/
 
 - **编辑草稿**：`gb_contents.draftOf` 字段实现已发布内容的修改先保存为草稿，发布时合并回原文
 - **Slug ID 映射**：`gb_contents.slugId` 字段支持 `/post/{slug}.html` 和 `/post/{id}.html` 两种 URL 格式
-- **版本化迁移**：Schema 版本号存储在 `gb_options`（`schema_version`），当前版本为 6
+- **Schema 版本**：当前数据库结构版本为 1，新安装时直接初始化最终表结构
 - **自定义字段**：`gb_fields` 表支持 str/int/float 三种值类型，插件可通过 `ContentFieldsProvider` 声明字段
 
 ### 表结构详情
@@ -281,7 +281,6 @@ goblog/
 | `/admin/management/` | 系统管理 |
 | `/admin/management/upload` | 上传管理 |
 | `/admin/backup` | 备份导入/导出 |
-| `/admin/upgrade` | 数据库升级 |
 | `/admin/autosave` | 自动保存 |
 | `/admin/markdown/preview` | Markdown 预览 |
 | `/admin/thumbnail` | 缩略图 |
@@ -457,7 +456,7 @@ type Plugin interface {
 
 ## 默认主题
 
-内置 Cuckoo 风格主题，基于 MDUI2 框架，特性包括：
+内置 Default Theme，是 GoBlog 基于 MDUI2 设计的默认主题，特性包括：
 
 - 明暗模式切换（auto/light/dark）
 - 主题色自定义（10 种预设色 + 自定义色）

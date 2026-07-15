@@ -21,7 +21,7 @@ func (sitemapPlugin) Name() string {
 }
 
 func (sitemapPlugin) Version() string {
-	return "0.1.0"
+	return "0.5.0"
 }
 
 func (sitemapPlugin) Description() string {

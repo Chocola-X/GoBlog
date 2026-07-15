@@ -10,7 +10,7 @@ import (
 	"sync"
 )
 
-const GoBlogVersion = "0.1.0"
+const GoBlogVersion = "0.5.0"
 
 type PublicContent struct {
 	CID      int64
@@ -379,6 +379,7 @@ type ContentFieldsProvider interface {
 
 type Theme struct {
 	Name          string
+	DisplayName   string
 	Version       string
 	Author        string
 	Description   string

@@ -567,9 +567,11 @@ mdui-select::part(text-field__container) {
 }
 
 .waf-log-view {
+  flex: 1 1 auto;
   box-sizing: border-box;
   width: 100%;
-  max-height: 360px;
+  min-height: 280px;
+  max-height: none;
   margin: 0;
   padding: 12px;
   overflow: auto;
@@ -580,6 +582,32 @@ mdui-select::part(text-field__container) {
   line-height: 1.55;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
+}
+
+.waf-log-page {
+  display: flex;
+  height: calc(100vh - var(--admin-appbar-height) - 84px);
+  height: calc(100dvh - var(--admin-appbar-height) - 84px);
+  min-height: 480px;
+  flex-direction: column;
+}
+
+.waf-log-panel {
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.waf-log-empty {
+  flex: 1 1 auto;
+  min-height: 280px;
+  margin: 0;
+}
+
+.waf-log-actions {
+  flex: 0 0 auto;
 }
 
 .comment-option-row {
@@ -1688,5 +1716,10 @@ mdui-icon {
 
   .admin-main {
     padding: 20px 14px 44px;
+  }
+
+  .waf-log-page {
+    height: calc(100vh - var(--admin-appbar-height) - 64px);
+    height: calc(100dvh - var(--admin-appbar-height) - 64px);
   }
 }

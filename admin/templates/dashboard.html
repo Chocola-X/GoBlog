@@ -2,7 +2,7 @@
 <div class="page-head">
   <div>
     <h1>控制台</h1>
-    <p class="muted">保持核心纯粹，把扩展交给主题和插件。</p>
+    <p class="muted">集中查看站点状态，快速进入常用管理功能。</p>
   </div>
   <mdui-button href="/admin/posts/new"><mdui-icon slot="icon" name="add"></mdui-icon>写文章</mdui-button>
 </div>
@@ -39,7 +39,7 @@
 <section class="form-panel" style="margin-top:16px">
   <h2>当前主题</h2>
   {{if .Theme.Name}}
-    <p><strong>{{.Theme.Name}}</strong> <span class="muted">v{{.Theme.Version}}{{if .Theme.Author}} · {{.Theme.Author}}{{end}}</span></p>
+    <p><strong>{{if .Theme.DisplayName}}{{.Theme.DisplayName}}{{else}}{{.Theme.Name}}{{end}}</strong> <span class="muted">v{{.Theme.Version}}{{if .Theme.Author}} · {{.Theme.Author}}{{end}}</span></p>
     {{if .Theme.Description}}<p class="muted">{{.Theme.Description}}</p>{{end}}
     <p class="row-actions dashboard-theme-actions">
       <mdui-button href="/admin/themes" variant="outlined">管理主题</mdui-button>

@@ -21,7 +21,7 @@ var themeFS embed.FS
 func init() {
 	static, _ := fs.Sub(themeFS, "static")
 	colorOptions := []plugin.FieldOption{
-		{Label: "Cuckoo 粉", Value: "#ff4081"},
+		{Label: "玫红", Value: "#ff4081"},
 		{Label: "紫色", Value: "#6750a4"},
 		{Label: "粉色", Value: "#c2185b"},
 		{Label: "靛蓝", Value: "#3f51b5"},
@@ -34,9 +34,10 @@ func init() {
 	}
 	plugin.RegisterTheme(plugin.Theme{
 		Name:         "default",
-		Version:      "0.2.0",
+		DisplayName:  "Default Theme",
+		Version:      "0.5.0",
 		Author:       "GoBlog",
-		Description:  "Cuckoo 风格的 MDUI 2 默认主题，默认无装饰图，支持 PJAX、主题色和可选图片",
+		Description:  "GoBlog 默认主题，基于 MDUI 2 设计，支持动态主题配色、PJAX 导航与按需装饰图片。",
 		TemplateList: []string{"index.html", "post.html", "404.html"},
 		Templates:    themeFS,
 		Static:       static,

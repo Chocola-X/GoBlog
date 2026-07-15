@@ -43,7 +43,7 @@ func main() {
 		serviceDB = services.NewDBRouter(db, readDB, cfg.DBDriver)
 	}
 
-	if err := models.Migrate(ctx, db, cfg.DBDriver); err != nil {
+	if err := models.InitializeSchema(ctx, db, cfg.DBDriver); err != nil {
 		log.Fatal(err)
 	}
 	setupCtx := services.WithWriter(ctx)
