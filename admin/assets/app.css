@@ -652,6 +652,15 @@ mdui-select::part(text-field__container) {
   gap: 12px;
 }
 
+.custom-fields {
+  grid-template-columns: 1fr;
+}
+
+.custom-fields > .custom-field-list,
+.custom-fields > .add-field {
+  grid-column: 1 / -1;
+}
+
 .editor-media-panel {
   display: grid;
   gap: 16px;
@@ -896,6 +905,12 @@ mdui-select::part(text-field__container) {
   grid-template-columns: minmax(160px, 1fr) 150px minmax(180px, 1.4fr) 44px;
   gap: 10px;
   align-items: center;
+}
+
+.custom-field-row mdui-text-field,
+.custom-field-row mdui-select {
+  width: 100%;
+  min-width: 0;
 }
 
 .revision-summary {
