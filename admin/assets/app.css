@@ -245,6 +245,7 @@ body.admin-pjax-loading .admin-main {
   align-items: center;
   justify-content: space-between;
   gap: 16px;
+  margin-top: 18px;
 }
 
 .stat-value {
@@ -252,6 +253,32 @@ body.admin-pjax-loading .admin-main {
   margin-top: 8px;
   font-size: 34px;
   line-height: 1;
+}
+
+.dashboard-stat-card {
+  display: block;
+  color: inherit;
+  text-decoration: none;
+  transition: border-color 0.18s ease, transform 0.18s ease;
+}
+
+.dashboard-stat-card:hover {
+  border-color: rgba(var(--mdui-color-primary), 0.55);
+  transform: translateY(-1px);
+}
+
+.dashboard-stat-detail {
+  display: block;
+  margin-top: 10px;
+  color: rgb(var(--mdui-color-on-surface-variant));
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.dashboard-theme-actions {
+  justify-content: flex-start;
+  margin: 12px 0 0;
+  flex-wrap: wrap;
 }
 
 .field-stack {
@@ -924,10 +951,14 @@ mdui-select::part(text-field__container) {
 
 .meta-bulk-actions {
   align-items: center;
+  flex: 1 1 640px;
+  width: 100%;
 }
 
 .meta-merge-target {
-  width: min(280px, 100%);
+  flex: 1 1 360px;
+  width: auto;
+  min-width: min(100%, 320px);
 }
 
 .meta-toolbar {

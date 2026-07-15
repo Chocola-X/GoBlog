@@ -7,22 +7,26 @@
   <mdui-button href="/admin/posts/new"><mdui-icon slot="icon" name="add"></mdui-icon>写文章</mdui-button>
 </div>
 <section class="grid">
-  <div class="stat-panel">
+  <a class="stat-panel dashboard-stat-card" href="/admin/posts">
     <span class="muted">文章</span>
-    <strong class="stat-value">{{.Stats.Posts}}</strong>
-  </div>
-  <div class="stat-panel">
+    <strong class="stat-value">{{.PostStats.Published}}</strong>
+    <span class="dashboard-stat-detail">已发布 {{.PostStats.Published}} · 草稿 {{.PostStats.Drafts}}</span>
+  </a>
+  <a class="stat-panel dashboard-stat-card" href="/admin/pages">
     <span class="muted">页面</span>
-    <strong class="stat-value">{{.Stats.Pages}}</strong>
-  </div>
-  <div class="stat-panel">
+    <strong class="stat-value">{{.PageStats.Published}}</strong>
+    <span class="dashboard-stat-detail">已发布 {{.PageStats.Published}} · 草稿 {{.PageStats.Drafts}}</span>
+  </a>
+  <a class="stat-panel dashboard-stat-card" href="/admin/comments">
     <span class="muted">评论</span>
-    <strong class="stat-value">{{.Stats.Comments}}</strong>
-  </div>
-  <div class="stat-panel">
+    <strong class="stat-value">{{.CommentStats.Approved}}</strong>
+    <span class="dashboard-stat-detail">已通过 {{.CommentStats.Approved}} · 待审核 {{.CommentStats.Waiting}} · 垃圾 {{.CommentStats.Spam}}</span>
+  </a>
+  <a class="stat-panel dashboard-stat-card" href="/admin/plugins">
     <span class="muted">已编译插件</span>
-    <strong class="stat-value">{{.PluginCount}}</strong>
-  </div>
+    <strong class="stat-value">{{.PluginStats.Total}}</strong>
+    <span class="dashboard-stat-detail">总数量 {{.PluginStats.Total}} · 启用 {{.PluginStats.Active}}</span>
+  </a>
 </section>
 <section class="form-panel" style="margin-top:16px">
   <h2>快捷入口</h2>
@@ -33,10 +37,23 @@
   </p>
 </section>
 <section class="form-panel" style="margin-top:16px">
+  <h2>当前主题</h2>
+  {{if .Theme.Name}}
+    <p><strong>{{.Theme.Name}}</strong> <span class="muted">v{{.Theme.Version}}{{if .Theme.Author}} · {{.Theme.Author}}{{end}}</span></p>
+    {{if .Theme.Description}}<p class="muted">{{.Theme.Description}}</p>{{end}}
+    <p class="row-actions dashboard-theme-actions">
+      <mdui-button href="/admin/themes" variant="outlined">管理主题</mdui-button>
+      {{if .Theme.HasConfig}}<mdui-button href="/admin/themes/{{.Theme.Name}}/config" variant="tonal">主题设置</mdui-button>{{end}}
+    </p>
+  {{else}}
+    <p class="muted">暂无启用主题。</p>
+  {{end}}
+</section>
+<section class="form-panel" style="margin-top:16px">
   <h2>插件</h2>
   {{if .Plugins}}
     {{range .Plugins}}
-      <p><strong>{{.Name}}</strong> <span class="muted">v{{.Version}} · {{.Description}}</span></p>
+      <p><strong>{{.Name}}</strong> <span class="muted">v{{.Version}} · {{if .Active}}已启用{{else}}未启用{{end}}{{if .Description}} · {{.Description}}{{end}}</span></p>
     {{end}}
   {{else}}
     <p class="muted">暂无插件</p>

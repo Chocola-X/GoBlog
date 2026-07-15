@@ -381,13 +381,102 @@ func (a *App) adminDashboard(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	postStats, err := a.dashboardContentStats(r.Context(), models.ContentTypePost)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	pageStats, err := a.dashboardContentStats(r.Context(), models.ContentTypePage)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	commentStats, err := a.dashboardCommentStats(r.Context())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	pluginViews := a.pluginViews(r.Context())
+	pluginStats := dashboardPluginStats{Total: len(pluginViews)}
+	for _, view := range pluginViews {
+		if view.Active {
+			pluginStats.Active++
+		}
+	}
+	themeView := dashboardThemeView{}
+	if theme, ok := a.activeTheme(r.Context()); ok {
+		themeView = dashboardThemeView{
+			Name:        theme.Name,
+			Version:     theme.Version,
+			Author:      theme.Author,
+			Description: theme.Description,
+			HasConfig:   len(theme.ConfigSchema) > 0,
+			Editable:    theme.EditableDir != "" && !theme.Embedded,
+		}
+	}
 	a.renderAdmin(w, r, "dashboard.html", map[string]any{
-		"Title":       "控制台",
-		"Stats":       stats,
-		"PostCount":   stats.Posts,
-		"PluginCount": len(a.Plugins.Plugins()),
-		"Plugins":     a.Plugins.Plugins(),
+		"Title":        "控制台",
+		"Stats":        stats,
+		"PostStats":    postStats,
+		"PageStats":    pageStats,
+		"CommentStats": commentStats,
+		"PluginStats":  pluginStats,
+		"Theme":        themeView,
+		"Plugins":      pluginViews,
 	})
+}
+
+type dashboardContentStats struct {
+	Published int64
+	Drafts    int64
+}
+
+type dashboardCommentStats struct {
+	Approved int64
+	Waiting  int64
+	Spam     int64
+}
+
+type dashboardPluginStats struct {
+	Total  int
+	Active int
+}
+
+type dashboardThemeView struct {
+	Name        string
+	Version     string
+	Author      string
+	Description string
+	HasConfig   bool
+	Editable    bool
+}
+
+func (a *App) dashboardContentStats(ctx context.Context, typ string) (dashboardContentStats, error) {
+	published, err := a.Contents.CountList(ctx, services.ContentQuery{Type: typ, Status: models.ContentStatusPost})
+	if err != nil {
+		return dashboardContentStats{}, err
+	}
+	drafts, err := a.Contents.CountList(ctx, services.ContentQuery{Type: typ, Status: models.ContentStatusDraft, IncludeDrafts: true})
+	if err != nil {
+		return dashboardContentStats{}, err
+	}
+	return dashboardContentStats{Published: published, Drafts: drafts}, nil
+}
+
+func (a *App) dashboardCommentStats(ctx context.Context) (dashboardCommentStats, error) {
+	approved, err := a.Comments.CountFiltered(ctx, services.CommentQuery{Status: "approved", Type: "all"})
+	if err != nil {
+		return dashboardCommentStats{}, err
+	}
+	waiting, err := a.Comments.CountFiltered(ctx, services.CommentQuery{Status: "waiting", Type: "all"})
+	if err != nil {
+		return dashboardCommentStats{}, err
+	}
+	spam, err := a.Comments.CountFiltered(ctx, services.CommentQuery{Status: "spam", Type: "all"})
+	if err != nil {
+		return dashboardCommentStats{}, err
+	}
+	return dashboardCommentStats{Approved: approved, Waiting: waiting, Spam: spam}, nil
 }
 
 func (a *App) adminPosts(w http.ResponseWriter, r *http.Request) {
