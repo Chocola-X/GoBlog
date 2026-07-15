@@ -41,7 +41,7 @@
     </div>
   </fieldset>
 
-  <fieldset class="fieldset">
+  <fieldset class="fieldset waf-proxy-settings">
     <legend>反向代理 IP 信任</legend>
     <div class="comment-option-row">
       <mdui-checkbox name="waf_trust_proxy_headers" value="1" {{if eq (index .Options "waf_trust_proxy_headers") "1"}}checked{{end}}>信任 X-Forwarded-For / X-Real-IP</mdui-checkbox>
@@ -51,7 +51,7 @@
       <mdui-menu-item value="allowlist">白名单模式</mdui-menu-item>
       <mdui-menu-item value="denylist">黑名单模式</mdui-menu-item>
     </mdui-select>
-    <mdui-text-field name="waf_trust_proxy_ips" label="代理 IP 地址组" rows="5" value="{{index .Options "waf_trust_proxy_ips"}}" helper="一行一个 IP 或 CIDR；白名单模式只信任匹配来源，黑名单模式不信任匹配来源"></mdui-text-field>
+    <mdui-text-field class="full-span" name="waf_trust_proxy_ips" label="代理 IP 地址组" rows="5" value="{{index .Options "waf_trust_proxy_ips"}}" helper="一行一个 IP 或 CIDR；白名单模式只信任匹配来源，黑名单模式不信任匹配来源"></mdui-text-field>
   </fieldset>
 
   <fieldset class="fieldset">
@@ -104,9 +104,9 @@
     <mdui-text-field name="waf_upload_rate_limit" label="窗口内允许附件请求数" type="number" min="1" max="100000" step="1" value="{{index .Options "waf_upload_rate_limit"}}"></mdui-text-field>
   </fieldset>
 
-  <fieldset class="fieldset">
+  <fieldset class="fieldset waf-ban-settings">
     <legend>附件下载封禁</legend>
-    <div class="comment-option-row">
+    <div class="comment-option-row waf-ban-toggle">
       <mdui-checkbox name="waf_attachment_ban_enabled" value="1" {{if eq (index .Options "waf_attachment_ban_enabled") "1"}}checked{{end}}>启用附件下载次数封禁</mdui-checkbox>
       <input type="hidden" name="waf_attachment_ban_enabled" value="0">
     </div>
@@ -115,9 +115,9 @@
     <mdui-text-field name="waf_attachment_ban_seconds" label="封禁时长（秒）" type="number" min="1" max="604800" step="1" value="{{index .Options "waf_attachment_ban_seconds"}}"></mdui-text-field>
   </fieldset>
 
-  <fieldset class="fieldset">
+  <fieldset class="fieldset waf-ban-settings">
     <legend>非法路径封禁</legend>
-    <div class="comment-option-row">
+    <div class="comment-option-row waf-ban-toggle">
       <mdui-checkbox name="waf_invalid_path_enabled" value="1" {{if eq (index .Options "waf_invalid_path_enabled") "1"}}checked{{end}}>启用不存在路径统计封禁</mdui-checkbox>
       <input type="hidden" name="waf_invalid_path_enabled" value="0">
     </div>
@@ -146,9 +146,9 @@
     <mdui-text-field name="waf_xmlrpc_rate_limit" label="窗口内允许 XML-RPC 请求数" type="number" min="1" max="100000" step="1" value="{{index .Options "waf_xmlrpc_rate_limit"}}"></mdui-text-field>
   </fieldset>
 
-  <fieldset class="fieldset">
+  <fieldset class="fieldset waf-ban-settings">
     <legend>后台登录爆破封禁</legend>
-    <div class="comment-option-row">
+    <div class="comment-option-row waf-ban-toggle">
       <mdui-checkbox name="waf_login_ban_enabled" value="1" {{if eq (index .Options "waf_login_ban_enabled") "1"}}checked{{end}}>启用登录失败封禁</mdui-checkbox>
       <input type="hidden" name="waf_login_ban_enabled" value="0">
     </div>

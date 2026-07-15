@@ -605,6 +605,18 @@ mdui-select::part(text-field__container) {
   .comment-format-settings {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
+
+  .waf-proxy-settings {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .waf-ban-settings {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .waf-ban-settings > .waf-ban-toggle {
+    grid-column: 1 / -1;
+  }
 }
 
 .custom-fields,
