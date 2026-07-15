@@ -3,6 +3,7 @@ package sitemap
 import (
 	"encoding/xml"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -38,24 +39,68 @@ func handleSitemap(rt *plugin.Runtime, w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	baseURL, _ := rt.Option(r.Context(), "base_url")
-	baseURL = strings.TrimRight(baseURL, "/")
+	baseURL = sitemapBaseURL(baseURL, r)
 
 	doc := urlSet{XMLNS: "http://www.sitemaps.org/schemas/sitemap/0.9"}
-	doc.URLs = append(doc.URLs, urlEntry{Loc: baseURL + "/", LastMod: time.Now().Format("2006-01-02")})
+	doc.URLs = append(doc.URLs, urlEntry{Loc: baseURL + "/", LastMod: sitemapDate(time.Now().Unix())})
 	for _, post := range posts {
 		lastMod := post.Modified
 		if lastMod == 0 {
 			lastMod = post.Created
 		}
+		path := postPath(post)
+		if path == "" {
+			continue
+		}
 		doc.URLs = append(doc.URLs, urlEntry{
-			Loc:     baseURL + "/post/" + post.Slug,
-			LastMod: time.Unix(lastMod, 0).Format("2006-01-02"),
+			Loc:     baseURL + path,
+			LastMod: sitemapDate(lastMod),
 		})
 	}
 
 	w.Header().Set("Content-Type", "application/xml; charset=utf-8")
 	_, _ = w.Write([]byte(xml.Header))
 	_ = xml.NewEncoder(w).Encode(doc)
+}
+
+func sitemapBaseURL(value string, r *http.Request) string {
+	value = strings.TrimRight(strings.TrimSpace(value), "/")
+	if value != "" {
+		return value
+	}
+	scheme := "http"
+	if r != nil && r.TLS != nil {
+		scheme = "https"
+	}
+	host := ""
+	if r != nil {
+		host = r.Host
+	}
+	if host == "" {
+		return ""
+	}
+	return scheme + "://" + host
+}
+
+func postPath(post plugin.PublicContent) string {
+	slug := strings.TrimSpace(post.Slug)
+	if slug == "" && post.SlugID > 0 {
+		slug = strconv.FormatInt(post.SlugID, 10)
+	}
+	if slug == "" && post.CID > 0 {
+		slug = strconv.FormatInt(post.CID, 10)
+	}
+	if slug == "" {
+		return ""
+	}
+	return "/post/" + slug + ".html"
+}
+
+func sitemapDate(ts int64) string {
+	if ts <= 0 {
+		return ""
+	}
+	return time.Unix(ts, 0).Format("2006-01-02")
 }
 
 type urlSet struct {

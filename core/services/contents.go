@@ -154,7 +154,7 @@ func (s *ContentService) ListPublishedPlugin(ctx context.Context, limit, offset 
 	out := make([]plugin.PublicContent, 0, len(contents))
 	for _, c := range contents {
 		out = append(out, plugin.PublicContent{
-			CID: c.CID, Title: c.Title, Slug: c.Slug, Created: c.Created,
+			CID: c.CID, Title: c.Title, Slug: c.Slug, SlugID: c.SlugID, Created: c.Created,
 			Modified: c.Modified, Text: c.Text, Type: c.Type, Status: c.Status,
 		})
 	}
@@ -166,7 +166,7 @@ func (s *ContentService) ContentByIDPlugin(ctx context.Context, id int64) (plugi
 	if err != nil {
 		return plugin.PublicContent{}, err
 	}
-	return plugin.PublicContent{CID: content.CID, Title: content.Title, Slug: content.Slug, Created: content.Created, Modified: content.Modified, Text: content.Text, Type: content.Type, Status: content.Status}, nil
+	return plugin.PublicContent{CID: content.CID, Title: content.Title, Slug: content.Slug, SlugID: content.SlugID, Created: content.Created, Modified: content.Modified, Text: content.Text, Type: content.Type, Status: content.Status}, nil
 }
 
 func (s *ContentService) ListAll(ctx context.Context, limit, offset int) ([]models.Content, error) {
