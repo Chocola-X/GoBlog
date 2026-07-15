@@ -4,36 +4,72 @@
 {{if .Saved}}<div class="notice">设置已保存。</div>{{end}}
 {{if .Error}}<div class="notice danger">{{.Error}}</div>{{end}}
 <form method="post" class="form-panel field-stack">
-  <mdui-text-field name="site_title" label="{{T "Site title"}}" value="{{index .Options "site_title"}}" required></mdui-text-field>
-  <mdui-text-field name="base_url" label="{{T "Site URL"}}" value="{{index .Options "base_url"}}" required></mdui-text-field>
-  <mdui-text-field name="site_description" label="{{T "Site description"}}" value="{{index .Options "site_description"}}"></mdui-text-field>
-  <mdui-text-field name="site_keywords" label="{{T "Keywords"}}" value="{{index .Options "site_keywords"}}"></mdui-text-field>
-  <mdui-select name="site_language" label="{{T "Language"}}" value="{{index .Options "site_language"}}">
-    <mdui-menu-item value="zh-CN">简体中文</mdui-menu-item>
-    <mdui-menu-item value="en-US">English</mdui-menu-item>
-  </mdui-select>
-  <mdui-text-field name="site_timezone" label="{{T "Timezone"}}" helper="Asia/Shanghai, UTC, Local" value="{{index .Options "site_timezone"}}"></mdui-text-field>
-  <mdui-select name="allow_register" label="{{T "Allow registration"}}" value="{{index .Options "allow_register"}}">
-    <mdui-menu-item value="0">{{T "Disallow"}}</mdui-menu-item>
-    <mdui-menu-item value="1">{{T "Allow"}}</mdui-menu-item>
-  </mdui-select>
-  <mdui-select name="register_default_role" label="{{T "Default registration role"}}" value="{{index .Options "register_default_role"}}">
-    <mdui-menu-item value="subscriber">{{T "Subscriber"}}</mdui-menu-item>
-    <mdui-menu-item value="visitor">{{T "Visitor"}}</mdui-menu-item>
-  </mdui-select>
-  <mdui-text-field name="cookie_prefix" label="{{T "Cookie prefix"}}" helper="gb_" value="{{index .Options "cookie_prefix"}}"></mdui-text-field>
-  <mdui-select name="cookie_secure" label="{{T "Cookie Secure"}}" value="{{index .Options "cookie_secure"}}">
-    <mdui-menu-item value="0">{{T "Auto off"}}</mdui-menu-item>
-    <mdui-menu-item value="1">{{T "Force secure"}}</mdui-menu-item>
-  </mdui-select>
-  <mdui-select name="cookie_samesite" label="{{T "Cookie SameSite"}}" value="{{index .Options "cookie_samesite"}}">
-    <mdui-menu-item value="Lax">Lax</mdui-menu-item>
-    <mdui-menu-item value="Strict">Strict</mdui-menu-item>
-    <mdui-menu-item value="None">None</mdui-menu-item>
-  </mdui-select>
-  <mdui-text-field name="active_theme" label="{{T "Active theme"}}" value="{{index .Options "active_theme"}}"></mdui-text-field>
-  <mdui-text-field name="upload_allowed_exts" label="{{T "Allowed upload extensions"}}" helper="jpg,png,webp" value="{{index .Options "upload_allowed_exts"}}"></mdui-text-field>
-  <mdui-text-field name="upload_max_size" label="{{T "Upload max bytes"}}" type="number" value="{{index .Options "upload_max_size"}}"></mdui-text-field>
+  <fieldset class="fieldset">
+    <legend>站点信息</legend>
+    <mdui-text-field name="site_title" label="{{T "Site title"}}" value="{{index .Options "site_title"}}" required></mdui-text-field>
+    <mdui-text-field name="base_url" label="{{T "Site URL"}}" value="{{index .Options "base_url"}}" required></mdui-text-field>
+    <mdui-text-field name="site_description" label="{{T "Site description"}}" value="{{index .Options "site_description"}}"></mdui-text-field>
+    <mdui-text-field name="site_keywords" label="{{T "Keywords"}}" value="{{index .Options "site_keywords"}}"></mdui-text-field>
+    <mdui-select name="site_language" label="{{T "Language"}}" value="{{index .Options "site_language"}}">
+      <mdui-menu-item value="zh-CN">简体中文</mdui-menu-item>
+      <mdui-menu-item value="en-US">English</mdui-menu-item>
+    </mdui-select>
+    <mdui-select name="site_timezone" label="{{T "Timezone"}}" value="{{index .Options "site_timezone"}}">
+      <mdui-menu-item value="Local">本机时区</mdui-menu-item>
+      <mdui-menu-item value="UTC">UTC</mdui-menu-item>
+      <mdui-menu-item value="Asia/Shanghai">Asia/Shanghai</mdui-menu-item>
+      <mdui-menu-item value="Asia/Tokyo">Asia/Tokyo</mdui-menu-item>
+      <mdui-menu-item value="Asia/Seoul">Asia/Seoul</mdui-menu-item>
+      <mdui-menu-item value="Asia/Singapore">Asia/Singapore</mdui-menu-item>
+      <mdui-menu-item value="Asia/Hong_Kong">Asia/Hong_Kong</mdui-menu-item>
+      <mdui-menu-item value="Europe/London">Europe/London</mdui-menu-item>
+      <mdui-menu-item value="Europe/Paris">Europe/Paris</mdui-menu-item>
+      <mdui-menu-item value="Europe/Berlin">Europe/Berlin</mdui-menu-item>
+      <mdui-menu-item value="America/New_York">America/New_York</mdui-menu-item>
+      <mdui-menu-item value="America/Chicago">America/Chicago</mdui-menu-item>
+      <mdui-menu-item value="America/Denver">America/Denver</mdui-menu-item>
+      <mdui-menu-item value="America/Los_Angeles">America/Los_Angeles</mdui-menu-item>
+      <mdui-menu-item value="Australia/Sydney">Australia/Sydney</mdui-menu-item>
+    </mdui-select>
+  </fieldset>
+
+  <fieldset class="fieldset">
+    <legend>账户和会话</legend>
+    <mdui-select name="allow_register" label="{{T "Allow registration"}}" value="{{index .Options "allow_register"}}">
+      <mdui-menu-item value="0">{{T "Disallow"}}</mdui-menu-item>
+      <mdui-menu-item value="1">{{T "Allow"}}</mdui-menu-item>
+    </mdui-select>
+    <mdui-select name="register_default_role" label="{{T "Default registration role"}}" value="{{index .Options "register_default_role"}}">
+      <mdui-menu-item value="subscriber">{{T "Subscriber"}}</mdui-menu-item>
+      <mdui-menu-item value="visitor">{{T "Visitor"}}</mdui-menu-item>
+    </mdui-select>
+    <mdui-text-field name="cookie_prefix" label="{{T "Cookie prefix"}}" helper="gb_" value="{{index .Options "cookie_prefix"}}"></mdui-text-field>
+    <mdui-select name="cookie_secure" label="{{T "Cookie Secure"}}" value="{{index .Options "cookie_secure"}}">
+      <mdui-menu-item value="0">{{T "Auto off"}}</mdui-menu-item>
+      <mdui-menu-item value="1">{{T "Force secure"}}</mdui-menu-item>
+    </mdui-select>
+    <mdui-select name="cookie_samesite" label="{{T "Cookie SameSite"}}" value="{{index .Options "cookie_samesite"}}">
+      <mdui-menu-item value="Lax">Lax</mdui-menu-item>
+      <mdui-menu-item value="Strict">Strict</mdui-menu-item>
+      <mdui-menu-item value="None">None</mdui-menu-item>
+    </mdui-select>
+  </fieldset>
+
+  <fieldset class="fieldset">
+    <legend>上传和附件</legend>
+    <mdui-text-field name="upload_allowed_exts" label="{{T "Allowed upload extensions"}}" helper="jpg,png,webp" value="{{index .Options "upload_allowed_exts"}}"></mdui-text-field>
+    <mdui-text-field name="upload_max_size_mb" label="上传文件大小上限（MB）" type="number" min="1" max="2048" step="1" value="{{index .Options "upload_max_size_mb"}}"></mdui-text-field>
+    <mdui-select name="upload_replace_same_ext_only" label="{{T "Replacement extension policy"}}" value="{{index .Options "upload_replace_same_ext_only"}}">
+      <mdui-menu-item value="1">{{T "Same extension required"}}</mdui-menu-item>
+      <mdui-menu-item value="0">{{T "Different extension allowed"}}</mdui-menu-item>
+    </mdui-select>
+    <mdui-select name="attachment_delete_policy" label="{{T "Attachment delete policy"}}" value="{{index .Options "attachment_delete_policy"}}">
+      <mdui-menu-item value="keep">{{T "Keep attachments"}}</mdui-menu-item>
+      <mdui-menu-item value="record">{{T "Delete records"}}</mdui-menu-item>
+      <mdui-menu-item value="file">{{T "Delete records and files"}}</mdui-menu-item>
+    </mdui-select>
+  </fieldset>
+
   <fieldset class="fieldset image-processing-options" data-image-processing-options>
     <legend>图片处理</legend>
     <mdui-select name="upload_image_processing" label="图片上传保存方式" value="{{index .Options "upload_image_processing"}}">
@@ -53,17 +89,8 @@
     <div data-thumbnail-quality {{if eq (index .Options "thumbnail_format") "disabled"}}hidden{{end}}>
       <mdui-text-field name="thumbnail_quality" type="number" min="1" max="100" step="1" label="后台缩略图质量" value="{{index .Options "thumbnail_quality"}}" helper="可留空，默认使用 82 的中高质量"></mdui-text-field>
     </div>
-    <span class="muted">缩略图只用于后台预览，不会改变文章中引用的原图地址；SVG 保持矢量原文件。</span>
+    <span class="muted full-span">缩略图只用于后台预览，不会改变文章中引用的原图地址；SVG 保持矢量原文件。</span>
   </fieldset>
-  <mdui-select name="upload_replace_same_ext_only" label="{{T "Replacement extension policy"}}" value="{{index .Options "upload_replace_same_ext_only"}}">
-    <mdui-menu-item value="1">{{T "Same extension required"}}</mdui-menu-item>
-    <mdui-menu-item value="0">{{T "Different extension allowed"}}</mdui-menu-item>
-  </mdui-select>
-  <mdui-select name="attachment_delete_policy" label="{{T "Attachment delete policy"}}" value="{{index .Options "attachment_delete_policy"}}">
-    <mdui-menu-item value="keep">{{T "Keep attachments"}}</mdui-menu-item>
-    <mdui-menu-item value="record">{{T "Delete records"}}</mdui-menu-item>
-    <mdui-menu-item value="file">{{T "Delete records and files"}}</mdui-menu-item>
-  </mdui-select>
   <div class="form-actions"><mdui-button type="submit">{{T "Save settings"}}</mdui-button></div>
 </form>
 {{end}}

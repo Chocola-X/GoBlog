@@ -1931,10 +1931,28 @@ func (a *App) adminOptionsGeneral(w http.ResponseWriter, r *http.Request) {
 	if !a.requireRole(w, r, "administrator") {
 		return
 	}
-	keys := []string{"site_title", "site_description", "site_keywords", "base_url", "site_language", "site_timezone", "allow_register", "register_default_role", "cookie_prefix", "cookie_secure", "cookie_samesite", "active_theme", "upload_allowed_exts", "upload_max_size", "upload_image_processing", "upload_webp_quality", "image_processing_memory_mb", "thumbnail_format", "thumbnail_quality", "upload_replace_same_ext_only", "attachment_delete_policy"}
+	keys := []string{"site_title", "site_description", "site_keywords", "base_url", "site_language", "site_timezone", "allow_register", "register_default_role", "cookie_prefix", "cookie_secure", "cookie_samesite", "upload_allowed_exts", "upload_max_size", "upload_image_processing", "upload_webp_quality", "image_processing_memory_mb", "thumbnail_format", "thumbnail_quality", "upload_replace_same_ext_only", "attachment_delete_policy"}
+	if r.Method == http.MethodGet {
+		options, err := a.Options.All(r.Context())
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		a.renderAdmin(w, r, "options_general.html", map[string]any{"Title": "General Settings", "Options": prepareGeneralOptions(options), "Saved": r.URL.Query().Get("saved") == "1"})
+		return
+	}
 	if r.Method == http.MethodPost {
 		if err := r.ParseForm(); err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if err := normalizeGeneralOptionsForm(r); err != nil {
+			options, _ := a.Options.All(r.Context())
+			for _, key := range keys {
+				options[key] = r.FormValue(key)
+			}
+			options["upload_max_size_mb"] = r.FormValue("upload_max_size_mb")
+			a.renderAdmin(w, r, "options_general.html", map[string]any{"Title": "General Settings", "Options": prepareGeneralOptions(options), "Error": err.Error()})
 			return
 		}
 		if strings.TrimSpace(r.FormValue("upload_image_processing")) == "" {
@@ -1954,11 +1972,45 @@ func (a *App) adminOptionsGeneral(w http.ResponseWriter, r *http.Request) {
 			for _, key := range keys {
 				options[key] = r.FormValue(key)
 			}
-			a.renderAdmin(w, r, "options_general.html", map[string]any{"Title": "General Settings", "Options": options, "Error": err.Error()})
+			options["upload_max_size_mb"] = r.FormValue("upload_max_size_mb")
+			a.renderAdmin(w, r, "options_general.html", map[string]any{"Title": "General Settings", "Options": prepareGeneralOptions(options), "Error": err.Error()})
 			return
 		}
 	}
 	a.optionsForm(w, r, "General Settings", "options_general.html", keys)
+}
+
+func normalizeGeneralOptionsForm(r *http.Request) error {
+	rawMB := strings.TrimSpace(r.FormValue("upload_max_size_mb"))
+	if rawMB == "" {
+		rawMB = "16"
+	}
+	mb, err := strconv.Atoi(rawMB)
+	if err != nil || mb < 1 || mb > 2048 {
+		return fmt.Errorf("上传文件大小上限必须是 1 到 2048 MB 的整数")
+	}
+	r.Form.Set("upload_max_size", strconv.FormatInt(int64(mb)*1024*1024, 10))
+	return nil
+}
+
+func prepareGeneralOptions(options map[string]string) map[string]string {
+	out := map[string]string{}
+	for key, value := range options {
+		out[key] = value
+	}
+	sizeBytes := int64(optionInt(out["upload_max_size"], 16*1024*1024))
+	if sizeBytes <= 0 {
+		sizeBytes = 16 * 1024 * 1024
+	}
+	mb := (sizeBytes + 1024*1024 - 1) / (1024 * 1024)
+	if mb < 1 {
+		mb = 1
+	}
+	out["upload_max_size_mb"] = strconv.FormatInt(mb, 10)
+	if strings.TrimSpace(out["site_timezone"]) == "" {
+		out["site_timezone"] = "Local"
+	}
+	return out
 }
 
 func validateImageProcessingOptions(r *http.Request) error {
@@ -5359,7 +5411,7 @@ func copyStagedUpload(target string, staged stagedUpload) error {
 
 func (a *App) saveUpload(ctx context.Context, src io.Reader, original string, parent int64) (savedUpload, error) {
 	var result savedUpload
-	maxSize := int64(optionInt(a.option(ctx, "upload_max_size", "10485760"), 10485760))
+	maxSize := int64(optionInt(a.option(ctx, "upload_max_size", "16777216"), 16777216))
 	if maxSize <= 0 {
 		maxSize = 10 << 20
 	}
@@ -5522,7 +5574,7 @@ func (a *App) saveThemeSettingUpload(ctx context.Context, src io.Reader, origina
 
 func (a *App) saveSettingsUpload(ctx context.Context, bucket string, src io.Reader, original string) (savedSettingsUpload, error) {
 	var result savedSettingsUpload
-	maxSize := int64(optionInt(a.option(ctx, "upload_max_size", "10485760"), 10485760))
+	maxSize := int64(optionInt(a.option(ctx, "upload_max_size", "16777216"), 16777216))
 	if maxSize <= 0 {
 		maxSize = 10 << 20
 	}
@@ -5583,7 +5635,7 @@ func adminSettingImageExt(ext string) bool {
 }
 
 func (a *App) replaceUpload(ctx context.Context, src io.Reader, original string, parent int64, content models.Content, old models.AttachmentMeta) (savedUpload, error) {
-	maxSize := int64(optionInt(a.option(ctx, "upload_max_size", "10485760"), 10485760))
+	maxSize := int64(optionInt(a.option(ctx, "upload_max_size", "16777216"), 16777216))
 	if maxSize <= 0 {
 		maxSize = 10 << 20
 	}

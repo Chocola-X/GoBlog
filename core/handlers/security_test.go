@@ -3803,6 +3803,14 @@ func TestAdminI18nEnglishGeneralSettings(t *testing.T) {
 			t.Fatalf("missing english text %q in %s", want, body)
 		}
 	}
+	for _, want := range []string{`name="site_timezone"`, `value="Local"`, `name="upload_max_size_mb"`} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("general options missing %q in %s", want, body)
+		}
+	}
+	if strings.Contains(body, `name="active_theme"`) {
+		t.Fatalf("general options should not render active_theme: %s", body)
+	}
 	for _, unwanted := range []string{"基本设置", "站点名称", "是否允许注册", "保存设置"} {
 		if strings.Contains(body, unwanted) {
 			t.Fatalf("unexpected chinese text %q in %s", unwanted, body)
@@ -3822,6 +3830,7 @@ func TestFlashNoticeSurvivesRedirectAndClears(t *testing.T) {
 		"register_default_role":        {"subscriber"},
 		"cookie_secure":                {"0"},
 		"cookie_samesite":              {"Lax"},
+		"upload_max_size_mb":           {"16"},
 		"upload_replace_same_ext_only": {"1"},
 		"attachment_delete_policy":     {"keep"},
 	}
@@ -3841,6 +3850,9 @@ func TestFlashNoticeSurvivesRedirectAndClears(t *testing.T) {
 	}
 	if flash == nil {
 		t.Fatal("expected flash cookie")
+	}
+	if value, err := app.Options.Get(context.Background(), "upload_max_size"); err != nil || value != "16777216" {
+		t.Fatalf("upload_max_size = %q, err = %v, want 16777216", value, err)
 	}
 
 	req = httptest.NewRequest(http.MethodGet, "/admin/options/general", nil)

@@ -258,6 +258,16 @@ body.admin-pjax-loading .admin-main {
   gap: 20px;
 }
 
+.field-stack mdui-text-field,
+.field-stack mdui-select,
+.field-stack mdui-textarea,
+.fieldset mdui-text-field,
+.fieldset mdui-select,
+.fieldset mdui-textarea {
+  width: 100%;
+  min-width: 0;
+}
+
 .schema-form {
   gap: 24px;
 }
@@ -452,12 +462,26 @@ mdui-select::part(text-field__container) {
 }
 
 .fieldset {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 12px 18px;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr));
+  align-items: start;
+  gap: 18px;
   padding: 14px;
   border: 1px solid rgb(var(--mdui-color-outline-variant));
   border-radius: 8px;
+}
+
+.fieldset > * {
+  min-width: 0;
+}
+
+.fieldset .full-span,
+.fieldset > .muted,
+.fieldset > .form-actions,
+.fieldset > [data-comment-interval],
+.fieldset > [data-webp-quality],
+.fieldset > [data-thumbnail-quality] {
+  grid-column: 1 / -1;
 }
 
 .fieldset legend {
@@ -500,7 +524,16 @@ mdui-select::part(text-field__container) {
 }
 
 .comment-option-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
   min-height: 40px;
+}
+
+.comment-option-row mdui-select,
+.comment-option-row mdui-text-field {
+  flex: 1 1 260px;
 }
 
 .image-processing-options [data-webp-quality][hidden],

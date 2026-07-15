@@ -2,9 +2,15 @@
 <div class="page-head"><div><h1>永久链接</h1></div></div>{{template "options_tabs" .}}{{if .Saved}}<div class="notice">设置已保存。</div>{{end}}
 {{if .Error}}<div class="notice danger">{{.Error}}</div>{{end}}
 <form method="post" class="form-panel field-stack">
-  <mdui-text-field name="permalink_post" label="文章路径" value="{{index .Options "permalink_post"}}" helper="变量：{cid} {slug} {category} {directory} {year} {month} {day}"></mdui-text-field>
-  <mdui-text-field name="permalink_page" label="页面路径" value="{{index .Options "permalink_page"}}" helper="变量：{cid} {slug} {directory}"></mdui-text-field>
-  <mdui-text-field name="permalink_category" label="分类路径" value="{{index .Options "permalink_category"}}" helper="变量：{mid} {slug} {directory}"></mdui-text-field>
+  <fieldset class="fieldset">
+    <legend>内容路径</legend>
+    <mdui-text-field name="permalink_post" label="文章路径" value="{{index .Options "permalink_post"}}" helper="变量：{cid} {slug} {category} {directory} {year} {month} {day}"></mdui-text-field>
+    <mdui-text-field name="permalink_page" label="页面路径" value="{{index .Options "permalink_page"}}" helper="变量：{cid} {slug} {directory}"></mdui-text-field>
+  </fieldset>
+  <fieldset class="fieldset">
+    <legend>归档路径</legend>
+    <mdui-text-field name="permalink_category" label="分类路径" value="{{index .Options "permalink_category"}}" helper="变量：{mid} {slug} {directory}"></mdui-text-field>
+  </fieldset>
   <div class="form-actions"><mdui-button type="submit">保存设置</mdui-button></div>
 </form>
 {{end}}{{define "options_tabs"}}<div class="subnav"><mdui-button variant="tonal" href="/admin/options/general">基本</mdui-button><mdui-button variant="tonal" href="/admin/options/reading">阅读</mdui-button><mdui-button variant="tonal" href="/admin/options/discussion">评论</mdui-button><mdui-button variant="tonal" href="/admin/options/permalink">永久链接</mdui-button></div>{{end}}

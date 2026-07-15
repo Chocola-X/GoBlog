@@ -30,50 +30,65 @@
     <mdui-text-field name="comments_ip_blacklist" label="IP 黑名单" rows="3" helper="每行或逗号分隔；支持以 * 结尾的网段前缀">{{index .Options "comments_ip_blacklist"}}</mdui-text-field>
   </fieldset>
 
-  <div class="comment-option-row">
-    <mdui-checkbox name="comments_require_mail" value="1" {{if eq (index .Options "comments_require_mail") "1"}}checked{{end}}>访客必须填写邮箱</mdui-checkbox>
-    <input type="hidden" name="comments_require_mail" value="0">
-  </div>
-  <div class="comment-option-row">
-    <mdui-checkbox name="comments_require_url" value="1" {{if eq (index .Options "comments_require_url") "1"}}checked{{end}}>访客必须填写网址</mdui-checkbox>
-    <input type="hidden" name="comments_require_url" value="0">
-  </div>
-  <div class="comment-option-row">
-    <mdui-checkbox name="comments_show_url" value="1" {{if eq (index .Options "comments_show_url") "1"}}checked{{end}}>评论者名称显示主页链接</mdui-checkbox>
-    <input type="hidden" name="comments_show_url" value="0">
-  </div>
-  <div class="comment-option-row">
-    <mdui-checkbox name="comments_url_nofollow" value="1" {{if eq (index .Options "comments_url_nofollow") "1"}}checked{{end}}>评论者链接添加 nofollow</mdui-checkbox>
-    <input type="hidden" name="comments_url_nofollow" value="0">
-  </div>
-  <div class="comment-option-row">
-    <mdui-checkbox name="comments_markdown" value="1" {{if eq (index .Options "comments_markdown") "1"}}checked{{end}}>评论支持 Markdown</mdui-checkbox>
-    <input type="hidden" name="comments_markdown" value="0">
-  </div>
-  <div class="comment-option-row">
-    <mdui-checkbox name="comments_avatar" value="1" {{if eq (index .Options "comments_avatar") "1"}}checked{{end}}>显示评论者头像</mdui-checkbox>
-    <input type="hidden" name="comments_avatar" value="0">
-  </div>
-  <mdui-text-field name="avatar_url_template" label="自定义邮箱头像地址" value="{{index .Options "avatar_url_template"}}" placeholder="https://weavatar.com/avatar/{hash}?s={size}" helper="留空使用 Gravatar；支持 {hash} 和 {size} 占位符"></mdui-text-field>
-  <mdui-select name="comments_avatar_rating" label="Gravatar 评级" value="{{index .Options "comments_avatar_rating"}}">
-    <mdui-menu-item value="g">G</mdui-menu-item>
-    <mdui-menu-item value="pg">PG</mdui-menu-item>
-    <mdui-menu-item value="r">R</mdui-menu-item>
-    <mdui-menu-item value="x">X</mdui-menu-item>
-  </mdui-select>
-  <mdui-select name="comments_order" label="评论排序" value="{{index .Options "comments_order"}}">
-    <mdui-menu-item value="ASC">较旧在前</mdui-menu-item>
-    <mdui-menu-item value="DESC">较新在前</mdui-menu-item>
-  </mdui-select>
-  <mdui-select name="comments_page_display" label="默认评论页" value="{{index .Options "comments_page_display"}}">
-    <mdui-menu-item value="first">第一页</mdui-menu-item>
-    <mdui-menu-item value="last">最后一页</mdui-menu-item>
-  </mdui-select>
-  <mdui-text-field name="comment_date_format" label="评论日期格式" value="{{index .Options "comment_date_format"}}"></mdui-text-field>
-  <mdui-text-field name="comments_list_size" label="后台每页评论数" type="number" min="1" max="100" step="1" value="{{index .Options "comments_list_size"}}"></mdui-text-field>
-  <mdui-text-field name="comments_page_size" label="前台每页评论数" type="number" min="1" max="1000" step="1" value="{{index .Options "comments_page_size"}}"></mdui-text-field>
-  <mdui-text-field name="comments_max_nesting_levels" label="最大嵌套层级" type="number" min="2" max="7" step="1" value="{{index .Options "comments_max_nesting_levels"}}"></mdui-text-field>
-  <mdui-text-field name="comments_html_tag_allowed" label="允许的 HTML 标签" helper="例如：a,code,strong；默认全部转义" value="{{index .Options "comments_html_tag_allowed"}}"></mdui-text-field>
+  <fieldset class="fieldset">
+    <legend>访客身份</legend>
+    <div class="comment-option-row">
+      <mdui-checkbox name="comments_require_mail" value="1" {{if eq (index .Options "comments_require_mail") "1"}}checked{{end}}>访客必须填写邮箱</mdui-checkbox>
+      <input type="hidden" name="comments_require_mail" value="0">
+    </div>
+    <div class="comment-option-row">
+      <mdui-checkbox name="comments_require_url" value="1" {{if eq (index .Options "comments_require_url") "1"}}checked{{end}}>访客必须填写网址</mdui-checkbox>
+      <input type="hidden" name="comments_require_url" value="0">
+    </div>
+    <div class="comment-option-row">
+      <mdui-checkbox name="comments_show_url" value="1" {{if eq (index .Options "comments_show_url") "1"}}checked{{end}}>评论者名称显示主页链接</mdui-checkbox>
+      <input type="hidden" name="comments_show_url" value="0">
+    </div>
+    <div class="comment-option-row">
+      <mdui-checkbox name="comments_url_nofollow" value="1" {{if eq (index .Options "comments_url_nofollow") "1"}}checked{{end}}>评论者链接添加 nofollow</mdui-checkbox>
+      <input type="hidden" name="comments_url_nofollow" value="0">
+    </div>
+  </fieldset>
+
+  <fieldset class="fieldset">
+    <legend>头像</legend>
+    <div class="comment-option-row">
+      <mdui-checkbox name="comments_avatar" value="1" {{if eq (index .Options "comments_avatar") "1"}}checked{{end}}>显示评论者头像</mdui-checkbox>
+      <input type="hidden" name="comments_avatar" value="0">
+    </div>
+    <mdui-text-field name="avatar_url_template" label="自定义邮箱头像地址" value="{{index .Options "avatar_url_template"}}" placeholder="https://weavatar.com/avatar/{hash}?s={size}" helper="留空使用 Gravatar；支持 {hash} 和 {size} 占位符"></mdui-text-field>
+    <mdui-select name="comments_avatar_rating" label="Gravatar 评级" value="{{index .Options "comments_avatar_rating"}}">
+      <mdui-menu-item value="g">G</mdui-menu-item>
+      <mdui-menu-item value="pg">PG</mdui-menu-item>
+      <mdui-menu-item value="r">R</mdui-menu-item>
+      <mdui-menu-item value="x">X</mdui-menu-item>
+    </mdui-select>
+  </fieldset>
+
+  <fieldset class="fieldset">
+    <legend>排序和分页</legend>
+    <mdui-select name="comments_order" label="评论排序" value="{{index .Options "comments_order"}}">
+      <mdui-menu-item value="ASC">较旧在前</mdui-menu-item>
+      <mdui-menu-item value="DESC">较新在前</mdui-menu-item>
+    </mdui-select>
+    <mdui-select name="comments_page_display" label="默认评论页" value="{{index .Options "comments_page_display"}}">
+      <mdui-menu-item value="first">第一页</mdui-menu-item>
+      <mdui-menu-item value="last">最后一页</mdui-menu-item>
+    </mdui-select>
+    <mdui-text-field name="comment_date_format" label="评论日期格式" value="{{index .Options "comment_date_format"}}"></mdui-text-field>
+    <mdui-text-field name="comments_list_size" label="后台每页评论数" type="number" min="1" max="100" step="1" value="{{index .Options "comments_list_size"}}"></mdui-text-field>
+    <mdui-text-field name="comments_page_size" label="前台每页评论数" type="number" min="1" max="1000" step="1" value="{{index .Options "comments_page_size"}}"></mdui-text-field>
+    <mdui-text-field name="comments_max_nesting_levels" label="最大嵌套层级" type="number" min="2" max="7" step="1" value="{{index .Options "comments_max_nesting_levels"}}"></mdui-text-field>
+  </fieldset>
+
+  <fieldset class="fieldset">
+    <legend>内容格式</legend>
+    <div class="comment-option-row">
+      <mdui-checkbox name="comments_markdown" value="1" {{if eq (index .Options "comments_markdown") "1"}}checked{{end}}>评论支持 Markdown</mdui-checkbox>
+      <input type="hidden" name="comments_markdown" value="0">
+    </div>
+    <mdui-text-field name="comments_html_tag_allowed" label="允许的 HTML 标签" helper="例如：a,code,strong；默认全部转义" value="{{index .Options "comments_html_tag_allowed"}}"></mdui-text-field>
+  </fieldset>
   <div class="form-actions"><mdui-button type="submit">保存设置</mdui-button></div>
 </form>
 {{end}}

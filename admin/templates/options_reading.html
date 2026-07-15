@@ -1,25 +1,36 @@
 {{define "content"}}
 <div class="page-head"><div><h1>阅读设置</h1></div></div>{{template "options_tabs" .}}{{if .Saved}}<div class="notice">设置已保存。</div>{{end}}
 <form method="post" class="form-panel field-stack">
-  <mdui-text-field name="post_date_format" label="文章日期格式" value="{{index .Options "post_date_format"}}"></mdui-text-field>
-  <mdui-text-field name="posts_list_size" label="文章列表数目" type="number" value="{{index .Options "posts_list_size"}}"></mdui-text-field>
-  <mdui-text-field name="page_size" label="每页文章数目" type="number" value="{{index .Options "page_size"}}"></mdui-text-field>
-  <mdui-select name="content_render_mode" label="正文渲染模式" value="{{index .Options "content_render_mode"}}">
-    <mdui-menu-item value="markdown">Markdown（安全转义 HTML）</mdui-menu-item>
-    <mdui-menu-item value="autop">纯文本 / AutoP</mdui-menu-item>
-    <mdui-menu-item value="html">允许 HTML（仅用于受信任作者）</mdui-menu-item>
-  </mdui-select>
-  <mdui-select name="feed_full_text" label="聚合全文输出" value="{{index .Options "feed_full_text"}}">
-    <mdui-menu-item value="0">仅输出摘要</mdui-menu-item>
-    <mdui-menu-item value="1">全文输出</mdui-menu-item>
-  </mdui-select>
-  <mdui-select name="front_page_type" label="首页显示" value="{{index .Options "front_page_type"}}">
-    <mdui-menu-item value="posts">最新文章</mdui-menu-item>
-    <mdui-menu-item value="page">指定页面</mdui-menu-item>
-  </mdui-select>
-  <mdui-text-field name="front_page_cid" label="首页页面 CID" type="number" helper="首页显示为指定页面时生效" value="{{index .Options "front_page_cid"}}"></mdui-text-field>
-  <mdui-text-field name="posts_index_path" label="文章列表路径" helper="首页不是最新文章时可设置，例如 /blog" value="{{index .Options "posts_index_path"}}"></mdui-text-field>
-  <mdui-text-field name="revision_limit" label="每篇内容保留的修订版本数" type="number" min="1" max="1000" step="1" helper="默认 20，包含文章和独立页面" value="{{index .Options "revision_limit"}}"></mdui-text-field>
+  <fieldset class="fieldset">
+    <legend>文章显示</legend>
+    <mdui-text-field name="post_date_format" label="文章日期格式" value="{{index .Options "post_date_format"}}"></mdui-text-field>
+    <mdui-text-field name="posts_list_size" label="文章列表数目" type="number" value="{{index .Options "posts_list_size"}}"></mdui-text-field>
+    <mdui-text-field name="page_size" label="每页文章数目" type="number" value="{{index .Options "page_size"}}"></mdui-text-field>
+    <mdui-select name="content_render_mode" label="正文渲染模式" value="{{index .Options "content_render_mode"}}">
+      <mdui-menu-item value="markdown">Markdown（安全转义 HTML）</mdui-menu-item>
+      <mdui-menu-item value="autop">纯文本 / AutoP</mdui-menu-item>
+      <mdui-menu-item value="html">允许 HTML（仅用于受信任作者）</mdui-menu-item>
+    </mdui-select>
+  </fieldset>
+
+  <fieldset class="fieldset">
+    <legend>首页和聚合</legend>
+    <mdui-select name="feed_full_text" label="聚合全文输出" value="{{index .Options "feed_full_text"}}">
+      <mdui-menu-item value="0">仅输出摘要</mdui-menu-item>
+      <mdui-menu-item value="1">全文输出</mdui-menu-item>
+    </mdui-select>
+    <mdui-select name="front_page_type" label="首页显示" value="{{index .Options "front_page_type"}}">
+      <mdui-menu-item value="posts">最新文章</mdui-menu-item>
+      <mdui-menu-item value="page">指定页面</mdui-menu-item>
+    </mdui-select>
+    <mdui-text-field name="front_page_cid" label="首页页面 CID" type="number" helper="首页显示为指定页面时生效" value="{{index .Options "front_page_cid"}}"></mdui-text-field>
+    <mdui-text-field name="posts_index_path" label="文章列表路径" helper="首页不是最新文章时可设置，例如 /blog" value="{{index .Options "posts_index_path"}}"></mdui-text-field>
+  </fieldset>
+
+  <fieldset class="fieldset">
+    <legend>修订版本</legend>
+    <mdui-text-field name="revision_limit" label="每篇内容保留的修订版本数" type="number" min="1" max="1000" step="1" helper="默认 20，包含文章和独立页面" value="{{index .Options "revision_limit"}}"></mdui-text-field>
+  </fieldset>
   <div class="form-actions"><mdui-button type="submit">保存设置</mdui-button></div>
 </form>
 {{end}}{{define "options_tabs"}}<div class="subnav"><mdui-button variant="tonal" href="/admin/options/general">基本</mdui-button><mdui-button variant="tonal" href="/admin/options/reading">阅读</mdui-button><mdui-button variant="tonal" href="/admin/options/discussion">评论</mdui-button><mdui-button variant="tonal" href="/admin/options/permalink">永久链接</mdui-button></div>{{end}}

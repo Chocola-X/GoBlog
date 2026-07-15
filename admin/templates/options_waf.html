@@ -46,11 +46,11 @@
     <div class="comment-option-row">
       <mdui-checkbox name="waf_trust_proxy_headers" value="1" {{if eq (index .Options "waf_trust_proxy_headers") "1"}}checked{{end}}>信任 X-Forwarded-For / X-Real-IP</mdui-checkbox>
       <input type="hidden" name="waf_trust_proxy_headers" value="0">
-      <mdui-select name="waf_trust_proxy_mode" label="匹配模式" value="{{index .Options "waf_trust_proxy_mode"}}">
-        <mdui-menu-item value="allowlist">白名单模式</mdui-menu-item>
-        <mdui-menu-item value="denylist">黑名单模式</mdui-menu-item>
-      </mdui-select>
     </div>
+    <mdui-select name="waf_trust_proxy_mode" label="匹配模式" value="{{index .Options "waf_trust_proxy_mode"}}">
+      <mdui-menu-item value="allowlist">白名单模式</mdui-menu-item>
+      <mdui-menu-item value="denylist">黑名单模式</mdui-menu-item>
+    </mdui-select>
     <mdui-text-field name="waf_trust_proxy_ips" label="代理 IP 地址组" rows="5" value="{{index .Options "waf_trust_proxy_ips"}}" helper="一行一个 IP 或 CIDR；白名单模式只信任匹配来源，黑名单模式不信任匹配来源"></mdui-text-field>
   </fieldset>
 
