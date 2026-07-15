@@ -20,6 +20,7 @@ import (
 	_ "image/png"
 	"io"
 	"io/fs"
+	"net"
 	"net/http"
 	neturl "net/url"
 	"os"
@@ -51,6 +52,7 @@ type App struct {
 	Users           *services.UserService
 	Options         *services.OptionService
 	Plugins         *plugin.Manager
+	DataDir         string
 	UploadDir       string
 	HTTPClient      *compathttp.Client
 	HTTPFetch       func(context.Context, string) (string, error)
@@ -66,12 +68,16 @@ type contextKey string
 const currentUserKey contextKey = "currentUser"
 
 func New(contents *services.ContentService, metas *services.MetaService, comments *services.CommentService, users *services.UserService, options *services.OptionService, plugins *plugin.Manager) *App {
+	dataDir := os.Getenv("GOBLOG_DATA_DIR")
+	if dataDir == "" {
+		dataDir = "data"
+	}
 	uploadDir := os.Getenv("GOBLOG_UPLOAD_DIR")
 	if uploadDir == "" {
-		uploadDir = filepath.Join("data", "uploads")
+		uploadDir = filepath.Join(dataDir, "uploads")
 	}
 	httpClient, _ := compathttp.New(compathttp.Config{Timeout: 5 * time.Second, UserAgent: "GoBlog/1.0", Retries: 1})
-	app := &App{Contents: contents, Metas: metas, Comments: comments, Users: users, Options: options, Plugins: plugins, UploadDir: uploadDir, HTTPClient: httpClient, loginNext: map[string]time.Time{}}
+	app := &App{Contents: contents, Metas: metas, Comments: comments, Users: users, Options: options, Plugins: plugins, DataDir: dataDir, UploadDir: uploadDir, HTTPClient: httpClient, loginNext: map[string]time.Time{}}
 	app.WAF = newWAFManager(app)
 	return app
 }
@@ -211,7 +217,7 @@ func (a *App) adminLogin(w http.ResponseWriter, r *http.Request) {
 		}
 		name := strings.TrimSpace(r.FormValue("name"))
 		next := safeNext(r.FormValue("next"))
-		if !a.loginAllowed(clientIP(r), name) {
+		if !a.loginAllowed(a.clientIP(r), name) {
 			a.renderAdmin(w, r, "login.html", map[string]any{"Title": "登录", "Error": "尝试过于频繁，请稍后再试", "Name": name, "Next": next})
 			return
 		}
@@ -223,11 +229,11 @@ func (a *App) adminLogin(w http.ResponseWriter, r *http.Request) {
 		}
 		user, err := a.Users.Authenticate(r.Context(), name, r.FormValue("password"))
 		if err != nil {
-			a.recordLoginFailure(clientIP(r), name)
+			a.recordLoginFailure(a.clientIP(r), name)
 			a.renderAdmin(w, r, "login.html", map[string]any{"Title": "登录", "Error": "用户名或密码不正确", "Name": name, "Next": next})
 			return
 		}
-		a.recordLoginSuccess(clientIP(r))
+		a.recordLoginSuccess(a.clientIP(r))
 		secret, _ := a.Options.Get(r.Context(), "auth_secret")
 		auth.SetVersionedSessionWithOptions(w, secret, user.UID, user.AuthCode, a.cookieOptions(r.Context()))
 		if next == "" {
@@ -737,6 +743,9 @@ func (a *App) contentForm(w http.ResponseWriter, r *http.Request, typ string, id
 			return
 		}
 		formUser, _ := a.currentUser(r)
+		if roleRank(formUser.Role) < roleRank("editor") {
+			input.Text = forceMarkdownRender(input.Text)
+		}
 		if roleRank(formUser.Role) < roleRank("editor") {
 			if loadID > 0 {
 				input.Password = item.Password
@@ -2174,10 +2183,25 @@ func (a *App) adminOptionsWAF(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		a.renderAdmin(w, r, "options_waf.html", map[string]any{"Title": "WAF", "Options": options, "Saved": r.URL.Query().Get("saved") == "1"})
+		tab := wafTab(r)
+		wafLog := ""
+		if tab == "logs" && a.WAF != nil {
+			wafLog = a.WAF.logText(optionInt(options["waf_log_max_entries"], 1000))
+		}
+		a.renderAdmin(w, r, "options_waf.html", map[string]any{"Title": "WAF", "Options": options, "Saved": r.URL.Query().Get("saved") == "1", "WAFTab": tab, "WAFLog": wafLog})
 	case http.MethodPost:
 		if err := r.ParseForm(); err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if r.FormValue("action") == "clear_waf_log" {
+			if a.WAF != nil {
+				if err := a.WAF.clearLog(); err != nil {
+					http.Error(w, err.Error(), http.StatusInternalServerError)
+					return
+				}
+			}
+			a.flashRedirect(w, r, r.URL.Path+"?tab=logs", http.StatusSeeOther, flashNotice{Type: "success", Message: "WAF 日志已清理。"})
 			return
 		}
 		if err := validateWAFOptions(r); err != nil {
@@ -2185,7 +2209,7 @@ func (a *App) adminOptionsWAF(w http.ResponseWriter, r *http.Request) {
 			for _, key := range keys {
 				options[key] = wafFormValue(r, key)
 			}
-			a.renderAdmin(w, r, "options_waf.html", map[string]any{"Title": "WAF", "Options": options, "Error": err.Error()})
+			a.renderAdmin(w, r, "options_waf.html", map[string]any{"Title": "WAF", "Options": options, "Error": err.Error(), "WAFTab": "settings"})
 			return
 		}
 		for _, key := range keys {
@@ -2195,7 +2219,7 @@ func (a *App) adminOptionsWAF(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		if a.WAF != nil {
-			a.WAF.invalidatePublicData()
+			a.WAF.resetRuntimeState()
 		}
 		a.flashRedirect(w, r, r.URL.Path, http.StatusSeeOther, flashNotice{Type: "success", Message: "设置已保存。"})
 	default:
@@ -2203,9 +2227,16 @@ func (a *App) adminOptionsWAF(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func wafTab(r *http.Request) string {
+	if r.URL.Query().Get("tab") == "logs" {
+		return "logs"
+	}
+	return "settings"
+}
+
 func wafOptionKeys() []string {
 	return []string{
-		"waf_enabled",
+		"waf_enabled", "waf_hsts_enabled", "waf_trust_proxy_headers", "waf_trust_proxy_mode", "waf_trust_proxy_ips", "waf_state_max_entries", "waf_log_max_entries",
 		"waf_url_index_enabled", "waf_url_index_ttl", "waf_index_max_items",
 		"waf_cache_enabled", "waf_cache_ttl", "waf_cache_max_entries",
 		"waf_dynamic_rate_enabled", "waf_dynamic_rate_window", "waf_dynamic_rate_limit",
@@ -2214,20 +2245,27 @@ func wafOptionKeys() []string {
 		"waf_attachment_ban_enabled", "waf_attachment_ban_window", "waf_attachment_ban_limit", "waf_attachment_ban_seconds",
 		"waf_invalid_path_enabled", "waf_invalid_path_window", "waf_invalid_path_limit", "waf_invalid_path_ban_seconds",
 		"waf_search_rate_enabled", "waf_search_rate_window", "waf_search_rate_limit",
+		"waf_xmlrpc_rate_enabled", "waf_xmlrpc_rate_window", "waf_xmlrpc_rate_limit",
 		"waf_login_ban_enabled", "waf_login_window", "waf_login_failures", "waf_login_ban_seconds",
 	}
 }
 
 func validateWAFOptions(r *http.Request) error {
 	boolKeys := []string{
-		"waf_enabled", "waf_url_index_enabled", "waf_cache_enabled", "waf_dynamic_rate_enabled",
+		"waf_enabled", "waf_hsts_enabled", "waf_trust_proxy_headers", "waf_url_index_enabled", "waf_cache_enabled", "waf_dynamic_rate_enabled",
 		"waf_static_rate_enabled", "waf_upload_rate_enabled", "waf_attachment_ban_enabled",
-		"waf_invalid_path_enabled", "waf_search_rate_enabled", "waf_login_ban_enabled",
+		"waf_invalid_path_enabled", "waf_search_rate_enabled", "waf_xmlrpc_rate_enabled", "waf_login_ban_enabled",
 	}
 	for _, key := range boolKeys {
 		if value := wafFormValue(r, key); value != "0" && value != "1" {
 			return fmt.Errorf("WAF 开关参数无效")
 		}
+	}
+	if mode := strings.TrimSpace(r.FormValue("waf_trust_proxy_mode")); mode != "allowlist" && mode != "denylist" {
+		return fmt.Errorf("代理 IP 信任模式无效")
+	}
+	if err := validateIPRuleLines(r.FormValue("waf_trust_proxy_ips")); err != nil {
+		return fmt.Errorf("代理 IP 地址组无效：%w", err)
 	}
 	ranges := []struct {
 		key   string
@@ -2237,6 +2275,8 @@ func validateWAFOptions(r *http.Request) error {
 	}{
 		{"waf_url_index_ttl", "URL 索引刷新秒数", 1, 86400},
 		{"waf_index_max_items", "URL 索引最大条目数", 100, 1000000},
+		{"waf_state_max_entries", "WAF 状态表最大条目数", 1000, 1000000},
+		{"waf_log_max_entries", "WAF 日志最大记录条目数", 1, 100000},
 		{"waf_cache_ttl", "公开页缓存 TTL", 1, 86400},
 		{"waf_cache_max_entries", "公开页缓存最大条目数", 1, 100000},
 		{"waf_dynamic_rate_window", "动态请求限流窗口", 1, 86400},
@@ -2253,6 +2293,8 @@ func validateWAFOptions(r *http.Request) error {
 		{"waf_invalid_path_ban_seconds", "非法路径封禁秒数", 1, 604800},
 		{"waf_search_rate_window", "搜索限流窗口", 1, 86400},
 		{"waf_search_rate_limit", "搜索限流次数", 1, 100000},
+		{"waf_xmlrpc_rate_window", "XML-RPC 限流窗口", 1, 86400},
+		{"waf_xmlrpc_rate_limit", "XML-RPC 限流次数", 1, 100000},
 		{"waf_login_window", "登录试错窗口", 1, 86400},
 		{"waf_login_failures", "登录试错次数", 1, 100000},
 		{"waf_login_ban_seconds", "登录封禁秒数", 1, 604800},
@@ -2281,6 +2323,8 @@ func wafFormValue(r *http.Request, key string) string {
 func wafBoolOptionSet() map[string]bool {
 	return map[string]bool{
 		"waf_enabled":                true,
+		"waf_hsts_enabled":           true,
+		"waf_trust_proxy_headers":    true,
 		"waf_url_index_enabled":      true,
 		"waf_cache_enabled":          true,
 		"waf_dynamic_rate_enabled":   true,
@@ -2289,6 +2333,7 @@ func wafBoolOptionSet() map[string]bool {
 		"waf_attachment_ban_enabled": true,
 		"waf_invalid_path_enabled":   true,
 		"waf_search_rate_enabled":    true,
+		"waf_xmlrpc_rate_enabled":    true,
 		"waf_login_ban_enabled":      true,
 	}
 }
@@ -4267,7 +4312,7 @@ func (a *App) frontComment(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, redirectTo+"?comment_error=closed", http.StatusSeeOther)
 		return
 	}
-	ip := clientIP(r)
+	ip := a.clientIP(r)
 	if optionBool(a.option(r.Context(), "comments_antispam", "1")) {
 		if matchList(ip, a.option(r.Context(), "comments_ip_blacklist", "")) {
 			http.Redirect(w, r, redirectTo+"?comment_error=blocked", http.StatusSeeOther)
@@ -7071,6 +7116,14 @@ func parseFieldInputs(r *http.Request) []services.SaveFieldInput {
 	return out
 }
 
+func forceMarkdownRender(text string) string {
+	text = strings.TrimSpace(text)
+	if text == "" || strings.HasPrefix(text, "<!--markdown-->") || strings.HasPrefix(text, "<!--plaintext-->") {
+		return text
+	}
+	return "<!--markdown-->" + text
+}
+
 func validateContentInput(input services.SaveContentInput) validate.Errors {
 	v := validate.New()
 	v.Required("title", input.Title).
@@ -8650,17 +8703,110 @@ func commentReplyURL(r *http.Request, id int64) string {
 	return r.URL.Path + "?" + q.Encode() + "#comment-form"
 }
 
-func clientIP(r *http.Request) string {
-	for _, header := range []string{"X-Forwarded-For", "X-Real-IP"} {
-		if value := r.Header.Get(header); value != "" {
-			return strings.TrimSpace(strings.Split(value, ",")[0])
+type proxyTrustConfig struct {
+	Enabled bool
+	Mode    string
+	IPRules string
+}
+
+func loadProxyTrustConfig(options map[string]string) proxyTrustConfig {
+	mode := strings.TrimSpace(defaultString(options["waf_trust_proxy_mode"], "allowlist"))
+	if mode != "allowlist" && mode != "denylist" {
+		mode = "allowlist"
+	}
+	return proxyTrustConfig{
+		Enabled: optionBool(defaultString(options["waf_trust_proxy_headers"], "0")),
+		Mode:    mode,
+		IPRules: options["waf_trust_proxy_ips"],
+	}
+}
+
+func (a *App) clientIP(r *http.Request) string {
+	return clientIP(r, proxyTrustConfig{
+		Enabled: optionBool(a.option(r.Context(), "waf_trust_proxy_headers", "0")),
+		Mode:    a.option(r.Context(), "waf_trust_proxy_mode", "allowlist"),
+		IPRules: a.option(r.Context(), "waf_trust_proxy_ips", ""),
+	})
+}
+
+func clientIP(r *http.Request, trust proxyTrustConfig) string {
+	remote := remoteIP(r)
+	if shouldTrustProxyHeaders(remote, trust) {
+		for _, header := range []string{"X-Forwarded-For", "X-Real-IP"} {
+			if value := r.Header.Get(header); value != "" {
+				candidate := strings.TrimSpace(strings.Split(value, ",")[0])
+				if parsed := net.ParseIP(candidate); parsed != nil {
+					return parsed.String()
+				}
+			}
 		}
 	}
+	return remote
+}
+
+func remoteIP(r *http.Request) string {
 	host := r.RemoteAddr
-	if i := strings.LastIndex(host, ":"); i > -1 {
-		host = host[:i]
+	if parsedHost, _, err := net.SplitHostPort(host); err == nil {
+		host = parsedHost
 	}
+	host = strings.Trim(host, "[]")
 	return host
+}
+
+func shouldTrustProxyHeaders(remote string, trust proxyTrustConfig) bool {
+	if !trust.Enabled {
+		return false
+	}
+	matched := ipMatchesRuleLines(remote, trust.IPRules)
+	switch strings.TrimSpace(trust.Mode) {
+	case "denylist":
+		return !matched
+	default:
+		return matched
+	}
+}
+
+func ipMatchesRuleLines(value, rules string) bool {
+	ip := net.ParseIP(strings.TrimSpace(value))
+	if ip == nil {
+		return false
+	}
+	for _, line := range strings.Split(rules, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		if strings.Contains(line, "/") {
+			_, network, err := net.ParseCIDR(line)
+			if err == nil && network.Contains(ip) {
+				return true
+			}
+			continue
+		}
+		if ruleIP := net.ParseIP(line); ruleIP != nil && ruleIP.Equal(ip) {
+			return true
+		}
+	}
+	return false
+}
+
+func validateIPRuleLines(rules string) error {
+	for _, line := range strings.Split(rules, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		if strings.Contains(line, "/") {
+			if _, _, err := net.ParseCIDR(line); err != nil {
+				return fmt.Errorf("%s", line)
+			}
+			continue
+		}
+		if net.ParseIP(line) == nil {
+			return fmt.Errorf("%s", line)
+		}
+	}
+	return nil
 }
 
 func sanitizeFilename(name string) string {

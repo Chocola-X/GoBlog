@@ -483,6 +483,22 @@ mdui-select::part(text-field__container) {
   width: 100%;
 }
 
+.waf-log-view {
+  box-sizing: border-box;
+  width: 100%;
+  max-height: 360px;
+  margin: 0;
+  padding: 12px;
+  overflow: auto;
+  border-radius: 8px;
+  background: rgba(var(--mdui-color-surface-container-highest), var(--admin-input-opacity));
+  color: rgb(var(--mdui-color-on-surface));
+  font-size: 12px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 .comment-option-row {
   min-height: 40px;
 }

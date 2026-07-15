@@ -631,7 +631,7 @@ func (a *App) trackback(w http.ResponseWriter, r *http.Request) {
 	} else if title != "" {
 		text = title
 	}
-	if _, err := a.saveCommentWithHooks(r.Context(), services.SaveCommentInput{CID: cid, Author: author, URL: source, Text: text, Type: "trackback", Status: "approved", IP: clientIP(r), Agent: r.UserAgent()}, 0, "trackback", content); err != nil {
+	if _, err := a.saveCommentWithHooks(r.Context(), services.SaveCommentInput{CID: cid, Author: author, URL: source, Text: text, Type: "trackback", Status: "approved", IP: a.clientIP(r), Agent: r.UserAgent()}, 0, "trackback", content); err != nil {
 		writeTrackbackResponse(w, 1, "internal error")
 		return
 	}

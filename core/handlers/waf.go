@@ -3,8 +3,12 @@ package handlers
 import (
 	"bytes"
 	"context"
+	"fmt"
+	"log"
 	"net/http"
+	"os"
 	"path"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -16,6 +20,9 @@ import (
 
 type wafConfig struct {
 	Enabled               bool
+	HSTSEnabled           bool
+	TrustProxy            proxyTrustConfig
+	LogMaxEntries         int
 	URLIndexEnabled       bool
 	URLIndexTTL           time.Duration
 	CacheEnabled          bool
@@ -40,18 +47,23 @@ type wafConfig struct {
 	SearchRateEnabled     bool
 	SearchRateWindow      time.Duration
 	SearchRateLimit       int
+	XMLRPCRateEnabled     bool
+	XMLRPCRateWindow      time.Duration
+	XMLRPCRateLimit       int
 	LoginBanEnabled       bool
 	LoginWindow           time.Duration
 	LoginFailures         int
 	LoginBan              time.Duration
 	PublicCacheMaxEntries int
 	PublicIndexMaxItems   int
+	StateMaxEntries       int
 }
 
 type wafManager struct {
 	app *App
 
 	mu           sync.Mutex
+	logMu        sync.Mutex
 	config       wafConfig
 	configLoaded time.Time
 
@@ -95,35 +107,44 @@ func newWAFManager(app *App) *wafManager {
 func (m *wafManager) wrap(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		cfg := m.currentConfig(r.Context())
+		sw := newSecurityResponseWriter(w, r, cfg.HSTSEnabled)
 		if !cfg.Enabled {
-			next.ServeHTTP(w, r)
+			next.ServeHTTP(sw, r)
 			return
 		}
 		if m.authenticatedAdminBackendRequest(r) {
-			next.ServeHTTP(w, r)
+			next.ServeHTTP(sw, r)
 			if r.Method != http.MethodGet && r.Method != http.MethodHead {
 				m.invalidatePublicData()
 			}
 			return
 		}
-		ip := clientIP(r)
+		ip := clientIP(r, cfg.TrustProxy)
 		now := time.Now()
 		if m.isBanned(ip, now) {
-			http.Error(w, "forbidden", http.StatusForbidden)
+			m.logEvent(cfg, "blocked banned IP %s on %s", ip, r.URL.Path)
+			http.Error(sw, "forbidden", http.StatusForbidden)
 			return
 		}
 		if kind, enabled, window, limit := requestRatePolicy(r, cfg); enabled {
 			if !m.allowWindow(m.rates, kind+"|"+ip, window, limit, now) {
-				http.Error(w, "too many requests", http.StatusTooManyRequests)
+				m.logEvent(cfg, "%s rate limit exceeded for IP %s on %s", kind, ip, r.URL.Path)
+				http.Error(sw, "too many requests", http.StatusTooManyRequests)
 				return
 			}
 		}
 		if cfg.SearchRateEnabled && isSearchRequest(r) && !m.allowWindow(m.rates, "search|"+ip, cfg.SearchRateWindow, cfg.SearchRateLimit, now) {
-			http.Error(w, "too many search requests", http.StatusTooManyRequests)
+			m.logEvent(cfg, "search rate limit exceeded for IP %s on %s", ip, r.URL.Path)
+			http.Error(sw, "too many search requests", http.StatusTooManyRequests)
+			return
+		}
+		if cfg.XMLRPCRateEnabled && isXMLRPCRequest(r) && !m.allowWindow(m.rates, "xmlrpc|"+ip, cfg.XMLRPCRateWindow, cfg.XMLRPCRateLimit, now) {
+			m.logEvent(cfg, "XML-RPC rate limit exceeded for IP %s on %s", ip, r.URL.Path)
+			http.Error(sw, "too many XML-RPC requests", http.StatusTooManyRequests)
 			return
 		}
 		if cfg.URLIndexEnabled && m.pluginRouteMayHandle(r) {
-			next.ServeHTTP(w, r)
+			next.ServeHTTP(sw, r)
 			if r.Method != http.MethodGet && r.Method != http.MethodHead {
 				m.invalidatePublicData()
 			}
@@ -133,23 +154,24 @@ func (m *wafManager) wrap(next http.Handler) http.Handler {
 			exists, err := m.publicURLExists(r.Context(), r.URL.Path, cfg, now)
 			if err == nil && !exists {
 				if cfg.InvalidPathEnabled && m.recordInvalidPath(ip, cfg, now) {
-					http.Error(w, "forbidden", http.StatusForbidden)
+					m.logEvent(cfg, "invalid path ban triggered for IP %s on %s", ip, r.URL.Path)
+					http.Error(sw, "forbidden", http.StatusForbidden)
 					return
 				}
-				http.NotFound(w, r)
+				http.NotFound(sw, r)
 				return
 			}
 		}
 		if cfg.CacheEnabled && m.cacheablePublicRequest(r) {
 			if entry, ok := m.cachedResponse(cacheKey(r), now); ok {
-				copyHeaders(w.Header(), entry.Header)
-				w.WriteHeader(entry.Status)
+				copyHeaders(sw.Header(), entry.Header)
+				sw.WriteHeader(entry.Status)
 				if r.Method != http.MethodHead {
-					_, _ = w.Write(entry.Body)
+					_, _ = sw.Write(entry.Body)
 				}
 				return
 			}
-			rec := newWAFResponseRecorder(w)
+			rec := newWAFResponseRecorder(sw)
 			next.ServeHTTP(rec, r)
 			rec.flush()
 			if rec.status == http.StatusOK && len(rec.body.Bytes()) > 0 {
@@ -160,11 +182,13 @@ func (m *wafManager) wrap(next http.Handler) http.Handler {
 		if cfg.AttachmentBanEnabled && isAttachmentDownloadRequest(r) && m.recordAttachmentDownload(ip, cfg, now) {
 			m.mu.Lock()
 			m.bans[ip] = now.Add(cfg.AttachmentBan)
+			m.trimTimeMapLocked(m.bans, now, m.config.StateMaxEntries)
 			m.mu.Unlock()
-			http.Error(w, "forbidden", http.StatusForbidden)
+			m.logEvent(cfg, "attachment download ban triggered for IP %s on %s", ip, r.URL.Path)
+			http.Error(sw, "forbidden", http.StatusForbidden)
 			return
 		}
-		next.ServeHTTP(w, r)
+		next.ServeHTTP(sw, r)
 		if r.Method != http.MethodGet && r.Method != http.MethodHead {
 			m.invalidatePublicData()
 		}
@@ -222,6 +246,9 @@ func (m *wafManager) currentConfig(ctx context.Context) wafConfig {
 	}
 	cfg := wafConfig{
 		Enabled:               optionBool(defaultString(options["waf_enabled"], "1")),
+		HSTSEnabled:           optionBool(defaultString(options["waf_hsts_enabled"], "0")),
+		TrustProxy:            loadProxyTrustConfig(options),
+		LogMaxEntries:         boundedInt(options["waf_log_max_entries"], 1000, 1, 100000),
 		URLIndexEnabled:       optionBool(defaultString(options["waf_url_index_enabled"], "1")),
 		URLIndexTTL:           durationSeconds(options["waf_url_index_ttl"], 60),
 		CacheEnabled:          optionBool(defaultString(options["waf_cache_enabled"], "1")),
@@ -246,12 +273,16 @@ func (m *wafManager) currentConfig(ctx context.Context) wafConfig {
 		SearchRateEnabled:     optionBool(defaultString(options["waf_search_rate_enabled"], "1")),
 		SearchRateWindow:      durationSeconds(options["waf_search_rate_window"], 60),
 		SearchRateLimit:       boundedInt(options["waf_search_rate_limit"], 20, 1, 100000),
+		XMLRPCRateEnabled:     optionBool(defaultString(options["waf_xmlrpc_rate_enabled"], "1")),
+		XMLRPCRateWindow:      durationSeconds(options["waf_xmlrpc_rate_window"], 60),
+		XMLRPCRateLimit:       boundedInt(options["waf_xmlrpc_rate_limit"], 30, 1, 100000),
 		LoginBanEnabled:       optionBool(defaultString(options["waf_login_ban_enabled"], "1")),
 		LoginWindow:           durationSeconds(options["waf_login_window"], 300),
 		LoginFailures:         boundedInt(options["waf_login_failures"], 5, 1, 100000),
 		LoginBan:              durationSeconds(options["waf_login_ban_seconds"], 900),
 		PublicCacheMaxEntries: boundedInt(options["waf_cache_max_entries"], 512, 1, 100000),
 		PublicIndexMaxItems:   boundedInt(options["waf_index_max_items"], 10000, 100, 1000000),
+		StateMaxEntries:       boundedInt(options["waf_state_max_entries"], 100000, 1000, 1000000),
 	}
 
 	m.mu.Lock()
@@ -366,6 +397,112 @@ func (m *wafManager) invalidatePublicData() {
 	m.mu.Unlock()
 }
 
+func (m *wafManager) resetRuntimeState() {
+	m.mu.Lock()
+	m.rates = map[string]*wafCounter{}
+	m.invalids = map[string]*wafCounter{}
+	m.attachments = map[string]*wafCounter{}
+	m.loginFails = map[string]*wafCounter{}
+	m.bans = map[string]time.Time{}
+	m.loginBans = map[string]time.Time{}
+	m.publicIndex = map[string]struct{}{}
+	m.indexLoaded = time.Time{}
+	m.cache = map[string]wafCacheEntry{}
+	m.configLoaded = time.Time{}
+	m.mu.Unlock()
+}
+
+func (m *wafManager) logPath() string {
+	dataDir := m.app.DataDir
+	if dataDir == "" {
+		dataDir = "data"
+	}
+	return filepath.Join(dataDir, "waf.log")
+}
+
+func (m *wafManager) logEvent(cfg wafConfig, format string, args ...any) {
+	line := time.Now().Format(time.RFC3339) + " WAF: " + fmt.Sprintf(format, args...) + "\n"
+	if err := m.appendLogLine(line, cfg.LogMaxEntries); err != nil {
+		log.Printf("WAF: failed to write waf log: %v", err)
+	}
+}
+
+func (m *wafManager) appendLogLine(line string, maxEntries int) error {
+	m.logMu.Lock()
+	defer m.logMu.Unlock()
+	logPath := m.logPath()
+	if err := os.MkdirAll(filepath.Dir(logPath), 0o755); err != nil {
+		return err
+	}
+	file, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		return err
+	}
+	if _, err := file.WriteString(line); err != nil {
+		_ = file.Close()
+		return err
+	}
+	if err := file.Close(); err != nil {
+		return err
+	}
+	return m.trimLogLocked(maxEntries)
+}
+
+func (m *wafManager) trimLogLocked(maxEntries int) error {
+	if maxEntries <= 0 {
+		return nil
+	}
+	logPath := m.logPath()
+	body, err := os.ReadFile(logPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	lines := splitLogLines(string(body))
+	if len(lines) <= maxEntries {
+		return nil
+	}
+	lines = lines[len(lines)-maxEntries:]
+	return os.WriteFile(logPath, []byte(strings.Join(lines, "\n")+"\n"), 0o644)
+}
+
+func (m *wafManager) logText(maxEntries int) string {
+	m.logMu.Lock()
+	defer m.logMu.Unlock()
+	body, err := os.ReadFile(m.logPath())
+	if err != nil {
+		return ""
+	}
+	lines := splitLogLines(string(body))
+	if maxEntries > 0 && len(lines) > maxEntries {
+		lines = lines[len(lines)-maxEntries:]
+	}
+	if len(lines) == 0 {
+		return ""
+	}
+	return strings.Join(lines, "\n")
+}
+
+func (m *wafManager) clearLog() error {
+	m.logMu.Lock()
+	defer m.logMu.Unlock()
+	logPath := m.logPath()
+	if err := os.MkdirAll(filepath.Dir(logPath), 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(logPath, nil, 0o644)
+}
+
+func splitLogLines(value string) []string {
+	value = strings.TrimRight(value, "\r\n")
+	if value == "" {
+		return nil
+	}
+	return strings.Split(value, "\n")
+}
+
 func (m *wafManager) cachedResponse(key string, now time.Time) (wafCacheEntry, bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -417,6 +554,7 @@ func (m *wafManager) recordInvalidPath(ip string, cfg wafConfig, now time.Time) 
 	if !m.allowWindow(m.invalids, ip, cfg.InvalidPathWindow, cfg.InvalidPathLimit, now) {
 		m.mu.Lock()
 		m.bans[ip] = now.Add(cfg.InvalidPathBan)
+		m.trimTimeMapLocked(m.bans, now, m.config.StateMaxEntries)
 		m.mu.Unlock()
 		return true
 	}
@@ -465,6 +603,8 @@ func (m *wafManager) recordLoginFailure(ctx context.Context, ip string) {
 	counter.Count++
 	if counter.Count >= cfg.LoginFailures {
 		m.loginBans[ip] = now.Add(cfg.LoginBan)
+		m.trimTimeMapLocked(m.loginBans, now, m.config.StateMaxEntries)
+		m.logEvent(cfg, "login ban triggered for IP %s after %d failures", ip, counter.Count)
 	}
 	m.mu.Unlock()
 }
@@ -485,6 +625,7 @@ func (m *wafManager) allowWindow(store map[string]*wafCounter, key string, windo
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.trimCounterMapLocked(store, window, now, m.config.StateMaxEntries)
 	counter := store[key]
 	if counter == nil || now.Sub(counter.Start) >= window {
 		store[key] = &wafCounter{Start: now, Count: 1}
@@ -492,6 +633,46 @@ func (m *wafManager) allowWindow(store map[string]*wafCounter, key string, windo
 	}
 	counter.Count++
 	return counter.Count <= limit
+}
+
+func (m *wafManager) trimCounterMapLocked(store map[string]*wafCounter, window time.Duration, now time.Time, max int) {
+	if max <= 0 {
+		max = 100000
+	}
+	if len(store) <= max {
+		return
+	}
+	for key, counter := range store {
+		if counter == nil || now.Sub(counter.Start) >= window {
+			delete(store, key)
+		}
+	}
+	for key := range store {
+		if len(store) <= max {
+			return
+		}
+		delete(store, key)
+	}
+}
+
+func (m *wafManager) trimTimeMapLocked(store map[string]time.Time, now time.Time, max int) {
+	if max <= 0 {
+		max = 100000
+	}
+	if len(store) <= max {
+		return
+	}
+	for key, until := range store {
+		if now.After(until) {
+			delete(store, key)
+		}
+	}
+	for key := range store {
+		if len(store) <= max {
+			return
+		}
+		delete(store, key)
+	}
 }
 
 func (m *wafManager) cacheablePublicRequest(r *http.Request) bool {
@@ -539,6 +720,52 @@ func (r *wafResponseRecorder) flush() {
 		r.dst.WriteHeader(r.status)
 	}
 	_, _ = r.dst.Write(r.body.Bytes())
+}
+
+type securityResponseWriter struct {
+	http.ResponseWriter
+	request     *http.Request
+	hstsEnabled bool
+	wroteHeader bool
+}
+
+func newSecurityResponseWriter(dst http.ResponseWriter, r *http.Request, hstsEnabled bool) *securityResponseWriter {
+	return &securityResponseWriter{ResponseWriter: dst, request: r, hstsEnabled: hstsEnabled}
+}
+
+func (w *securityResponseWriter) WriteHeader(status int) {
+	if w.wroteHeader {
+		return
+	}
+	writeSecurityHeaders(w.Header(), w.request, w.hstsEnabled)
+	w.wroteHeader = true
+	w.ResponseWriter.WriteHeader(status)
+}
+
+func (w *securityResponseWriter) Write(data []byte) (int, error) {
+	if !w.wroteHeader {
+		w.WriteHeader(http.StatusOK)
+	}
+	return w.ResponseWriter.Write(data)
+}
+
+func (w *securityResponseWriter) Flush() {
+	if !w.wroteHeader {
+		w.WriteHeader(http.StatusOK)
+	}
+	if flusher, ok := w.ResponseWriter.(http.Flusher); ok {
+		flusher.Flush()
+	}
+}
+
+func writeSecurityHeaders(header http.Header, r *http.Request, hstsEnabled bool) {
+	header.Set("X-Content-Type-Options", "nosniff")
+	header.Set("X-Frame-Options", "DENY")
+	header.Set("Referrer-Policy", "strict-origin-when-cross-origin")
+	header.Set("X-XSS-Protection", "0")
+	if hstsEnabled && r != nil && r.TLS != nil {
+		header.Set("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+	}
 }
 
 func copyHeaders(dst, src http.Header) {
@@ -641,6 +868,15 @@ func isPublicHTMLPath(value string) bool {
 
 func isSearchRequest(r *http.Request) bool {
 	return r.Method == http.MethodGet && (r.URL.Path == "/search" || strings.HasPrefix(r.URL.Path, "/search/"))
+}
+
+func isXMLRPCRequest(r *http.Request) bool {
+	switch r.URL.Path {
+	case "/xmlrpc.php", "/action/xmlrpc", "/action/pingback":
+		return true
+	default:
+		return false
+	}
 }
 
 func looksArchivePath(value string) bool {

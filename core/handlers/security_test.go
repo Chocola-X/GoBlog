@@ -897,7 +897,7 @@ func TestLoggedInAdminPublicCommentUsesAccountIdentity(t *testing.T) {
 	form.Set("_csrf", app.csrfTokenFor(tokenReq, "comment"))
 	req := httptest.NewRequest(http.MethodPost, "/comment", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req.Header.Set("X-Real-IP", "198.51.100.90")
+	req.RemoteAddr = "198.51.100.90:1234"
 	req.Header.Set("Referer", "http://example.com/post/admin-comment.html")
 	setSession(t, req, secret, adminID)
 	rec := httptest.NewRecorder()
@@ -2787,10 +2787,29 @@ func TestAdminOptionsWAFPageRenders(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("waf options status = %d: %s", rec.Code, rec.Body.String())
 	}
-	for _, want := range []string{"URL 快速索引", "公开页缓存", "附件下载封禁", "后台登录爆破封禁"} {
+	for _, want := range []string{"URL 快速索引", "公开页缓存", "附件下载封禁", "XML-RPC 限流", "后台登录爆破封禁"} {
 		if !strings.Contains(rec.Body.String(), want) {
 			t.Fatalf("waf options page missing %q", want)
 		}
+	}
+	for _, want := range []string{"反向代理 IP 信任", "WAF 日志", "启用 HSTS"} {
+		if !strings.Contains(rec.Body.String(), want) {
+			t.Fatalf("waf options page missing %q", want)
+		}
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/admin/options/waf?tab=logs", nil)
+	setSession(t, req, secret, adminID)
+	rec = httptest.NewRecorder()
+	app.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("waf logs tab status = %d: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "WAF 日志") || !strings.Contains(rec.Body.String(), "清理日志") {
+		t.Fatalf("waf logs tab missing log controls: %s", rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "URL 快速索引") {
+		t.Fatalf("waf logs tab should not render settings form")
 	}
 }
 
@@ -2798,6 +2817,12 @@ func TestAdminOptionsWAFSavesCheckedValuesWithHiddenFallback(t *testing.T) {
 	app, secret, adminID := newSecurityTestApp(t)
 	form := url.Values{
 		"waf_enabled":                  {"0", "1"},
+		"waf_hsts_enabled":             {"0"},
+		"waf_trust_proxy_headers":      {"0"},
+		"waf_trust_proxy_mode":         {"allowlist"},
+		"waf_trust_proxy_ips":          {"127.0.0.1\n10.0.0.0/8"},
+		"waf_state_max_entries":        {"100000"},
+		"waf_log_max_entries":          {"1000"},
 		"waf_url_index_enabled":        {"0", "1"},
 		"waf_url_index_ttl":            {"60"},
 		"waf_index_max_items":          {"10000"},
@@ -2824,6 +2849,9 @@ func TestAdminOptionsWAFSavesCheckedValuesWithHiddenFallback(t *testing.T) {
 		"waf_search_rate_enabled":      {"0", "1"},
 		"waf_search_rate_window":       {"60"},
 		"waf_search_rate_limit":        {"20"},
+		"waf_xmlrpc_rate_enabled":      {"0", "1"},
+		"waf_xmlrpc_rate_window":       {"60"},
+		"waf_xmlrpc_rate_limit":        {"20"},
 		"waf_login_ban_enabled":        {"0", "1"},
 		"waf_login_window":             {"300"},
 		"waf_login_failures":           {"5"},
@@ -2857,6 +2885,229 @@ func TestAdminOptionsWAFSavesCheckedValuesWithHiddenFallback(t *testing.T) {
 	}
 	if value != "0" {
 		t.Fatalf("waf_cache_enabled = %q, want 0", value)
+	}
+}
+
+func TestClientIPTrustProxyHeadersIsExplicit(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.RemoteAddr = "203.0.113.10:4567"
+	req.Header.Set("X-Forwarded-For", "198.51.100.70, 198.51.100.71")
+	req.Header.Set("X-Real-IP", "198.51.100.72")
+
+	if got := clientIP(req, proxyTrustConfig{}); got != "203.0.113.10" {
+		t.Fatalf("clientIP without trusted proxy = %q, want RemoteAddr", got)
+	}
+	trust := proxyTrustConfig{Enabled: true, Mode: "allowlist", IPRules: "203.0.113.0/24"}
+	if got := clientIP(req, trust); got != "198.51.100.70" {
+		t.Fatalf("clientIP with allowlisted proxy = %q, want first X-Forwarded-For", got)
+	}
+	trust = proxyTrustConfig{Enabled: true, Mode: "allowlist", IPRules: "198.51.100.0/24"}
+	if got := clientIP(req, trust); got != "203.0.113.10" {
+		t.Fatalf("clientIP with non-allowlisted proxy = %q, want RemoteAddr", got)
+	}
+	trust = proxyTrustConfig{Enabled: true, Mode: "denylist", IPRules: "203.0.113.10"}
+	if got := clientIP(req, trust); got != "203.0.113.10" {
+		t.Fatalf("clientIP with denylisted proxy = %q, want RemoteAddr", got)
+	}
+	trust = proxyTrustConfig{Enabled: true, Mode: "denylist", IPRules: "198.51.100.0/24"}
+	if got := clientIP(req, trust); got != "198.51.100.70" {
+		t.Fatalf("clientIP with non-denylisted proxy = %q, want first X-Forwarded-For", got)
+	}
+}
+
+func TestWAFSecurityHeaders(t *testing.T) {
+	app, _, _ := newSecurityTestApp(t)
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	rec := httptest.NewRecorder()
+
+	app.Handler().ServeHTTP(rec, req)
+
+	if got := rec.Header().Get("X-Content-Type-Options"); got != "nosniff" {
+		t.Fatalf("X-Content-Type-Options = %q, want nosniff", got)
+	}
+	if got := rec.Header().Get("X-Frame-Options"); got != "DENY" {
+		t.Fatalf("X-Frame-Options = %q, want DENY", got)
+	}
+	if got := rec.Header().Get("Referrer-Policy"); got != "strict-origin-when-cross-origin" {
+		t.Fatalf("Referrer-Policy = %q, want strict-origin-when-cross-origin", got)
+	}
+	if got := rec.Header().Get("Strict-Transport-Security"); got != "" {
+		t.Fatalf("Strict-Transport-Security default = %q, want empty", got)
+	}
+
+	if err := app.Options.Set(context.Background(), "waf_hsts_enabled", "1"); err != nil {
+		t.Fatal(err)
+	}
+	app.WAF.resetRuntimeState()
+	req = httptest.NewRequest(http.MethodGet, "https://example.com/", nil)
+	rec = httptest.NewRecorder()
+	app.Handler().ServeHTTP(rec, req)
+	if got := rec.Header().Get("Strict-Transport-Security"); got == "" {
+		t.Fatalf("Strict-Transport-Security missing when HSTS is enabled")
+	}
+}
+
+func TestWAFXMLRPCRateLimit(t *testing.T) {
+	app, _, _ := newSecurityTestApp(t)
+	ctx := context.Background()
+	for key, value := range map[string]string{
+		"waf_cache_enabled":          "0",
+		"waf_dynamic_rate_enabled":   "0",
+		"waf_static_rate_enabled":    "0",
+		"waf_upload_rate_enabled":    "0",
+		"waf_search_rate_enabled":    "0",
+		"waf_login_ban_enabled":      "0",
+		"waf_attachment_ban_enabled": "0",
+		"waf_invalid_path_enabled":   "0",
+		"waf_xmlrpc_rate_enabled":    "1",
+		"waf_xmlrpc_rate_window":     "60",
+		"waf_xmlrpc_rate_limit":      "1",
+	} {
+		if err := app.Options.Set(ctx, key, value); err != nil {
+			t.Fatal(err)
+		}
+	}
+	handler := app.Handler()
+	req := httptest.NewRequest(http.MethodPost, "/xmlrpc.php", strings.NewReader("<methodCall></methodCall>"))
+	req.RemoteAddr = "198.51.100.80:1234"
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code == http.StatusTooManyRequests {
+		t.Fatalf("first XML-RPC request unexpectedly rate limited")
+	}
+	req = httptest.NewRequest(http.MethodPost, "/xmlrpc.php", strings.NewReader("<methodCall></methodCall>"))
+	req.RemoteAddr = "198.51.100.80:1234"
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("second XML-RPC request status = %d, want 429", rec.Code)
+	}
+}
+
+func TestWAFEventLogFileAndClear(t *testing.T) {
+	app, secret, adminID := newSecurityTestApp(t)
+	app.DataDir = t.TempDir()
+	ctx := context.Background()
+	for key, value := range map[string]string{
+		"waf_cache_enabled":            "0",
+		"waf_dynamic_rate_enabled":     "0",
+		"waf_static_rate_enabled":      "0",
+		"waf_upload_rate_enabled":      "0",
+		"waf_search_rate_enabled":      "0",
+		"waf_login_ban_enabled":        "0",
+		"waf_attachment_ban_enabled":   "0",
+		"waf_url_index_enabled":        "1",
+		"waf_invalid_path_enabled":     "1",
+		"waf_invalid_path_window":      "60",
+		"waf_invalid_path_limit":       "1",
+		"waf_invalid_path_ban_seconds": "60",
+		"waf_log_max_entries":          "2",
+	} {
+		if err := app.Options.Set(ctx, key, value); err != nil {
+			t.Fatal(err)
+		}
+	}
+	handler := app.Handler()
+	for _, path := range []string{"/missing-log-a", "/missing-log-b"} {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		req.RemoteAddr = "198.51.100.90:1234"
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+	}
+	logPath := filepath.Join(app.DataDir, "waf.log")
+	body, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(body), "invalid path ban triggered") {
+		t.Fatalf("waf log missing invalid path event: %s", body)
+	}
+
+	if err := app.WAF.appendLogLine("entry 1\n", 2); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.WAF.appendLogLine("entry 2\n", 2); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.WAF.appendLogLine("entry 3\n", 2); err != nil {
+		t.Fatal(err)
+	}
+	body, err = os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(body), "entry 1") || !strings.Contains(string(body), "entry 2") || !strings.Contains(string(body), "entry 3") {
+		t.Fatalf("waf log trimming failed: %s", body)
+	}
+
+	form := url.Values{"action": {"clear_waf_log"}}
+	tokenReq := httptest.NewRequest(http.MethodPost, "/admin/options/waf", strings.NewReader(form.Encode()))
+	setSession(t, tokenReq, secret, adminID)
+	form.Set("_csrf", app.csrfTokenFor(tokenReq, "admin"))
+	req := httptest.NewRequest(http.MethodPost, "/admin/options/waf", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	setSession(t, req, secret, adminID)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("clear waf log status = %d: %s", rec.Code, rec.Body.String())
+	}
+	if rec.Header().Get("Location") != "/admin/options/waf?tab=logs" {
+		t.Fatalf("clear waf log redirect = %q, want logs tab", rec.Header().Get("Location"))
+	}
+	body, err = os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(body) != 0 {
+		t.Fatalf("waf log not cleared: %s", body)
+	}
+}
+
+func TestContributorContentForcesMarkdownRenderInHTMLMode(t *testing.T) {
+	app, secret, _ := newSecurityTestApp(t)
+	ctx := context.Background()
+	if err := app.Options.Set(ctx, "content_render_mode", "html"); err != nil {
+		t.Fatal(err)
+	}
+	contributorID, err := app.Users.Save(ctx, services.SaveUserInput{Name: "writer", Password: "writer-secret", Mail: "writer@example.com", Role: "contributor"}, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	form := url.Values{
+		"title":  {"Contributor HTML"},
+		"text":   {"# Title\n<script>alert(1)</script>"},
+		"status": {models.ContentStatusDraft},
+	}
+	tokenReq := httptest.NewRequest(http.MethodPost, "/admin/posts/new", strings.NewReader(form.Encode()))
+	setSession(t, tokenReq, secret, contributorID)
+	form.Set("_csrf", app.csrfTokenFor(tokenReq, "admin"))
+	req := httptest.NewRequest(http.MethodPost, "/admin/posts/new", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	setSession(t, req, secret, contributorID)
+	rec := httptest.NewRecorder()
+
+	app.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("save contributor post status = %d: %s", rec.Code, rec.Body.String())
+	}
+	posts, err := app.Contents.List(ctx, services.ContentQuery{Type: models.ContentTypePost, Status: models.ContentStatusDraft, AuthorID: contributorID, IncludeDrafts: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(posts) != 1 {
+		t.Fatalf("saved posts = %d, want 1", len(posts))
+	}
+	if !strings.HasPrefix(posts[0].Text, "<!--markdown-->") {
+		t.Fatalf("contributor text was not forced to markdown: %q", posts[0].Text)
+	}
+	html, err := app.renderContentHTML(ctx, posts[0], nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(html), "<script>") {
+		t.Fatalf("contributor markdown render preserved script: %s", html)
 	}
 }
 
@@ -3754,7 +4005,9 @@ func newSecurityTestApp(t *testing.T) (*App, string, int64) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return New(services.NewContentService(db), metas, services.NewCommentService(db), users, options, plugin.Default), secret, admin.UID
+	app := New(services.NewContentService(db), metas, services.NewCommentService(db), users, options, plugin.Default)
+	app.DataDir = t.TempDir()
+	return app, secret, admin.UID
 }
 
 func newInstallTestApp(t *testing.T) (*App, string) {
@@ -3891,11 +4144,11 @@ func submitPublicCommentWithReferer(t *testing.T, app *App, cid int64, form url.
 	form.Set("cid", itoa(cid))
 	req := httptest.NewRequest(http.MethodPost, "/comment", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req.Header.Set("X-Real-IP", ip)
+	req.RemoteAddr = ip + ":1234"
 	form.Set("_csrf", app.csrfTokenFor(req, "comment"))
 	req = httptest.NewRequest(http.MethodPost, "/comment", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req.Header.Set("X-Real-IP", ip)
+	req.RemoteAddr = ip + ":1234"
 	if referer != "" {
 		req.Header.Set("Referer", referer)
 	}

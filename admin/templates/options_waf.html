@@ -2,6 +2,26 @@
 <div class="page-head"><div><h1>WAF</h1><p class="muted">在请求进入业务处理前进行基础限流、路径拦截和公开页缓存。</p></div></div>
 {{if .Saved}}<div class="notice">设置已保存。</div>{{end}}
 {{if .Error}}<div class="notice danger">{{.Error}}</div>{{end}}
+<div class="subnav">
+  <mdui-button variant="{{if eq .WAFTab "settings"}}filled{{else}}tonal{{end}}" href="/admin/options/waf"><mdui-icon slot="icon" name="tune"></mdui-icon>设置</mdui-button>
+  <mdui-button variant="{{if eq .WAFTab "logs"}}filled{{else}}tonal{{end}}" href="/admin/options/waf?tab=logs"><mdui-icon slot="icon" name="list_alt"></mdui-icon>WAF 日志</mdui-button>
+</div>
+{{if eq .WAFTab "logs"}}
+<section class="form-panel field-stack">
+  <fieldset class="fieldset">
+    <legend>WAF 日志</legend>
+    {{if .WAFLog}}
+      <pre class="waf-log-view">{{.WAFLog}}</pre>
+    {{else}}
+      <p class="muted">暂无 WAF 事件。</p>
+    {{end}}
+    <form method="post" class="form-actions">
+      <input type="hidden" name="action" value="clear_waf_log">
+      <mdui-button type="submit" variant="outlined"><mdui-icon slot="icon" name="delete_sweep"></mdui-icon>清理日志</mdui-button>
+    </form>
+  </fieldset>
+</section>
+{{else}}
 <form method="post" class="form-panel field-stack">
   <fieldset class="fieldset">
     <legend>总开关</legend>
@@ -9,6 +29,29 @@
       <mdui-checkbox name="waf_enabled" value="1" {{if eq (index .Options "waf_enabled") "1"}}checked{{end}}>启用 WAF</mdui-checkbox>
       <input type="hidden" name="waf_enabled" value="0">
     </div>
+    <mdui-text-field name="waf_state_max_entries" label="状态表最大条目数" type="number" min="1000" max="1000000" step="1" value="{{index .Options "waf_state_max_entries"}}" helper="限制限流计数器和封禁表规模；默认 100000"></mdui-text-field>
+    <mdui-text-field name="waf_log_max_entries" label="WAF 日志最大记录条目数" type="number" min="1" max="100000" step="1" value="{{index .Options "waf_log_max_entries"}}" helper="超过后自动保留最新记录；默认 1000"></mdui-text-field>
+  </fieldset>
+
+  <fieldset class="fieldset">
+    <legend>安全响应头</legend>
+    <div class="comment-option-row">
+      <mdui-checkbox name="waf_hsts_enabled" value="1" {{if eq (index .Options "waf_hsts_enabled") "1"}}checked{{end}}>启用 HSTS</mdui-checkbox>
+      <input type="hidden" name="waf_hsts_enabled" value="0">
+    </div>
+  </fieldset>
+
+  <fieldset class="fieldset">
+    <legend>反向代理 IP 信任</legend>
+    <div class="comment-option-row">
+      <mdui-checkbox name="waf_trust_proxy_headers" value="1" {{if eq (index .Options "waf_trust_proxy_headers") "1"}}checked{{end}}>信任 X-Forwarded-For / X-Real-IP</mdui-checkbox>
+      <input type="hidden" name="waf_trust_proxy_headers" value="0">
+      <mdui-select name="waf_trust_proxy_mode" label="匹配模式" value="{{index .Options "waf_trust_proxy_mode"}}">
+        <mdui-menu-item value="allowlist">白名单模式</mdui-menu-item>
+        <mdui-menu-item value="denylist">黑名单模式</mdui-menu-item>
+      </mdui-select>
+    </div>
+    <mdui-text-field name="waf_trust_proxy_ips" label="代理 IP 地址组" rows="5" value="{{index .Options "waf_trust_proxy_ips"}}" helper="一行一个 IP 或 CIDR；白名单模式只信任匹配来源，黑名单模式不信任匹配来源"></mdui-text-field>
   </fieldset>
 
   <fieldset class="fieldset">
@@ -94,6 +137,16 @@
   </fieldset>
 
   <fieldset class="fieldset">
+    <legend>XML-RPC 限流</legend>
+    <div class="comment-option-row">
+      <mdui-checkbox name="waf_xmlrpc_rate_enabled" value="1" {{if eq (index .Options "waf_xmlrpc_rate_enabled") "1"}}checked{{end}}>启用 XML-RPC 独立限流</mdui-checkbox>
+      <input type="hidden" name="waf_xmlrpc_rate_enabled" value="0">
+    </div>
+    <mdui-text-field name="waf_xmlrpc_rate_window" label="XML-RPC 限流窗口（秒）" type="number" min="1" max="86400" step="1" value="{{index .Options "waf_xmlrpc_rate_window"}}"></mdui-text-field>
+    <mdui-text-field name="waf_xmlrpc_rate_limit" label="窗口内允许 XML-RPC 请求数" type="number" min="1" max="100000" step="1" value="{{index .Options "waf_xmlrpc_rate_limit"}}"></mdui-text-field>
+  </fieldset>
+
+  <fieldset class="fieldset">
     <legend>后台登录爆破封禁</legend>
     <div class="comment-option-row">
       <mdui-checkbox name="waf_login_ban_enabled" value="1" {{if eq (index .Options "waf_login_ban_enabled") "1"}}checked{{end}}>启用登录失败封禁</mdui-checkbox>
@@ -106,4 +159,5 @@
 
   <div class="form-actions"><mdui-button type="submit"><mdui-icon slot="icon" name="security"></mdui-icon>保存设置</mdui-button></div>
 </form>
+{{end}}
 {{end}}
