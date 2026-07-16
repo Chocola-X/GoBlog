@@ -14,7 +14,7 @@
 - **完整后台管理** — 文章、页面、分类、标签、评论、用户、附件与备份
 - **编辑草稿机制** — 已发布内容的修改先保存为草稿，发布时合并回原文，支持自动保存
 - **修订版本** — 自动保留历史修订（默认最多 20 条），可随时回滚
-- **插件/主题系统** — 钩子驱动的插件架构（51 个预定义钩子点），支持主题配置、自定义字段、模板函数扩展
+- **插件/主题系统** — 钩子驱动的插件架构（50 个预定义钩子点），支持主题配置、自定义字段、模板函数扩展
 - **兼容性 API** — XML-RPC（MetaWeblog/WordPress/Blogger）、Pingback、Trackback、RSD
 - **WAF 安全防护** — 内置 Web 应用防火墙，IP 限速、登录暴力破解防护、无效路径封禁、页面缓存、安全响应头
 - **图片处理** — 上传自动转 WebP（无损/有损可选）、缩略图生成、GIF 动画转 WebP
@@ -25,7 +25,7 @@
 - **Sitemap** — 内置 Sitemap 插件
 - **单二进制部署** — 所有模板和静态资源通过 `embed.FS` 嵌入，零外部依赖
 
-插件优先级、接管信号，以及内容、评论、附件的生命周期和字段扩展接口见 [插件与钩子开发](docs/plugin-hooks.md)。
+插件优先级、接管信号，以及内容、评论、附件的生命周期和字段扩展接口见 [插件与钩子开发](docs/plugins-and-hooks.md)。架构、配置、主题、安全和兼容接口等开发说明见 [开发文档目录](docs/README.md)。
 
 插件和主题采用构建时集成：每次新增或修改插件、主题源码，都需要重新编译并重启 GopherInk；后台启停不会热加载代码。
 
@@ -68,6 +68,8 @@ go build -o gopherink ./cmd/gopherink
 | `GOPHERINK_ADMIN_PASSWORD` | 初始管理员密码 | `admin123` |
 | `GOPHERINK_ADMIN_MAIL` | 初始管理员邮箱 | `admin@example.com` |
 | `GOPHERINK_WEB_INSTALL` | 启用 Web 安装向导 | `true` |
+| `GOPHERINK_DATA_DIR` | 数据、默认 SQLite、WAF 日志和默认上传目录的根目录 | `data` |
+| `GOPHERINK_UPLOAD_DIR` | 单独指定附件文件系统根目录 | `<GOPHERINK_DATA_DIR>/uploads` |
 
 ### 数据库连接字符串示例
 
@@ -120,7 +122,7 @@ GopherInk/
 │   │   ├── schema.go        # 数据库 Schema 初始化（版本 1）
 │   │   └── query.go         # SQL 方言抽象（Rebind, UpsertOptionSQL, LimitOffset）
 │   ├── plugin/              # 插件/主题管理器与钩子系统
-│   │   └── plugin.go        # Plugin 接口、Manager、Runtime、51 个钩子常量
+│   │   └── plugin.go        # Plugin 接口、Manager、Runtime、50 个钩子常量
 │   ├── services/            # 业务服务层
 │   │   ├── contents.go      # 内容 CRUD、草稿、修订、slugID、搜索、附件
 │   │   ├── comments.go      # 评论管理
@@ -143,17 +145,21 @@ GopherInk/
 │       ├── theme.go         # 主题注册、配置 Schema、模板函数
 │       ├── static/          # 主题静态资源
 │       └── templates/       # 主题模板（base/index/post/404）
-└── docs/                    # 文档
-    └── plugin-hooks.md      # 插件与钩子开发指南
+└── docs/                    # 分类开发文档
+    ├── README.md            # 开发文档目录
+    ├── architecture.md      # 架构与数据模型
+    ├── plugins-and-hooks.md # 插件与钩子开发
+    ├── themes.md            # 主题开发
+    └── ...                  # 内容、评论、附件、安全和兼容接口
 ```
 
 ## 数据模型
 
-系统使用 7 张核心表：
+系统使用 8 张核心表：
 
 | 表 | 用途 |
 |----|------|
-| `gb_contents` | 文章、页面、附件、修订版本（通过 `type` 和 `status` 区分） |
+| `gb_contents` | 文章、页面、附件和编辑草稿（通过 `type`、`status`、`draftOf` 区分） |
 | `gb_users` | 用户（角色：administrator/editor/contributor/subscriber/visitor） |
 | `gb_options` | 站点配置（name+user 联合主键，支持每用户配置） |
 | `gb_metas` | 分类和标签（通过 `type` 区分） |
@@ -186,7 +192,7 @@ GopherInk/
 | authorId | int | 0 | 作者 ID |
 | template | varchar(32) | NULL | 自定义模板 |
 | type | varchar(16) | 'post' | 类型（post/page/attachment/revision） |
-| status | varchar(16) | 'publish' | 状态（publish/draft/private/hidden/pending） |
+| status | varchar(16) | 'publish' | 状态（publish/draft/private/hidden/waiting） |
 | password | varchar(64) | NULL | 密码保护 |
 | commentsNum | int | 0 | 评论数 |
 | allowComment | char(1) | '1' | 允许评论 |
@@ -333,8 +339,8 @@ type Plugin interface {
 
 | 方法 | 说明 |
 |------|------|
-| `ListPublished(ctx, page, pageSize)` | 获取已发布文章列表 |
-| `ContentByID(ctx, id)` | 按 ID 获取公开内容 |
+| `ListPublished(ctx, limit, offset)` | 分页获取已发布文章 |
+| `ContentByID(ctx, id)` | 按内部 ID 获取精简内容；调用方需检查状态和权限 |
 | `IncrementIntField(ctx, id, name, delta)` | 原子增加整数自定义字段（适合阅读计数） |
 | `Option(ctx, name)` | 读取站点选项 |
 | `Config(ctx, pluginName)` | 读取插件站点级配置 |
@@ -436,7 +442,7 @@ type Plugin interface {
 
 - 自定义模板（`html/template`）
 - 静态资源（`embed.FS` 或外部目录）
-- 配置 Schema（JSON Schema 格式，后台自动生成设置表单）
+- 配置 Schema（`FieldSchema`，后台自动生成设置表单）
 - 自定义字段定义（可限定 `post`/`page` 类型）
 - 模板函数（`FuncMap`）
 - 数据调整回调（`AdjustData`）
