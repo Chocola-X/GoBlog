@@ -77,7 +77,7 @@ func init() {
 			{Name: "default_cover", Label: "默认文章封面 URL", Group: "背景和装饰图片", Type: plugin.FieldImage, Description: "文章未设置 cover 字段时使用；留空时使用主题色看板"},
 			{Name: "comment_bg_image", Label: "评论框装饰图 URL", Group: "背景和装饰图片", Type: plugin.FieldImage, Description: "显示在评论输入框右侧；留空时不显示"},
 			{Name: "post_end_image", Label: "文章底部装饰图 URL", Group: "背景和装饰图片", Type: plugin.FieldImage, Description: "显示在文章内容底部右下角；留空时不显示"},
-			{Name: "favicon", Label: "Favicon URL", Group: "背景和装饰图片", Type: plugin.FieldImage},
+			{Name: "favicon", Label: "Favicon URL", Group: "背景和装饰图片", Type: plugin.FieldImage, Default: "/theme/default/favicon.svg", Description: "留空时使用 GopherInk 默认 Logo"},
 			{Name: "show_profile", Label: "显示侧栏资料卡", Group: "侧栏和导航", Type: plugin.FieldCheckbox, Default: "1"},
 			{Name: "show_recent_comments", Label: "显示最新回复", Group: "侧栏和导航", Type: plugin.FieldCheckbox, Default: "1"},
 			{Name: "show_tag_cloud", Label: "显示标签云", Group: "侧栏和导航", Type: plugin.FieldCheckbox, Default: "1"},

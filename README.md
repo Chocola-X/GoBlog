@@ -1,5 +1,7 @@
 # GopherInk
 
+<p align="center"><img src="logo.svg" alt="GopherInk Logo" width="160"></p>
+
 一个用 Go 编写的极简博客系统，功能对标 Typecho。
 
 项目仓库：[github.com/Chocola-X/GopherInk](https://github.com/Chocola-X/GopherInk)

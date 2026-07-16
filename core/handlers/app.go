@@ -2819,6 +2819,14 @@ func adminAppearanceSchema() []plugin.FieldSchema {
 			Description: "用于窄屏和手机端后台背景；留空时沿用电脑端背景。",
 		},
 		{
+			Name:        "admin_favicon",
+			Label:       "后台 Favicon URL",
+			Group:       "背景图设置",
+			Type:        plugin.FieldImage,
+			Default:     "/admin/assets/favicon.svg",
+			Description: "用于登录、安装和管理页面；留空时使用 GopherInk 默认 Logo。",
+		},
+		{
 			Name:        "admin_card_opacity",
 			Label:       "后台卡片背景透明度",
 			Group:       "透明度设置",
@@ -6923,6 +6931,7 @@ func (a *App) enrichAdminAppearance(ctx context.Context, data map[string]any) {
 	data["AdminBackgroundMaskOpacity"] = adminAppearanceOpacity(values["admin_bg_mask_opacity"], 0.54)
 	data["AdminBackgroundImage"] = adminAppearanceURL(values["admin_bg_image"])
 	data["AdminMobileBackgroundImage"] = adminAppearanceURL(values["admin_mobile_bg_image"])
+	data["AdminFavicon"] = adminAppearanceURL(values["admin_favicon"])
 }
 
 func (a *App) adminAppearanceValues(ctx context.Context) map[string]string {
