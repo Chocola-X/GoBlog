@@ -12,7 +12,7 @@
     <tbody>
       {{range .Plugins}}
       <tr>
-        <td><strong>{{.Name}}</strong><div class="muted">{{.Description}}</div>{{if .RequireGoBlog}}<div class="muted">要求 GoBlog {{.RequireGoBlog}}+</div>{{end}}</td>
+        <td><strong>{{.Name}}</strong><div class="muted">{{.Description}}</div>{{if .RequireGopherInk}}<div class="muted">要求 GopherInk {{.RequireGopherInk}}+</div>{{end}}</td>
         <td>{{.Version}}</td>
         <td>{{.Author}}</td>
         <td>{{if .Active}}已启用{{else}}未启用{{end}}{{if not .Compatible}}<div class="muted">依赖不满足</div>{{end}}</td>

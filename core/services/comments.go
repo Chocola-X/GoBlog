@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	"goblog/core/models"
+	"github.com/Chocola-X/GopherInk/core/models"
 )
 
 type CommentService struct {

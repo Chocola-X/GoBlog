@@ -62,7 +62,7 @@ func (s *OptionService) SetForUser(ctx context.Context, name, value string, user
 
 func (s *OptionService) EnsureDefaults(ctx context.Context) error {
 	defaults := map[string]string{
-		"site_title":                    "GoBlog",
+		"site_title":                    "GopherInk",
 		"site_description":              "一个极简的 Go 博客",
 		"site_keywords":                 "",
 		"base_url":                      "http://localhost:8080",
@@ -122,7 +122,7 @@ func (s *OptionService) EnsureDefaults(ctx context.Context) error {
 		"enable_pingback":               "1",
 		"enable_trackback":              "1",
 		"http_client_timeout":           "5",
-		"http_client_user_agent":        "GoBlog/1.0",
+		"http_client_user_agent":        "GopherInk/0.5.0",
 		"http_client_proxy":             "",
 		"http_client_retries":           "1",
 		"db_read_dsn":                   "",

@@ -12,9 +12,9 @@ import (
 	"sync/atomic"
 	"time"
 
-	"goblog/core/models"
-	"goblog/core/plugin"
-	"goblog/pkg/slug"
+	"github.com/Chocola-X/GopherInk/core/models"
+	"github.com/Chocola-X/GopherInk/core/plugin"
+	"github.com/Chocola-X/GopherInk/pkg/slug"
 )
 
 type ContentService struct {

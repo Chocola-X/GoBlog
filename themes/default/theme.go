@@ -12,7 +12,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"goblog/core/plugin"
+	"github.com/Chocola-X/GopherInk/core/plugin"
 )
 
 //go:embed templates/* static/*
@@ -36,8 +36,8 @@ func init() {
 		Name:         "default",
 		DisplayName:  "Default Theme",
 		Version:      "0.5.0",
-		Author:       "GoBlog",
-		Description:  "GoBlog 默认主题，基于 MDUI 2 设计，支持动态主题配色、PJAX 导航与按需装饰图片。",
+		Author:       "GopherInk",
+		Description:  "GopherInk 默认主题，基于 MDUI 2 设计，支持动态主题配色、PJAX 导航与按需装饰图片。",
 		TemplateList: []string{"index.html", "post.html", "404.html"},
 		Templates:    themeFS,
 		Static:       static,
@@ -60,7 +60,7 @@ func init() {
 			},
 		},
 		ConfigSchema: []plugin.FieldSchema{
-			{Name: "display_name", Label: "资料卡名称", Group: "资料卡", Type: plugin.FieldText, Default: "GoBlog", Description: "留空时使用站点标题"},
+			{Name: "display_name", Label: "资料卡名称", Group: "资料卡", Type: plugin.FieldText, Default: "GopherInk", Description: "留空时使用站点标题"},
 			{Name: "profile_email", Label: "头像邮箱", Group: "资料卡", Type: plugin.FieldText, Description: "用于生成 Gravatar/Cravatar 头像，不在前台明文展示"},
 			{Name: "profile_avatar", Label: "头像图片 URL", Group: "资料卡", Type: plugin.FieldImage, Description: "单独指定头像图片；留空时按头像邮箱生成 Gravatar"},
 			{Name: "bio", Label: "资料卡描述", Group: "资料卡", Type: plugin.FieldText, Description: "留空时使用站点描述", Wide: true},
@@ -84,7 +84,7 @@ func init() {
 			{Name: "enable_pjax", Label: "启用 PJAX 导航", Group: "侧栏和导航", Type: plugin.FieldCheckbox, Default: "1"},
 			{Name: "enable_toc", Label: "文章页显示目录", Group: "侧栏和导航", Type: plugin.FieldCheckbox, Default: "1"},
 			{Name: "enable_back_to_top", Label: "显示回到顶部按钮", Group: "侧栏和导航", Type: plugin.FieldCheckbox, Default: "1"},
-			{Name: "footer_html", Label: "底部 HTML", Group: "页脚", Type: plugin.FieldTextarea, Description: "留空时显示 Powered by GoBlog", Wide: true},
+			{Name: "footer_html", Label: "底部 HTML", Group: "页脚", Type: plugin.FieldTextarea, Description: "留空时显示 Powered by GopherInk", Wide: true},
 		},
 		ContentFields: []plugin.FieldSchema{
 			{Name: "cover", Label: "封面图", Type: plugin.FieldImage, Description: "文章或页面封面图 URL", ForTypes: []string{"post", "page"}},

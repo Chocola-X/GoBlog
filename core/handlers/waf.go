@@ -14,8 +14,8 @@ import (
 	"sync"
 	"time"
 
-	"goblog/core/models"
-	"goblog/core/services"
+	"github.com/Chocola-X/GopherInk/core/models"
+	"github.com/Chocola-X/GopherInk/core/services"
 )
 
 type wafConfig struct {
@@ -789,7 +789,7 @@ func cloneCacheHeaders(src http.Header) http.Header {
 			out.Add(key, value)
 		}
 	}
-	out.Set("X-GoBlog-Cache", "HIT")
+	out.Set("X-GopherInk-Cache", "HIT")
 	return out
 }
 

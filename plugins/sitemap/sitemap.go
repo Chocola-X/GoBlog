@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"goblog/core/plugin"
+	"github.com/Chocola-X/GopherInk/core/plugin"
 )
 
 type sitemapPlugin struct{}

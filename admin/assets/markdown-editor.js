@@ -385,5 +385,5 @@
     return Array.prototype.slice.call((root || document).querySelectorAll(selector));
   }
 
-  window.GoBlogMarkdownEditor = { init: init };
+  window.GopherInkMarkdownEditor = { init: init };
 })();

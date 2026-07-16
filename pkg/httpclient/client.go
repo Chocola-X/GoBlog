@@ -36,7 +36,7 @@ func New(cfg Config) (*Client, error) {
 		cfg.Timeout = 5 * time.Second
 	}
 	if cfg.UserAgent == "" {
-		cfg.UserAgent = "GoBlog/1.0"
+		cfg.UserAgent = "GopherInk/0.5.0"
 	}
 	if cfg.MaxBody <= 0 {
 		cfg.MaxBody = 1 << 20

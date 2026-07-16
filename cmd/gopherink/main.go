@@ -13,10 +13,10 @@ import (
 	"strings"
 	"time"
 
-	"goblog/core/handlers"
-	"goblog/core/models"
-	"goblog/core/plugin"
-	"goblog/core/services"
+	"github.com/Chocola-X/GopherInk/core/handlers"
+	"github.com/Chocola-X/GopherInk/core/models"
+	"github.com/Chocola-X/GopherInk/core/plugin"
+	"github.com/Chocola-X/GopherInk/core/services"
 
 	_ "github.com/go-sql-driver/mysql"
 	_ "github.com/lib/pq"
@@ -78,7 +78,7 @@ func main() {
 	comments := services.NewCommentService(serviceDB)
 	app := handlers.New(contents, metas, comments, users, options, plugin.Default)
 
-	log.Printf("goblog listening on %s", cfg.Addr)
+	log.Printf("GopherInk listening on %s", cfg.Addr)
 	if defaultAdminReady {
 		log.Printf("admin: http://localhost%s/admin", cfg.Addr)
 	}
@@ -101,33 +101,33 @@ type config struct {
 }
 
 func loadConfig() config {
-	driver := os.Getenv("GOBLOG_DB_DRIVER")
-	dsn := os.Getenv("GOBLOG_DB_DSN")
+	driver := os.Getenv("GOPHERINK_DB_DRIVER")
+	dsn := os.Getenv("GOPHERINK_DB_DSN")
 	if driver == "" {
 		driver = chooseDriver()
 	}
 	if dsn == "" && (driver == "sqlite" || driver == "sqlite3") {
-		dsn = filepath.Join("data", "goblog.db")
+		dsn = filepath.Join("data", "gopherink.db")
 	}
-	writeDSN := os.Getenv("GOBLOG_DB_WRITE_DSN")
+	writeDSN := os.Getenv("GOPHERINK_DB_WRITE_DSN")
 	if writeDSN != "" {
 		dsn = writeDSN
 	}
 
-	_, adminUserSet := os.LookupEnv("GOBLOG_ADMIN_USER")
-	_, adminPasswordSet := os.LookupEnv("GOBLOG_ADMIN_PASSWORD")
-	_, adminMailSet := os.LookupEnv("GOBLOG_ADMIN_MAIL")
+	_, adminUserSet := os.LookupEnv("GOPHERINK_ADMIN_USER")
+	_, adminPasswordSet := os.LookupEnv("GOPHERINK_ADMIN_PASSWORD")
+	_, adminMailSet := os.LookupEnv("GOPHERINK_ADMIN_MAIL")
 
 	return config{
-		Addr:          env("GOBLOG_ADDR", ":8080"),
+		Addr:          env("GOPHERINK_ADDR", ":8080"),
 		DBDriver:      driver,
 		DBDSN:         dsn,
-		DBReadDSN:     os.Getenv("GOBLOG_DB_READ_DSN"),
+		DBReadDSN:     os.Getenv("GOPHERINK_DB_READ_DSN"),
 		DBWriteDSN:    writeDSN,
-		AdminUser:     env("GOBLOG_ADMIN_USER", "admin"),
-		AdminPassword: env("GOBLOG_ADMIN_PASSWORD", "admin123"),
-		AdminMail:     env("GOBLOG_ADMIN_MAIL", "admin@example.com"),
-		WebInstall:    envBool("GOBLOG_WEB_INSTALL", true),
+		AdminUser:     env("GOPHERINK_ADMIN_USER", "admin"),
+		AdminPassword: env("GOPHERINK_ADMIN_PASSWORD", "admin123"),
+		AdminMail:     env("GOPHERINK_ADMIN_MAIL", "admin@example.com"),
+		WebInstall:    envBool("GOPHERINK_WEB_INSTALL", true),
 		AdminExplicit: adminUserSet || adminPasswordSet || adminMailSet,
 	}
 }
@@ -140,7 +140,7 @@ func shouldCreateDefaultAdmin(userCount int, cfg config) bool {
 }
 
 func chooseDriver() string {
-	defaultDSN := filepath.Join("data", "goblog.db")
+	defaultDSN := filepath.Join("data", "gopherink.db")
 	if _, err := os.Stat(defaultDSN); err == nil {
 		return "sqlite"
 	}

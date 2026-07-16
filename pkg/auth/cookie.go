@@ -11,7 +11,7 @@ import (
 	"time"
 )
 
-const CookieName = "goblog_session"
+const CookieName = "gopherink_session"
 
 type CookieOptions struct {
 	Prefix   string

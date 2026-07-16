@@ -105,7 +105,7 @@
     const cid = form?.querySelector('[name="cid"]')?.value;
     if (!form || !field || !cid || form.dataset.commentDraftBound) return;
     form.dataset.commentDraftBound = "1";
-    const key = "goblog-comment-draft:" + cid;
+    const key = "gopherink-comment-draft:" + cid;
     try {
       const params = new URLSearchParams(window.location.search);
       if (params.get("comment_ok") === "1") {

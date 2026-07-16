@@ -81,11 +81,11 @@
       document.body.classList.toggle("admin-drawer-open", open);
       document.body.classList.toggle("admin-drawer-modal", open && compactDrawer());
       if (persist !== false) {
-        localStorage.setItem("goblogAdminDrawerOpen", open ? "1" : "0");
+        localStorage.setItem("gopherinkAdminDrawerOpen", open ? "1" : "0");
       }
     }
 
-    var stored = localStorage.getItem("goblogAdminDrawerOpen");
+    var stored = localStorage.getItem("gopherinkAdminDrawerOpen");
     var defaultOpen = window.matchMedia("(min-width: 920px)").matches;
     setDrawer(stored === null ? defaultOpen : stored === "1", false);
 
@@ -156,8 +156,8 @@
     if (!(root || document).querySelector("[data-markdown-editor]")) {
       return;
     }
-    if (window.GoBlogMarkdownEditor && typeof window.GoBlogMarkdownEditor.init === "function") {
-      window.GoBlogMarkdownEditor.init(root || document);
+    if (window.GopherInkMarkdownEditor && typeof window.GopherInkMarkdownEditor.init === "function") {
+      window.GopherInkMarkdownEditor.init(root || document);
       return;
     }
     if (!markdownEditorLoading) {
@@ -171,8 +171,8 @@
       });
     }
     markdownEditorLoading.then(function () {
-      if (window.GoBlogMarkdownEditor && typeof window.GoBlogMarkdownEditor.init === "function") {
-        window.GoBlogMarkdownEditor.init(root || document);
+      if (window.GopherInkMarkdownEditor && typeof window.GopherInkMarkdownEditor.init === "function") {
+        window.GopherInkMarkdownEditor.init(root || document);
       }
     }).catch(function () {
       showMessage("Markdown 编辑器加载失败");
@@ -210,7 +210,7 @@
           var changed = cidInput.value !== String(id);
           cidInput.value = String(id);
           if (changed) {
-            document.dispatchEvent(new CustomEvent("goblog:content-id", { detail: { cid: id } }));
+            document.dispatchEvent(new CustomEvent("gopherink:content-id", { detail: { cid: id } }));
           }
         }
       }
@@ -388,7 +388,7 @@
         return;
       }
       loadCurrentEditorMedia(panel);
-      document.addEventListener("goblog:content-id", function (event) {
+      document.addEventListener("gopherink:content-id", function (event) {
         if (!document.documentElement.contains(panel)) {
           return;
         }
@@ -397,7 +397,7 @@
           loadCurrentEditorMedia(panel);
         }
       });
-      document.addEventListener("goblog:media-uploaded", function () {
+      document.addEventListener("gopherink:media-uploaded", function () {
         if (!document.documentElement.contains(panel)) {
           return;
         }
@@ -576,7 +576,7 @@
       var nextID = parseInt(payload.cid || "0", 10);
       if (cidInput && nextID > 0) {
         cidInput.value = String(nextID);
-        document.dispatchEvent(new CustomEvent("goblog:content-id", { detail: { cid: nextID } }));
+        document.dispatchEvent(new CustomEvent("gopherink:content-id", { detail: { cid: nextID } }));
       }
       return nextID;
     });
@@ -627,7 +627,7 @@
           });
         }).then(function (payload) {
           appendToEditor(payload.markdown || payload.url || "");
-          document.dispatchEvent(new CustomEvent("goblog:media-uploaded", { detail: payload }));
+          document.dispatchEvent(new CustomEvent("gopherink:media-uploaded", { detail: payload }));
           setButtonLabel(button, "已插入");
           if (payload.warning) {
             showMessage(payload.warning, { type: "info" });

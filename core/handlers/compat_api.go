@@ -20,10 +20,10 @@ import (
 	"strings"
 	"time"
 
-	"goblog/core/models"
-	"goblog/core/services"
-	compathttp "goblog/pkg/httpclient"
-	"goblog/pkg/render"
+	"github.com/Chocola-X/GopherInk/core/models"
+	"github.com/Chocola-X/GopherInk/core/services"
+	compathttp "github.com/Chocola-X/GopherInk/pkg/httpclient"
+	"github.com/Chocola-X/GopherInk/pkg/render"
 )
 
 type xmlRPCMethodCall struct {
@@ -672,7 +672,7 @@ func (a *App) sendSinglePing(ctx context.Context, source, target string) {
 				status = "pingback sent"
 			}
 		} else if endpoint := discoverTrackbackEndpoint(page); endpoint != "" {
-			form := neturl.Values{"url": {source}, "title": {"GoBlog"}, "blog_name": {"GoBlog"}}
+			form := neturl.Values{"url": {source}, "title": {"GopherInk"}, "blog_name": {"GopherInk"}}
 			if err = client.PostForm(ctx, endpoint, form.Encode()); err == nil {
 				status = "trackback sent"
 			}
@@ -696,7 +696,7 @@ func (a *App) rsdXML(w http.ResponseWriter, r *http.Request) {
 	site := a.siteOptions(r.Context())
 	endpoint := strings.TrimRight(site["base_url"], "/") + "/xmlrpc.php"
 	w.Header().Set("Content-Type", "application/rsd+xml; charset=utf-8")
-	_, _ = fmt.Fprintf(w, `<?xml version="1.0" encoding="UTF-8"?><rsd version="1.0" xmlns="http://archipelago.phrasewise.com/rsd"><service><engineName>GoBlog</engineName><engineLink>%s</engineLink><homePageLink>%s</homePageLink><apis><api name="MetaWeblog" preferred="true" apiLink="%s" blogID="1"/><api name="Blogger" preferred="false" apiLink="%s" blogID="1"/><api name="WordPress" preferred="false" apiLink="%s" blogID="1"/></apis></service></rsd>`, xmlEscape(site["base_url"]), xmlEscape(site["base_url"]), xmlEscape(endpoint), xmlEscape(endpoint), xmlEscape(endpoint))
+	_, _ = fmt.Fprintf(w, `<?xml version="1.0" encoding="UTF-8"?><rsd version="1.0" xmlns="http://archipelago.phrasewise.com/rsd"><service><engineName>GopherInk</engineName><engineLink>%s</engineLink><homePageLink>%s</homePageLink><apis><api name="MetaWeblog" preferred="true" apiLink="%s" blogID="1"/><api name="Blogger" preferred="false" apiLink="%s" blogID="1"/><api name="WordPress" preferred="false" apiLink="%s" blogID="1"/></apis></service></rsd>`, xmlEscape(site["base_url"]), xmlEscape(site["base_url"]), xmlEscape(endpoint), xmlEscape(endpoint), xmlEscape(endpoint))
 }
 
 func (a *App) wlwManifest(w http.ResponseWriter, r *http.Request) {
@@ -899,7 +899,7 @@ func (a *App) compatHTTPClient(ctx context.Context) *compathttp.Client {
 	}
 	client, _ := compathttp.New(compathttp.Config{
 		Timeout:   compathttp.ParseTimeoutSeconds(a.option(ctx, "http_client_timeout", "5"), 5*time.Second),
-		UserAgent: firstNonEmpty(a.option(ctx, "http_client_user_agent", ""), "GoBlog/1.0"),
+		UserAgent: firstNonEmpty(a.option(ctx, "http_client_user_agent", ""), "GopherInk/0.5.0"),
 		Proxy:     a.option(ctx, "http_client_proxy", ""),
 		Retries:   optionInt(a.option(ctx, "http_client_retries", "1"), 1),
 	})
@@ -916,7 +916,7 @@ func (a *App) fetchExternalText(ctx context.Context, rawURL string) (string, err
 func (a *App) siteOptions(ctx context.Context) map[string]string {
 	site, err := a.Options.All(ctx)
 	if err != nil {
-		return map[string]string{"site_title": "GoBlog", "base_url": "http://localhost:8080"}
+		return map[string]string{"site_title": "GopherInk", "base_url": "http://localhost:8080"}
 	}
 	return site
 }

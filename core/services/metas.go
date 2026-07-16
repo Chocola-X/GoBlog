@@ -7,8 +7,8 @@ import (
 	"fmt"
 	"strings"
 
-	"goblog/core/models"
-	"goblog/pkg/slug"
+	"github.com/Chocola-X/GopherInk/core/models"
+	"github.com/Chocola-X/GopherInk/pkg/slug"
 )
 
 type MetaService struct {

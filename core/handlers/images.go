@@ -12,8 +12,8 @@ import (
 	"strings"
 	"time"
 
-	"goblog/core/plugin"
-	"goblog/pkg/imageproc"
+	"github.com/Chocola-X/GopherInk/core/plugin"
+	"github.com/Chocola-X/GopherInk/pkg/imageproc"
 )
 
 const (

@@ -10,7 +10,7 @@ import (
 	"sync"
 )
 
-const GoBlogVersion = "0.5.0"
+const GopherInkVersion = "0.5.0"
 
 type PublicContent struct {
 	CID      int64
@@ -338,12 +338,12 @@ type FieldSchema struct {
 }
 
 type PluginInfo struct {
-	Name          string
-	Version       string
-	Author        string
-	Description   string
-	Homepage      string
-	RequireGoBlog string
+	Name             string
+	Version          string
+	Author           string
+	Description      string
+	Homepage         string
+	RequireGopherInk string
 }
 
 type Plugin interface {

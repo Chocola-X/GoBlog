@@ -33,16 +33,16 @@ import (
 	"sync"
 	"time"
 
-	"goblog/admin"
-	"goblog/core/models"
-	"goblog/core/plugin"
-	"goblog/core/services"
-	"goblog/core/validate"
-	"goblog/pkg/auth"
-	compathttp "goblog/pkg/httpclient"
-	"goblog/pkg/i18n"
-	"goblog/pkg/imageproc"
-	"goblog/pkg/render"
+	"github.com/Chocola-X/GopherInk/admin"
+	"github.com/Chocola-X/GopherInk/core/models"
+	"github.com/Chocola-X/GopherInk/core/plugin"
+	"github.com/Chocola-X/GopherInk/core/services"
+	"github.com/Chocola-X/GopherInk/core/validate"
+	"github.com/Chocola-X/GopherInk/pkg/auth"
+	compathttp "github.com/Chocola-X/GopherInk/pkg/httpclient"
+	"github.com/Chocola-X/GopherInk/pkg/i18n"
+	"github.com/Chocola-X/GopherInk/pkg/imageproc"
+	"github.com/Chocola-X/GopherInk/pkg/render"
 )
 
 type App struct {
@@ -68,15 +68,15 @@ type contextKey string
 const currentUserKey contextKey = "currentUser"
 
 func New(contents *services.ContentService, metas *services.MetaService, comments *services.CommentService, users *services.UserService, options *services.OptionService, plugins *plugin.Manager) *App {
-	dataDir := os.Getenv("GOBLOG_DATA_DIR")
+	dataDir := os.Getenv("GOPHERINK_DATA_DIR")
 	if dataDir == "" {
 		dataDir = "data"
 	}
-	uploadDir := os.Getenv("GOBLOG_UPLOAD_DIR")
+	uploadDir := os.Getenv("GOPHERINK_UPLOAD_DIR")
 	if uploadDir == "" {
 		uploadDir = filepath.Join(dataDir, "uploads")
 	}
-	httpClient, _ := compathttp.New(compathttp.Config{Timeout: 5 * time.Second, UserAgent: "GoBlog/1.0", Retries: 1})
+	httpClient, _ := compathttp.New(compathttp.Config{Timeout: 5 * time.Second, UserAgent: "GopherInk/0.5.0", Retries: 1})
 	app := &App{Contents: contents, Metas: metas, Comments: comments, Users: users, Options: options, Plugins: plugins, DataDir: dataDir, UploadDir: uploadDir, HTTPClient: httpClient, loginNext: map[string]time.Time{}}
 	app.WAF = newWAFManager(app)
 	return app
@@ -312,7 +312,7 @@ func (a *App) installWizard(w http.ResponseWriter, r *http.Request) {
 		}
 		siteTitle := strings.TrimSpace(r.FormValue("site_title"))
 		if siteTitle == "" {
-			siteTitle = "GoBlog"
+			siteTitle = "GopherInk"
 		}
 		input := services.SaveUserInput{
 			Name:       strings.TrimSpace(r.FormValue("name")),
@@ -2615,16 +2615,16 @@ func (a *App) adminPluginRoutes(w http.ResponseWriter, r *http.Request) {
 }
 
 type pluginView struct {
-	Name          string
-	Version       string
-	Author        string
-	Description   string
-	Homepage      string
-	RequireGoBlog string
-	Active        bool
-	Compatible    bool
-	HasConfig     bool
-	HasPersonal   bool
+	Name             string
+	Version          string
+	Author           string
+	Description      string
+	Homepage         string
+	RequireGopherInk string
+	Active           bool
+	Compatible       bool
+	HasConfig        bool
+	HasPersonal      bool
 }
 
 func (a *App) pluginViews(ctx context.Context) []pluginView {
@@ -2634,14 +2634,14 @@ func (a *App) pluginViews(ctx context.Context) []pluginView {
 	for _, p := range plugins {
 		info := a.Plugins.PluginInfo(p)
 		view := pluginView{
-			Name:          info.Name,
-			Version:       info.Version,
-			Author:        info.Author,
-			Description:   info.Description,
-			Homepage:      info.Homepage,
-			RequireGoBlog: info.RequireGoBlog,
-			Active:        active[info.Name],
-			Compatible:    plugin.Compatible(info.RequireGoBlog, plugin.GoBlogVersion),
+			Name:             info.Name,
+			Version:          info.Version,
+			Author:           info.Author,
+			Description:      info.Description,
+			Homepage:         info.Homepage,
+			RequireGopherInk: info.RequireGopherInk,
+			Active:           active[info.Name],
+			Compatible:       plugin.Compatible(info.RequireGopherInk, plugin.GopherInkVersion),
 		}
 		if provider, ok := p.(plugin.ConfigProvider); ok && len(provider.ConfigSchema()) > 0 {
 			view.HasConfig = true
@@ -2661,8 +2661,8 @@ func (a *App) adminPluginToggle(w http.ResponseWriter, r *http.Request, name str
 		return
 	}
 	info := a.Plugins.PluginInfo(p)
-	if enable && !plugin.Compatible(info.RequireGoBlog, plugin.GoBlogVersion) {
-		http.Error(w, "插件要求更高版本的 GoBlog", http.StatusBadRequest)
+	if enable && !plugin.Compatible(info.RequireGopherInk, plugin.GopherInkVersion) {
+		http.Error(w, "插件要求更高版本的 GopherInk", http.StatusBadRequest)
 		return
 	}
 	active := a.activePluginSet(r.Context())
@@ -4117,7 +4117,7 @@ func (a *App) adminBackup(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			w.Header().Set("Content-Type", "application/json; charset=utf-8")
-			w.Header().Set("Content-Disposition", `attachment; filename="goblog-backup.json"`)
+			w.Header().Set("Content-Disposition", `attachment; filename="gopherink-backup.json"`)
 			_ = json.NewEncoder(w).Encode(payload)
 		case "import":
 			if err := r.ParseMultipartForm(32 << 20); err != nil {
@@ -4651,7 +4651,7 @@ func (a *App) rememberUnapprovedComment(w http.ResponseWriter, r *http.Request, 
 		return
 	}
 	encoded := base64.RawURLEncoding.EncodeToString(raw)
-	secret := a.option(r.Context(), "auth_secret", "goblog")
+	secret := a.option(r.Context(), "auth_secret", "gopherink")
 	value := encoded + "." + flashSign(secret, "unapproved-comment:"+encoded)
 	options := a.cookieOptions(r.Context())
 	http.SetCookie(w, &http.Cookie{Name: options.Name("unapproved_comment"), Value: value, Path: "/", MaxAge: 30 * 86400, HttpOnly: true, SameSite: options.SameSite, Secure: options.Secure})
@@ -4667,7 +4667,7 @@ func (a *App) unapprovedCommentIDs(r *http.Request) []int64 {
 	if len(parts) != 2 {
 		return nil
 	}
-	secret := a.option(r.Context(), "auth_secret", "goblog")
+	secret := a.option(r.Context(), "auth_secret", "gopherink")
 	expected := flashSign(secret, "unapproved-comment:"+parts[0])
 	if !hmac.Equal([]byte(expected), []byte(parts[1])) {
 		return nil
@@ -4710,7 +4710,7 @@ func (a *App) frontRSS(w http.ResponseWriter, r *http.Request) {
 			posts[i] = filtered
 		}
 	}
-	a.writeRSS(w, r, posts, nil, a.option(r.Context(), "site_title", "GoBlog"), a.option(r.Context(), "site_description", ""), "/feed.xml")
+	a.writeRSS(w, r, posts, nil, a.option(r.Context(), "site_title", "GopherInk"), a.option(r.Context(), "site_description", ""), "/feed.xml")
 }
 
 func (a *App) frontTaxonomyRSS(w http.ResponseWriter, r *http.Request, typ string) {
@@ -4741,7 +4741,7 @@ func (a *App) frontCommentRSS(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	a.writeRSS(w, r, nil, comments, a.option(r.Context(), "site_title", "GoBlog")+" 评论", a.option(r.Context(), "site_description", ""), "/comments/feed.xml")
+	a.writeRSS(w, r, nil, comments, a.option(r.Context(), "site_title", "GopherInk")+" 评论", a.option(r.Context(), "site_description", ""), "/comments/feed.xml")
 }
 
 func (a *App) writeRSS(w http.ResponseWriter, r *http.Request, posts []models.Content, comments []models.Comment, title, description, feedPath string) {
@@ -5481,7 +5481,7 @@ type stagedUpload struct {
 }
 
 func stageUpload(src io.Reader, maxSize int64) (stagedUpload, error) {
-	tmp, err := os.CreateTemp("", "goblog-upload-*")
+	tmp, err := os.CreateTemp("", "gopherink-upload-*")
 	if err != nil {
 		return stagedUpload{}, err
 	}
@@ -5940,7 +5940,7 @@ func (a *App) imageProcessingMemoryLimit(ctx context.Context) int64 {
 }
 
 func (a *App) backupPayload(ctx context.Context) (backupData, error) {
-	out := backupData{Version: 1, Generator: "goblog", Dialect: "portable-json"}
+	out := backupData{Version: 1, Generator: "gopherink", Dialect: "portable-json"}
 	out.GeneratedAt = time.Now().Format(time.RFC3339)
 	options, err := a.Options.All(ctx)
 	if err != nil {
@@ -6547,7 +6547,7 @@ func (a *App) csrfToken(r *http.Request) string {
 func (a *App) csrfTokenFor(r *http.Request, purpose string) string {
 	secret, _ := a.Options.Get(r.Context(), "auth_secret")
 	if secret == "" {
-		secret = "goblog"
+		secret = "gopherink"
 	}
 	subject := "anon"
 	if uid, ok := a.currentUserID(r); ok {
@@ -6651,7 +6651,7 @@ func (a *App) previewURL(r *http.Request, c models.Content) string {
 func (a *App) previewToken(r *http.Request, c models.Content) string {
 	secret, _ := a.Options.Get(r.Context(), "auth_secret")
 	if secret == "" {
-		secret = "goblog"
+		secret = "gopherink"
 	}
 	mac := hmac.New(sha256.New, []byte(secret))
 	_, _ = fmt.Fprintf(mac, "preview:%d:%d:%s", c.CID, c.Modified, c.Status)
@@ -8242,7 +8242,7 @@ func (a *App) setFlash(w http.ResponseWriter, r *http.Request, notices ...flashN
 	if err != nil {
 		return
 	}
-	secret := a.option(r.Context(), "auth_secret", "goblog")
+	secret := a.option(r.Context(), "auth_secret", "gopherink")
 	value := base64.RawURLEncoding.EncodeToString(data)
 	sig := flashSign(secret, value)
 	options := a.cookieOptions(r.Context())
@@ -8268,7 +8268,7 @@ func (a *App) consumeFlash(w http.ResponseWriter, r *http.Request) []flashNotice
 	if len(parts) != 2 {
 		return nil
 	}
-	secret := a.option(r.Context(), "auth_secret", "goblog")
+	secret := a.option(r.Context(), "auth_secret", "gopherink")
 	if !hmac.Equal([]byte(flashSign(secret, parts[0])), []byte(parts[1])) {
 		return nil
 	}
