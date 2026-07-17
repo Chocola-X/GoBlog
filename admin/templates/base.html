@@ -28,7 +28,8 @@
     <mdui-top-app-bar class="admin-appbar">
       <mdui-button-icon class="drawer-toggle" title="菜单"><mdui-icon name="menu"></mdui-icon></mdui-button-icon>
       <mdui-top-app-bar-title>{{index .Site "site_title"}}</mdui-top-app-bar-title>
-      <mdui-button-icon href="/" title="{{T "View site"}}"><mdui-icon name="rss_feed"></mdui-icon></mdui-button-icon>
+      <mdui-button-icon class="admin-theme-toggle" title="切换明暗模式" aria-label="切换明暗模式"><mdui-icon name="brightness_5"></mdui-icon></mdui-button-icon>
+      <mdui-button-icon href="/" target="_blank" rel="noopener noreferrer" title="{{T "View site"}}" aria-label="{{T "View site"}}"><mdui-icon-web></mdui-icon-web></mdui-button-icon>
       <form method="post" action="/admin/logout">
         <mdui-button-icon type="submit" title="{{T "Logout"}}"><mdui-icon name="logout"></mdui-icon></mdui-button-icon>
       </form>

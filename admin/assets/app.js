@@ -5,6 +5,7 @@
   var lastSubmitter = null;
   var lastEditorSelection = null;
   var markdownEditorLoading = null;
+  var adminThemeStorageKey = "gopherinkAdminThemeMode";
 
   function ready(fn) {
     if (document.readyState === "loading") {
@@ -16,6 +17,7 @@
 
   ready(function () {
     applyAdminAppearance();
+    initAdminTheme();
     initAdminChrome();
     initAdminPage(document);
     initAdminPjax();
@@ -56,6 +58,67 @@
       body.style.setProperty("--admin-mobile-bg-image", cssURL(mobileBg));
     } else {
       body.style.removeProperty("--admin-mobile-bg-image");
+    }
+  }
+
+  function readAdminTheme() {
+    try {
+      var stored = localStorage.getItem(adminThemeStorageKey);
+      return stored === "light" || stored === "dark" ? stored : "auto";
+    } catch (err) {
+      return "auto";
+    }
+  }
+
+  function adminThemeIsDark(mode) {
+    return mode === "dark" || (mode === "auto" && window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches);
+  }
+
+  function applyAdminTheme(mode, persist) {
+    var next = mode === "light" || mode === "dark" ? mode : "auto";
+    if (window.mdui && typeof window.mdui.setTheme === "function") {
+      window.mdui.setTheme(next);
+    } else {
+      document.documentElement.classList.remove("mdui-theme-light", "mdui-theme-dark", "mdui-theme-auto");
+      document.documentElement.classList.add("mdui-theme-" + next);
+    }
+    if (persist) {
+      try {
+        localStorage.setItem(adminThemeStorageKey, next);
+      } catch (err) {
+        // Theme switching should still work when storage is unavailable.
+      }
+    }
+    var dark = adminThemeIsDark(next);
+    var button = document.querySelector(".admin-theme-toggle");
+    var icon = button && button.querySelector("mdui-icon");
+    if (icon) {
+      icon.setAttribute("name", dark ? "brightness_2" : "brightness_5");
+    }
+    if (button) {
+      var label = dark ? "切换到浅色模式" : "切换到深色模式";
+      button.setAttribute("title", label);
+      button.setAttribute("aria-label", label);
+    }
+  }
+
+  function initAdminTheme() {
+    var button = document.querySelector(".admin-theme-toggle");
+    applyAdminTheme(readAdminTheme(), false);
+    if (button && !button.dataset.adminThemeBound) {
+      button.dataset.adminThemeBound = "1";
+      button.addEventListener("click", function () {
+        applyAdminTheme(adminThemeIsDark(readAdminTheme()) ? "light" : "dark", true);
+      });
+    }
+    var media = window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)");
+    if (media && !document.documentElement.dataset.adminThemeMediaBound) {
+      document.documentElement.dataset.adminThemeMediaBound = "1";
+      media.addEventListener("change", function () {
+        if (readAdminTheme() === "auto") {
+          applyAdminTheme("auto", false);
+        }
+      });
     }
   }
 
@@ -1174,6 +1237,7 @@
       scrollAdminMainToTop();
     }
     applyAdminAppearance();
+    initAdminTheme();
     initAdminChrome();
     ensureCSRF(document);
     initAdminPage(currentMain);
