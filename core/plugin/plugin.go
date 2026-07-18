@@ -322,19 +322,22 @@ type FieldOption struct {
 }
 
 type FieldSchema struct {
-	Name        string
-	Label       string
-	Group       string
-	Type        FieldType
-	Default     string
-	Description string
-	Min         string
-	Max         string
-	Step        string
-	Options     []FieldOption
-	ForTypes    []string
-	ReadOnly    bool
-	Wide        bool
+	Name          string
+	Label         string
+	Group         string
+	Type          FieldType
+	Default       string
+	Description   string
+	Required      bool
+	ShowWhenField string
+	ShowWhenValue string
+	Min           string
+	Max           string
+	Step          string
+	Options       []FieldOption
+	ForTypes      []string
+	ReadOnly      bool
+	Wide          bool
 }
 
 type PluginInfo struct {

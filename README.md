@@ -510,6 +510,8 @@ type Plugin interface {
 - 文章目录（tocbot）
 - 代码高亮（Highlight.js）
 - 背景图配置（桌面/移动端/侧栏/评论框/文章底部）
+- 文章、无封面和日常三种内容卡片样式
+- 图片 URL 支持 `{random}` 随机占位符，可配合随机图片 API 使用
 - 侧栏组件（资料卡、最新回复、标签云）
 - 阅读时间估算
 - Gravatar / 自定义头像
@@ -529,11 +531,11 @@ type Plugin interface {
 | | `card_opacity` | 卡片背景透明度（0-1） |
 | | `input_opacity` | 输入框背景透明度（0-1） |
 | | `background_mask_opacity` | 背景遮罩透明度（0-1） |
-| 背景和装饰 | `enable_decor` | 启用装饰图片 |
-| | `background_image` | 桌面背景图 |
+| 背景和装饰 | `background_image` | 桌面背景图 |
 | | `mobile_background_image` | 移动端背景图 |
 | | `sidebar_image` | 侧栏封面图 |
-| | `default_cover` | 默认文章封面 |
+| | `fallback_no_cover` | 未设置封面时回落为无封面样式 |
+| | `default_cover` | 默认文章封面（关闭无封面回落时必填） |
 | | `comment_bg_image` | 评论框装饰图 |
 | | `post_end_image` | 文章底部装饰图 |
 | | `favicon` | Favicon |

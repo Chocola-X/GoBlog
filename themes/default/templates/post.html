@@ -1,15 +1,15 @@
 {{define "content"}}
 {{$articleType := fieldString .Fields "articleType"}}
 {{$cover := fieldString .Fields "cover"}}
-{{if not $cover}}{{$cover = themeValue .ThemeConfig "default_cover"}}{{end}}
+{{$fallbackNoCover := themeValue .ThemeConfig "fallback_no_cover" "1"}}
+{{if and (not $cover) (ne $fallbackNoCover "1")}}{{$cover = themeValue .ThemeConfig "default_cover"}}{{end}}
 {{if eq $articleType "normal"}}{{$cover = ""}}{{end}}
 {{$cover = assetURL $cover}}
-{{$decor := themeValue .ThemeConfig "enable_decor" "1"}}
 {{$postEndImg := assetURL (themeValue .ThemeConfig "post_end_image")}}
 {{$commentBgImg := assetURL (themeValue .ThemeConfig "comment_bg_image")}}
 <article class="mdui-card post-card">
   <header class="post-card-media{{if not $cover}} post-card-media-normal{{end}}">
-    {{if and (eq $decor "1") $cover}}<div class="index-img" style="background-image: url('{{$cover}}')"></div>{{end}}
+    {{if $cover}}<div class="index-img" style="background-image: url('{{$cover}}')"></div>{{end}}
     <div class="index-card-filter"></div>
     <div class="mdui-card-media-covered">
       <div class="mdui-card-primary">

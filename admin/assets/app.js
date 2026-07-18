@@ -187,11 +187,31 @@
     initMarkdownEditor(root);
     initNativeFileButtons(root);
     initCopyButtons(root);
+    initSchemaDependencies(root);
     initSchemaForm(root);
     initImageProcessingOptions(root);
     initCommentProcessingOptions(root);
     initRevisionCards(root);
     initAdminNotices(root);
+  }
+
+  function contentSchemaControlValue(control) {
+    if ((control.tagName || "").toLowerCase() === "mdui-checkbox") {
+      return control.checked ? "1" : "0";
+    }
+    return control.value == null ? "" : String(control.value);
+  }
+
+  function syncContentSchemaField(field) {
+    var control = field.querySelector("[data-content-field-control]");
+    var value = field.querySelector("[data-content-field-value]");
+    if (control && value) {
+      value.value = contentSchemaControlValue(control);
+    }
+  }
+
+  function syncContentSchemaFields(root) {
+    query(root, "[data-content-schema-field]").forEach(syncContentSchemaField);
   }
 
   function initContentSchemaFields(root) {
@@ -200,22 +220,23 @@
         return;
       }
       var control = field.querySelector("[data-content-field-control]");
-      var value = field.querySelector("[data-content-field-value]");
-      if (!control || !value) {
+      if (!control) {
         return;
       }
-
       function syncValue() {
-        if ((control.tagName || "").toLowerCase() === "mdui-checkbox") {
-          value.value = control.checked ? "1" : "0";
-          return;
-        }
-        value.value = control.value == null ? "" : String(control.value);
+        syncContentSchemaField(field);
       }
-
       control.addEventListener("input", syncValue);
       control.addEventListener("change", syncValue);
     });
+    query(root, "form").forEach(function (form) {
+      if (form.querySelector("[data-content-schema-field]") && !bound(form, "adminContentSchemaSubmitBound")) {
+        form.addEventListener("submit", function () {
+          syncContentSchemaFields(form);
+        });
+      }
+    });
+    syncContentSchemaFields(root);
   }
 
   function ensureCSRF(root) {
@@ -312,6 +333,7 @@
           return;
         }
         saving = true;
+        syncContentSchemaFields(form);
         var data = new FormData(form);
         data.set("_csrf", csrfToken());
         fetch("/admin/autosave", {
@@ -649,6 +671,7 @@
     if (!form) {
       return Promise.resolve(0);
     }
+    syncContentSchemaFields(form);
     var data = new FormData(form);
     data.set("_csrf", csrfToken());
     return fetch("/admin/autosave", {
@@ -956,6 +979,41 @@
     });
   }
 
+  function initSchemaDependencies(root) {
+    query(root, "[data-schema-show-field]").forEach(function (field) {
+      if (bound(field, "adminSchemaDependencyBound")) {
+        return;
+      }
+      var form = field.closest("form");
+      var sourceName = field.dataset.schemaShowField || "";
+      var source = form && form.querySelector('[name="' + cssEscape(sourceName) + '"]');
+      if (!source) {
+        return;
+      }
+
+      function sourceValue() {
+        if ((source.tagName || "").toLowerCase() === "mdui-checkbox") {
+          return source.checked ? (source.value || "1") : "0";
+        }
+        return source.value == null ? "" : String(source.value);
+      }
+
+      function updateVisibility() {
+        var visible = sourceValue() === (field.dataset.schemaShowValue || "");
+        field.hidden = !visible;
+        var required = visible && field.dataset.schemaRequired === "1";
+        query(field, "mdui-text-field, mdui-select, mdui-radio-group, mdui-checkbox").forEach(function (control) {
+          control.required = required;
+          control.toggleAttribute("required", required);
+        });
+      }
+
+      source.addEventListener("input", updateVisibility);
+      source.addEventListener("change", updateVisibility);
+      updateVisibility();
+    });
+  }
+
   function initImageProcessingOptions(root) {
     query(root, "[data-image-processing-options]").forEach(function (panel) {
       if (bound(panel, "adminImageOptionsBound")) {
@@ -1176,6 +1234,7 @@
     adminDirty = false;
     var method = formMethod(form, submitter);
     var url = formActionURL(form, submitter);
+    syncContentSchemaFields(form);
     var data = new FormData(form);
     appendSubmitter(data, submitter);
     var params = formParams(data);

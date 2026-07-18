@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 	"unicode/utf8"
 
@@ -18,7 +19,10 @@ import (
 //go:embed templates/* static/*
 var themeFS embed.FS
 
+var assetRandomSequence atomic.Uint64
+
 func init() {
+	assetRandomSequence.Store(uint64(time.Now().UnixNano()))
 	static, _ := fs.Sub(themeFS, "static")
 	colorOptions := []plugin.FieldOption{
 		{Label: "玫红", Value: "#ff4081"},
@@ -62,7 +66,7 @@ func init() {
 		ConfigSchema: []plugin.FieldSchema{
 			{Name: "display_name", Label: "资料卡名称", Group: "资料卡", Type: plugin.FieldText, Default: "GopherInk", Description: "留空时使用站点标题"},
 			{Name: "profile_email", Label: "头像邮箱", Group: "资料卡", Type: plugin.FieldText, Description: "用于生成 Gravatar/Cravatar 头像，不在前台明文展示"},
-			{Name: "profile_avatar", Label: "头像图片 URL", Group: "资料卡", Type: plugin.FieldImage, Description: "单独指定头像图片；留空时按头像邮箱生成 Gravatar"},
+			{Name: "profile_avatar", Label: "头像图片 URL", Group: "资料卡", Type: plugin.FieldImage, Description: "单独指定头像图片；留空时按头像邮箱生成 Gravatar；支持 {random} 随机占位符"},
 			{Name: "bio", Label: "资料卡描述", Group: "资料卡", Type: plugin.FieldText, Description: "留空时使用站点描述", Wide: true},
 			{Name: "primary_preset", Label: "常用主题色", Group: "配色和透明度", Type: plugin.FieldSelect, Default: "#ff4081", Options: colorOptions},
 			{Name: "custom_primary", Label: "自定义主题色", Group: "配色和透明度", Type: plugin.FieldColor, Description: "填写 #RRGGBB 后优先于常用主题色", Options: colorOptions},
@@ -70,14 +74,14 @@ func init() {
 			{Name: "card_opacity", Label: "卡片背景透明度", Group: "配色和透明度", Type: plugin.FieldNumber, Default: "0.80", Description: "0 到 1；仅调整卡片背景透明度，不改变 MDUI 主题配色", Min: "0", Max: "1", Step: "0.01"},
 			{Name: "input_opacity", Label: "输入框背景透明度", Group: "配色和透明度", Type: plugin.FieldNumber, Default: "0.42", Description: "0 到 1；保留 MDUI 输入框背景色，仅调整透明度", Min: "0", Max: "1", Step: "0.01"},
 			{Name: "background_mask_opacity", Label: "背景遮罩透明度", Group: "配色和透明度", Type: plugin.FieldNumber, Default: "0.46", Description: "0 到 1；控制页面背景上方遮罩层透明度", Min: "0", Max: "1", Step: "0.01"},
-			{Name: "enable_decor", Label: "启用装饰图片", Group: "背景和装饰图片", Type: plugin.FieldCheckbox, Default: "1", Description: "关闭后隐藏默认封面类装饰；手动配置的背景、评论和文章底部图片仍会显示", Wide: true},
-			{Name: "background_image", Label: "桌面背景图 URL", Group: "背景和装饰图片", Type: plugin.FieldImage, Description: "可输入 URL 或上传图片；留空时使用 MDUI 主题色背景"},
-			{Name: "mobile_background_image", Label: "移动端背景图 URL", Group: "背景和装饰图片", Type: plugin.FieldImage, Description: "留空时沿用桌面背景图"},
-			{Name: "sidebar_image", Label: "侧栏封面图 URL", Group: "背景和装饰图片", Type: plugin.FieldImage, Description: "资料卡顶部封面；留空时使用主题色"},
-			{Name: "default_cover", Label: "默认文章封面 URL", Group: "背景和装饰图片", Type: plugin.FieldImage, Description: "文章未设置 cover 字段时使用；留空时使用主题色看板"},
-			{Name: "comment_bg_image", Label: "评论框装饰图 URL", Group: "背景和装饰图片", Type: plugin.FieldImage, Description: "显示在评论输入框右侧；留空时不显示"},
-			{Name: "post_end_image", Label: "文章底部装饰图 URL", Group: "背景和装饰图片", Type: plugin.FieldImage, Description: "显示在文章内容底部右下角；留空时不显示"},
-			{Name: "favicon", Label: "Favicon URL", Group: "背景和装饰图片", Type: plugin.FieldImage, Default: "/theme/default/favicon.svg", Description: "留空时使用 GopherInk 默认 Logo"},
+			{Name: "background_image", Label: "桌面背景图 URL", Group: "背景和装饰图片", Type: plugin.FieldImage, Description: "可输入 URL 或上传图片；留空时使用 MDUI 主题色背景；支持 {random} 随机占位符"},
+			{Name: "mobile_background_image", Label: "移动端背景图 URL", Group: "背景和装饰图片", Type: plugin.FieldImage, Description: "留空时沿用桌面背景图；支持 {random} 随机占位符"},
+			{Name: "sidebar_image", Label: "侧栏封面图 URL", Group: "背景和装饰图片", Type: plugin.FieldImage, Description: "资料卡顶部封面；留空时使用主题色；支持 {random} 随机占位符"},
+			{Name: "fallback_no_cover", Label: "启用文章未设置封面时回落为无封面", Group: "背景和装饰图片", Type: plugin.FieldCheckbox, Default: "1", Description: "启用后，未单独设置封面的文章使用无封面样式", Wide: true},
+			{Name: "default_cover", Label: "默认文章封面 URL", Group: "背景和装饰图片", Type: plugin.FieldImage, Description: "文章未设置封面时使用；支持 {random} 随机占位符，例如 https://api.mikupara.com/h?id={random}", Required: true, ShowWhenField: "fallback_no_cover", ShowWhenValue: "0"},
+			{Name: "comment_bg_image", Label: "评论框装饰图 URL", Group: "背景和装饰图片", Type: plugin.FieldImage, Description: "显示在评论输入框右侧；留空时不显示；支持 {random} 随机占位符"},
+			{Name: "post_end_image", Label: "文章底部装饰图 URL", Group: "背景和装饰图片", Type: plugin.FieldImage, Description: "显示在文章内容底部右下角；留空时不显示；支持 {random} 随机占位符"},
+			{Name: "favicon", Label: "Favicon URL", Group: "背景和装饰图片", Type: plugin.FieldImage, Default: "/theme/default/favicon.svg", Description: "留空时使用 GopherInk 默认 Logo；支持 {random} 随机占位符"},
 			{Name: "show_profile", Label: "显示侧栏资料卡", Group: "侧栏和导航", Type: plugin.FieldCheckbox, Default: "1"},
 			{Name: "show_recent_comments", Label: "显示最新回复", Group: "侧栏和导航", Type: plugin.FieldCheckbox, Default: "1"},
 			{Name: "show_tag_cloud", Label: "显示标签云", Group: "侧栏和导航", Type: plugin.FieldCheckbox, Default: "1"},
@@ -111,7 +115,8 @@ func init() {
 				Description: "配合主题设置中的目录总开关使用",
 				ForTypes:    []string{"post", "page"},
 			},
-			{Name: "cover", Label: "文章/独立页面封面图", Group: "主题显示", Type: plugin.FieldImage, Description: "填写图片 URL；留空时使用主题设置中的默认封面", ForTypes: []string{"post", "page"}, Wide: true},
+			{Name: "cover", Label: "文章/独立页面封面图", Group: "主题显示", Type: plugin.FieldImage, Description: "填写图片 URL；留空时按主题设置回落；支持 {random} 随机占位符", ForTypes: []string{"post", "page"}, Wide: true},
+			{Name: "remark", Label: "无封面卡片短句", Group: "主题显示", Type: plugin.FieldText, Description: "仅在无封面文章卡片中显示", ForTypes: []string{"post", "page"}, Wide: true},
 		},
 	})
 }
@@ -165,6 +170,9 @@ func assetURL(value string) string {
 	if value == "" {
 		return ""
 	}
+	if strings.Contains(value, "{random}") {
+		value = strings.ReplaceAll(value, "{random}", randomAssetToken())
+	}
 	if strings.HasPrefix(value, "//") || strings.HasPrefix(value, "/") || strings.HasPrefix(value, "./") || strings.HasPrefix(value, "../") || strings.HasPrefix(value, "#") {
 		return value
 	}
@@ -172,6 +180,14 @@ func assetURL(value string) string {
 		return value
 	}
 	return "/" + value
+}
+
+func randomAssetToken() string {
+	value := assetRandomSequence.Add(0x9e3779b97f4a7c15)
+	value = (value ^ (value >> 30)) * 0xbf58476d1ce4e5b9
+	value = (value ^ (value >> 27)) * 0x94d049bb133111eb
+	value ^= value >> 31
+	return strconv.FormatUint(value, 10)
 }
 
 func readingTime(text string) string {

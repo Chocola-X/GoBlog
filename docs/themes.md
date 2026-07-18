@@ -141,16 +141,26 @@ ConfigSchema: []plugin.FieldSchema{
         Description: "只调整背景透明度。",
     },
     {
-        Name:  "favicon",
-        Label: "Favicon URL",
-        Group: "站点资源",
-        Type:  plugin.FieldImage,
-        Wide:  true,
+        Name:    "fallback_no_cover",
+        Label:   "未设置封面时使用无封面样式",
+        Group:   "站点资源",
+        Type:    plugin.FieldCheckbox,
+        Default: "1",
+    },
+    {
+        Name:          "default_cover",
+        Label:         "默认文章封面 URL",
+        Group:         "站点资源",
+        Type:          plugin.FieldImage,
+        Required:      true,
+        ShowWhenField: "fallback_no_cover",
+        ShowWhenValue: "0",
+        Wide:          true,
     },
 }
 ```
 
-`Group` 控制后台分组；`Wide` 适合 URL、长文本等需要整行宽度的输入。数字字段应同时给出 `Min`、`Max` 和 `Step`，避免浏览器按默认整数步长拒绝小数。
+`Group` 控制后台分组；`Wide` 适合 URL、长文本等需要整行宽度的输入。`ShowWhenField` 与 `ShowWhenValue` 控制字段在依赖值匹配时显示，`Required` 会对当前可见字段同时启用浏览器和服务端必填校验。数字字段应同时给出 `Min`、`Max` 和 `Step`，避免浏览器按默认整数步长拒绝小数。
 
 模板读取配置时必须提供合理回退值，因为旧配置或空值不一定包含 Schema 默认值：
 
@@ -167,6 +177,14 @@ ConfigSchema: []plugin.FieldSchema{
 - `https://...`、`http://...` 和 `//...` 外部地址。
 
 默认主题的 `assetURL` 会保留站内根路径、协议相对地址、片段和完整 URL，并为普通相对值补 `/`。第三方主题可实现等价函数，避免把相对 URL 当成无效值。
+
+默认主题的图片 URL 还支持 `{random}` 占位符。每次生成资源地址时都会替换为不同的纯数字令牌，适合绕过随机图片 API 的中间缓存：
+
+```text
+https://api.mikupara.com/h?id={random}
+```
+
+首页使用默认封面时会为每篇文章分别调用 `assetURL`，因此同一页中的随机封面也不会共用令牌。
 
 当前主题设置素材专用上传和清理界面围绕内置 `default` 主题实现。第三方主题的图片字段会使用通用 Schema 上传入口；若需要独立素材目录和引用清理，应同时扩展后台处理器，而不是只增加 `FieldImage`。
 
@@ -203,6 +221,16 @@ ContentFields: []plugin.FieldSchema{
 `Type` 支持 `text`、`password`、`textarea`、`radio`、`checkbox`、`select`、`number`、`color` 和 `image`。`select`、`radio` 通过 `Options` 自定义候选项；`Default` 设置新内容的默认值；`Group` 控制编辑页分组；`ForTypes` 可限定为 `post` 或 `page`；`ReadOnly` 会同时作用于界面和服务端保护。
 
 主题字段与插件字段经过统一校验和保存，模板数据中的 `.Fields` 映射可由主题函数读取。Schema 不再注册后，已有数据会作为普通自定义字段显示，用户可以继续编辑或删除。
+
+内容详情页的字段位于 `.Fields`。首页、分类、标签、搜索和归档等聚合页为了避免逐篇查询，核心会批量读取字段并提供按 CID 索引的 `.PostFields`：
+
+```gotemplate
+{{$postFields := .PostFields}}
+{{range .Posts}}
+  {{$fields := index $postFields .CID}}
+  {{$articleType := fieldString $fields "articleType"}}
+{{end}}
+```
 
 ## AdjustData
 

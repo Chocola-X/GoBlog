@@ -154,7 +154,7 @@ if err != nil {
 prefix := cfg["prefix"]
 ```
 
-支持字段类型为 `text`、`password`、`textarea`、`radio`、`checkbox`、`select`、`number`、`color` 和 `image`。`FieldSchema` 还支持分组、默认值、说明、数值边界、步长、选项、适用内容类型、只读和整行宽度。
+支持字段类型为 `text`、`password`、`textarea`、`radio`、`checkbox`、`select`、`number`、`color` 和 `image`。`FieldSchema` 还支持分组、默认值、说明、必填、条件显示、数值边界、步长、选项、适用内容类型、只读和整行宽度。条件字段使用 `ShowWhenField` 和 `ShowWhenValue` 声明依赖，`Required` 只会校验当前可见的字段。
 
 ## 个人配置
 

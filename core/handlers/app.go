@@ -2988,8 +2988,9 @@ type schemaFormConfig struct {
 }
 
 type schemaFieldView struct {
-	Field  plugin.FieldSchema
-	Values map[string]string
+	Field   plugin.FieldSchema
+	Values  map[string]string
+	Visible bool
 }
 
 type schemaFieldGroup struct {
@@ -3024,21 +3025,17 @@ func (a *App) schemaForm(w http.ResponseWriter, r *http.Request, cfg schemaFormC
 		}
 		a.applySchemaDefaults(cfg.Schema, values)
 		normalizeSchemaValues(cfg.Schema, values)
-		uploadURL := cfg.UploadURL
-		if uploadURL == "" {
-			uploadURL = "/admin/schema/upload"
-		}
-		description := cfg.Description
-		if description == "" {
-			description = "在此调整当前功能的配置选项。"
-		}
-		a.renderAdmin(w, r, cfg.Template, map[string]any{"Title": cfg.Title, "Description": description, "BackURL": cfg.BackURL, "Schema": cfg.Schema, "SchemaGroups": schemaGroups(cfg.Schema, values), "Values": values, "Saved": cfg.Saved, "UploadURL": uploadURL, "AssetManager": cfg.AssetManager})
+		a.renderSchemaForm(w, r, cfg, values, "")
 	case http.MethodPost:
 		if err := r.ParseForm(); err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
 		values := valuesFromSchema(r, cfg.Schema)
+		if err := validateSchemaValues(cfg.Schema, values); err != nil {
+			a.renderSchemaForm(w, r, cfg, values, err.Error())
+			return
+		}
 		if err := a.setOptionJSONForUser(r.Context(), cfg.OptionKey, values, cfg.UserID); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -3047,6 +3044,22 @@ func (a *App) schemaForm(w http.ResponseWriter, r *http.Request, cfg schemaFormC
 	default:
 		methodNotAllowed(w, http.MethodGet+", "+http.MethodPost)
 	}
+}
+
+func (a *App) renderSchemaForm(w http.ResponseWriter, r *http.Request, cfg schemaFormConfig, values map[string]string, errorMessage string) {
+	uploadURL := cfg.UploadURL
+	if uploadURL == "" {
+		uploadURL = "/admin/schema/upload"
+	}
+	description := cfg.Description
+	if description == "" {
+		description = "在此调整当前功能的配置选项。"
+	}
+	a.renderAdmin(w, r, cfg.Template, map[string]any{
+		"Title": cfg.Title, "Description": description, "BackURL": cfg.BackURL,
+		"Schema": cfg.Schema, "SchemaGroups": schemaGroups(cfg.Schema, values), "Values": values,
+		"Saved": cfg.Saved, "Error": errorMessage, "UploadURL": uploadURL, "AssetManager": cfg.AssetManager,
+	})
 }
 
 func (a *App) adminAutosave(w http.ResponseWriter, r *http.Request) {
@@ -4955,11 +4968,21 @@ func (a *App) renderPostListWithData(w http.ResponseWriter, r *http.Request, que
 		}
 		posts[i] = filtered
 	}
+	contentIDs := make([]int64, 0, len(posts))
+	for _, post := range posts {
+		contentIDs = append(contentIDs, post.CID)
+	}
+	fieldMaps, err := a.Contents.FieldMapsForContents(r.Context(), contentIDs)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 	totalPages := int((total + int64(size) - 1) / int64(size))
 	data := map[string]any{
 		"Title":        title,
 		"ArchiveTitle": title,
 		"Posts":        posts,
+		"PostFields":   fieldMaps,
 		"Keywords":     query.Keywords,
 		"Pagination": pagination{
 			Page:       page,
@@ -8398,6 +8421,20 @@ func valuesFromSchema(r *http.Request, schema []plugin.FieldSchema) map[string]s
 	return out
 }
 
+func validateSchemaValues(schema []plugin.FieldSchema, values map[string]string) error {
+	for _, field := range schema {
+		if !field.Required || !schemaFieldVisible(field, values) || strings.TrimSpace(values[field.Name]) != "" {
+			continue
+		}
+		label := strings.TrimSpace(field.Label)
+		if label == "" {
+			label = field.Name
+		}
+		return fmt.Errorf("%s为必填项", label)
+	}
+	return nil
+}
+
 func normalizeSchemaValues(schema []plugin.FieldSchema, values map[string]string) {
 	for _, field := range schema {
 		if field.Type != plugin.FieldNumber {
@@ -8472,9 +8509,16 @@ func schemaGroups(schema []plugin.FieldSchema, values map[string]string) []schem
 			indexByTitle[title] = index
 			groups = append(groups, schemaFieldGroup{Title: title, Class: schemaGroupClass(title)})
 		}
-		groups[index].Fields = append(groups[index].Fields, schemaFieldView{Field: field, Values: values})
+		groups[index].Fields = append(groups[index].Fields, schemaFieldView{Field: field, Values: values, Visible: schemaFieldVisible(field, values)})
 	}
 	return groups
+}
+
+func schemaFieldVisible(field plugin.FieldSchema, values map[string]string) bool {
+	if strings.TrimSpace(field.ShowWhenField) == "" {
+		return true
+	}
+	return values[field.ShowWhenField] == field.ShowWhenValue
 }
 
 func schemaGroupClass(title string) string {

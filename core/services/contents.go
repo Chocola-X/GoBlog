@@ -1002,23 +1002,59 @@ func (s *ContentService) FieldMap(ctx context.Context, cid int64) (map[string]an
 	}
 	out := make(map[string]any, len(fields))
 	for _, f := range fields {
-		switch f.Type {
-		case "int":
-			out[f.Name] = f.IntValue
-		case "float":
-			out[f.Name] = f.FloatValue
-		case "json":
-			var value any
-			if err := json.Unmarshal([]byte(f.StrValue), &value); err == nil {
-				out[f.Name] = value
-			} else {
-				out[f.Name] = f.StrValue
-			}
-		default:
-			out[f.Name] = f.StrValue
-		}
+		out[f.Name] = fieldMapValue(f)
 	}
 	return out, nil
+}
+
+func (s *ContentService) FieldMapsForContents(ctx context.Context, cids []int64) (map[int64]map[string]any, error) {
+	out := make(map[int64]map[string]any, len(cids))
+	args := make([]any, 0, len(cids))
+	placeholders := make([]string, 0, len(cids))
+	seen := make(map[int64]bool, len(cids))
+	for _, cid := range cids {
+		if cid <= 0 || seen[cid] {
+			continue
+		}
+		seen[cid] = true
+		out[cid] = map[string]any{}
+		args = append(args, cid)
+		placeholders = append(placeholders, "?")
+	}
+	if len(args) == 0 {
+		return out, nil
+	}
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT fid, cid, COALESCE(name,''), type, COALESCE(strValue,''), intValue, floatValue
+		FROM gb_fields WHERE cid IN (`+strings.Join(placeholders, ",")+`) ORDER BY fid ASC
+	`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var field models.Field
+		if err := rows.Scan(&field.FID, &field.CID, &field.Name, &field.Type, &field.StrValue, &field.IntValue, &field.FloatValue); err != nil {
+			return nil, err
+		}
+		out[field.CID][field.Name] = fieldMapValue(field)
+	}
+	return out, rows.Err()
+}
+
+func fieldMapValue(field models.Field) any {
+	switch field.Type {
+	case "int":
+		return field.IntValue
+	case "float":
+		return field.FloatValue
+	case "json":
+		var value any
+		if err := json.Unmarshal([]byte(field.StrValue), &value); err == nil {
+			return value
+		}
+	}
+	return field.StrValue
 }
 
 func (s *ContentService) AllFields(ctx context.Context) ([]models.Field, error) {

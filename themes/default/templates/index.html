@@ -5,14 +5,39 @@
 </section>
 {{end}}
 {{$defaultCover := themeValue .ThemeConfig "default_cover"}}
-{{$defaultCover = assetURL $defaultCover}}
-{{$decor := themeValue .ThemeConfig "enable_decor" "1"}}
+{{$fallbackNoCover := themeValue .ThemeConfig "fallback_no_cover" "1"}}
+{{$postFields := .PostFields}}
 <section class="article">
   {{range .Posts}}
+  {{$fields := index $postFields .CID}}
+  {{$articleType := fieldString $fields "articleType"}}
+  {{$cover := fieldString $fields "cover"}}
+  {{$remark := fieldString $fields "remark"}}
+  {{if and (not $cover) (ne $fallbackNoCover "1")}}{{$cover = $defaultCover}}{{end}}
+  {{$cover = assetURL $cover}}
+  {{if eq $articleType "daily"}}
+  <article class="mdui-card index-card-daily mdui-hoverable post">
+    <div class="index-icon"><mdui-icon name="chat_bubble"></mdui-icon></div>
+    <div class="mdui-card-primary daily-primary">
+      <a class="daily-permalink" href="{{contentURL .}}" aria-label="查看文章：{{.Title}}" title="{{.Title}}"><span class="mdui-card-primary-subtitle">{{date .Created}}</span></a>
+    </div>
+    <div class="mdui-card-content daily-content">{{excerpt .Text 320}}</div>
+  </article>
+  {{else if or (eq $articleType "normal") (not $cover)}}
+  <a class="post index-normal" href="{{contentURL .}}">
+    <article class="mdui-card index-card-normal mdui-hoverable">
+      <div class="mdui-card-primary index-primary-normal">
+        <h2 class="mdui-card-primary-title">{{.Title}}</h2>
+        <div class="mdui-card-primary-subtitle">{{date .Created}} ｜ {{.CommentsNum}} 条评论</div>
+        {{if $remark}}<mdui-chip class="index-chip-normal">{{$remark}}</mdui-chip>{{end}}
+      </div>
+    </article>
+  </a>
+  {{else}}
   <a class="post" href="{{contentURL .}}">
     <article class="mdui-card index-card mdui-hoverable">
       <div class="index-img-media">
-        {{if and (eq $decor "1") $defaultCover}}<div class="index-img" style="background-image: url('{{$defaultCover}}')"></div>{{end}}
+        <div class="index-img" style="background-image: url('{{$cover}}')"></div>
         <div class="index-card-filter"></div>
         <div class="mdui-card-media-covered">
           <div class="mdui-card-primary index-primary">
@@ -24,6 +49,7 @@
       </div>
     </article>
   </a>
+  {{end}}
   {{else}}
   <section class="mdui-card page-card">
     <div class="archive-title">暂无文章</div>

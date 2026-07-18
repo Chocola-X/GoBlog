@@ -343,6 +343,10 @@ body.admin-pjax-loading .admin-main {
   min-width: 0;
 }
 
+.schema-field[hidden] {
+  display: none;
+}
+
 .schema-field-description {
   margin-top: -2px;
   font-size: 12px;
