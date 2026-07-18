@@ -124,6 +124,167 @@
     }
   }
 
+  function commentReplyElements() {
+    const form = document.querySelector("#comment-form");
+    if (!form) return {};
+    let placeholder = document.querySelector("#comment-form-placeholder");
+    if (!placeholder) {
+      placeholder = document.createElement("div");
+      placeholder.id = "comment-form-placeholder";
+      placeholder.hidden = true;
+      form.parentNode.insertBefore(placeholder, form);
+    }
+    return {
+      form,
+      placeholder,
+      parent: form.querySelector('[name="parent"]'),
+      title: form.querySelector(".comment-respond-title"),
+      cancel: form.querySelector(".comment-cancel-reply"),
+      text: form.querySelector('[name="text"]'),
+    };
+  }
+
+  function md5Hex(value) {
+    const bytes = new TextEncoder().encode(value);
+    const paddedLength = (bytes.length + 9 + 63) & ~63;
+    const buffer = new Uint8Array(paddedLength);
+    buffer.set(bytes);
+    buffer[bytes.length] = 0x80;
+    const bitLength = BigInt(bytes.length) * 8n;
+    for (let index = 0; index < 8; index += 1) {
+      buffer[paddedLength - 8 + index] = Number((bitLength >> BigInt(index * 8)) & 0xffn);
+    }
+    const shifts = [
+      7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22,
+      5, 9, 14, 20, 5, 9, 14, 20, 5, 9, 14, 20, 5, 9, 14, 20,
+      4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23,
+      6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21,
+    ];
+    const constants = Array.from({ length: 64 }, (_, index) => Math.floor(Math.abs(Math.sin(index + 1)) * 0x100000000));
+    const rotate = (input, amount) => (input << amount) | (input >>> (32 - amount));
+    let a0 = 0x67452301;
+    let b0 = 0xefcdab89;
+    let c0 = 0x98badcfe;
+    let d0 = 0x10325476;
+    const view = new DataView(buffer.buffer);
+
+    for (let offset = 0; offset < buffer.length; offset += 64) {
+      const words = Array.from({ length: 16 }, (_, index) => view.getUint32(offset + index * 4, true));
+      let a = a0;
+      let b = b0;
+      let c = c0;
+      let d = d0;
+      for (let index = 0; index < 64; index += 1) {
+        let mixed;
+        let word;
+        if (index < 16) {
+          mixed = (b & c) | (~b & d);
+          word = index;
+        } else if (index < 32) {
+          mixed = (d & b) | (~d & c);
+          word = (5 * index + 1) % 16;
+        } else if (index < 48) {
+          mixed = b ^ c ^ d;
+          word = (3 * index + 5) % 16;
+        } else {
+          mixed = c ^ (b | ~d);
+          word = (7 * index) % 16;
+        }
+        const previousD = d;
+        d = c;
+        c = b;
+        b = (b + rotate((a + mixed + constants[index] + words[word]) | 0, shifts[index])) | 0;
+        a = previousD;
+      }
+      a0 = (a0 + a) | 0;
+      b0 = (b0 + b) | 0;
+      c0 = (c0 + c) | 0;
+      d0 = (d0 + d) | 0;
+    }
+
+    return [a0, b0, c0, d0].map((word) => {
+      let output = "";
+      for (let index = 0; index < 4; index += 1) {
+        output += ((word >>> (index * 8)) & 0xff).toString(16).padStart(2, "0");
+      }
+      return output;
+    }).join("");
+  }
+
+  function initCommentAvatarPreview() {
+    const form = document.querySelector("#comment-form");
+    const preview = form?.querySelector("[data-comment-avatar-preview]");
+    const mail = form?.querySelector('[name="mail"]');
+    if (!form || !preview || !mail || preview.dataset.avatarBound) return;
+    preview.dataset.avatarBound = "1";
+    let timer;
+    const update = () => {
+      const value = String(mail.value || "").trim().toLowerCase();
+      if (!value || !value.includes("@")) {
+        preview.src = preview.dataset.avatarDefault || "";
+        return;
+      }
+      preview.src = (preview.dataset.avatarTemplate || "").replaceAll("{hash}", md5Hex(value));
+    };
+    const schedule = () => {
+      window.clearTimeout(timer);
+      timer = window.setTimeout(update, 350);
+    };
+    mail.addEventListener("input", schedule);
+    mail.addEventListener("change", update);
+    update();
+  }
+
+  function focusCommentField(field) {
+    if (!field) return;
+    const focus = () => field.focus();
+    if (field.updateComplete?.then) field.updateComplete.then(focus);
+    else window.setTimeout(focus, 0);
+  }
+
+  function moveCommentForm(parentID, author, focus = true) {
+    const parts = commentReplyElements();
+    const target = document.getElementById(`comment-${String(parentID || "")}`);
+    if (!parts.form || !parts.parent || !target) return false;
+    const slot = Array.from(target.children).find((child) => child.matches("[data-comment-reply-slot]"));
+    if (!slot) return false;
+    parts.parent.value = String(parentID);
+    parts.form.classList.add("is-replying");
+    if (parts.title) parts.title.textContent = author ? `回复 @${author}` : "回复评论";
+    if (parts.cancel) parts.cancel.hidden = false;
+    slot.appendChild(parts.form);
+    if (focus) {
+      parts.form.scrollIntoView({ behavior: "smooth", block: "center" });
+      focusCommentField(parts.text);
+    }
+    return true;
+  }
+
+  function cancelCommentReply() {
+    const parts = commentReplyElements();
+    if (!parts.form || !parts.placeholder?.parentNode) return;
+    parts.parent.value = "0";
+    parts.form.classList.remove("is-replying");
+    if (parts.title) parts.title.textContent = "发表评论";
+    if (parts.cancel) parts.cancel.hidden = true;
+    parts.placeholder.parentNode.insertBefore(parts.form, parts.placeholder.nextSibling);
+    const url = new URL(window.location.href);
+    if (url.searchParams.has("reply")) {
+      url.searchParams.delete("reply");
+      history.replaceState(history.state, "", url.pathname + url.search + "#comments");
+    }
+  }
+
+  function initCommentReply() {
+    const parts = commentReplyElements();
+    const parentID = parts.parent?.value || "";
+    if (!parts.form || !parentID || parentID === "0") return;
+    const target = document.getElementById(`comment-${parentID}`);
+    if (moveCommentForm(parentID, target?.dataset.commentAuthor || "", false)) {
+      window.requestAnimationFrame(() => parts.form.scrollIntoView({ block: "center" }));
+    }
+  }
+
   function closeSearch(form, clear = false) {
     if (!form) return;
     const input = form.querySelector("input");
@@ -366,6 +527,18 @@
         return;
       }
 
+      const commentReply = target.closest("[data-comment-reply]");
+      if (commentReply) {
+        event.preventDefault();
+        moveCommentForm(commentReply.dataset.parentId, commentReply.dataset.parentAuthor || "");
+        return;
+      }
+      if (target.closest(".comment-cancel-reply")) {
+        event.preventDefault();
+        cancelCommentReply();
+        return;
+      }
+
       const link = target.closest("a");
       if (!shouldPjax(link)) return;
       event.preventDefault();
@@ -403,6 +576,8 @@
     wrapTables();
     codeCopy();
     initCommentDraft();
+    initCommentReply();
+    initCommentAvatarPreview();
     initInfiniteScroll();
     refreshBackTop();
     closeDrawer();

@@ -4322,6 +4322,7 @@ func (a *App) renderPostContent(w http.ResponseWriter, r *http.Request, post mod
 		"CommentOK":           r.URL.Query().Get("comment_ok") == "1",
 		"CommentPending":      r.URL.Query().Get("comment_status") == "waiting",
 		"CommentIdentity":     a.publicCommentIdentity(r),
+		"CommentFormAvatar":   a.commentFormAvatar(r.Context(), 96),
 		"CommentsRequireMail": optionBool(a.option(r.Context(), "comments_require_mail", "1")),
 		"CommentsRequireURL":  optionBool(a.option(r.Context(), "comments_require_url", "0")),
 		"CanonicalPath":       a.contentURL(r.Context(), post),
@@ -4375,6 +4376,7 @@ func (a *App) renderPageContent(w http.ResponseWriter, r *http.Request, pageData
 		"CommentOK":           r.URL.Query().Get("comment_ok") == "1",
 		"CommentPending":      r.URL.Query().Get("comment_status") == "waiting",
 		"CommentIdentity":     a.publicCommentIdentity(r),
+		"CommentFormAvatar":   a.commentFormAvatar(r.Context(), 96),
 		"CommentsRequireMail": optionBool(a.option(r.Context(), "comments_require_mail", "1")),
 		"CommentsRequireURL":  optionBool(a.option(r.Context(), "comments_require_url", "0")),
 		"CanonicalPath":       a.contentURL(r.Context(), pageData),
@@ -5069,23 +5071,25 @@ func (a *App) commentViews(r *http.Request, comments []models.Comment, roots []m
 			children[comment.Parent] = append(children[comment.Parent], comment)
 		}
 	}
-	var out []commentView
-	var walk func(parent int64, level int)
-	walk = func(parent int64, level int) {
-		for _, comment := range children[parent] {
-			displayLevel := level
-			if maxLevel > 0 && displayLevel >= maxLevel {
-				displayLevel = maxLevel - 1
-			}
-			out = append(out, a.commentView(r, comment, displayLevel))
-			if _, ok := byID[comment.COID]; ok {
-				walk(comment.COID, level+1)
-			}
+	var build func(comment models.Comment, level int) commentView
+	build = func(comment models.Comment, level int) commentView {
+		displayLevel := level
+		if maxLevel > 0 && displayLevel >= maxLevel {
+			displayLevel = maxLevel - 1
 		}
+		view := a.commentView(r, comment, displayLevel)
+		if parent, ok := byID[comment.Parent]; ok {
+			view.ParentAuthor = parent.Author
+			view.ParentAnchor = fmt.Sprintf("comment-%d", parent.COID)
+		}
+		for _, child := range children[comment.COID] {
+			view.Children = append(view.Children, build(child, level+1))
+		}
+		return view
 	}
+	var out []commentView
 	for _, root := range roots {
-		out = append(out, a.commentView(r, root, 0))
-		walk(root.COID, 1)
+		out = append(out, build(root, 0))
 	}
 	return out
 }
@@ -6367,6 +6371,9 @@ type archiveLink struct {
 type commentView struct {
 	models.Comment
 	Level         int
+	Children      []commentView
+	ParentAuthor  string
+	ParentAnchor  string
 	BodyHTML      template.HTML
 	AuthorHTML    template.HTML
 	AvatarURL     string
@@ -6382,6 +6389,12 @@ type publicCommentIdentity struct {
 	LoggedIn  bool
 	Name      string
 	AvatarURL string
+}
+
+type commentFormAvatarView struct {
+	Enabled    bool
+	Template   string
+	DefaultURL string
 }
 
 type commentPagination struct {
@@ -6782,7 +6795,7 @@ func (a *App) gravatarURL(r *http.Request, mail string) string {
 	if a.option(r.Context(), "comments_avatar", "1") != "1" {
 		return ""
 	}
-	return a.emailAvatarURL(r.Context(), mail, 48)
+	return a.emailAvatarURL(r.Context(), mail, 96)
 }
 
 func (a *App) commentAvatarURL(ctx context.Context, comment models.Comment, size int) string {
@@ -6800,17 +6813,32 @@ func (a *App) commentAvatarURL(ctx context.Context, comment models.Comment, size
 }
 
 func (a *App) emailAvatarURL(ctx context.Context, mail string, size int) string {
+	templateURL := a.emailAvatarURLTemplate(ctx, size)
+	sum := md5.Sum([]byte(strings.ToLower(strings.TrimSpace(mail))))
+	return strings.ReplaceAll(templateURL, "{hash}", hex.EncodeToString(sum[:]))
+}
+
+func (a *App) emailAvatarURLTemplate(ctx context.Context, size int) string {
 	if size <= 0 {
 		size = 96
 	}
-	sum := md5.Sum([]byte(strings.ToLower(strings.TrimSpace(mail))))
-	hash := hex.EncodeToString(sum[:])
 	templateURL := strings.TrimSpace(a.option(ctx, "avatar_url_template", ""))
 	if templateURL != "" {
-		return strings.NewReplacer("{hash}", hash, "{size}", strconv.Itoa(size)).Replace(templateURL)
+		return strings.ReplaceAll(templateURL, "{size}", strconv.Itoa(size))
 	}
 	rating := a.option(ctx, "comments_avatar_rating", "g")
-	return "https://www.gravatar.com/avatar/" + hash + "?s=" + strconv.Itoa(size) + "&d=mp&r=" + rating
+	return "https://www.gravatar.com/avatar/{hash}?s=" + strconv.Itoa(size) + "&d=mp&r=" + rating
+}
+
+func (a *App) commentFormAvatar(ctx context.Context, size int) commentFormAvatarView {
+	if a.option(ctx, "comments_avatar", "1") != "1" {
+		return commentFormAvatarView{}
+	}
+	return commentFormAvatarView{
+		Enabled:    true,
+		Template:   a.emailAvatarURLTemplate(ctx, size),
+		DefaultURL: a.emailAvatarURL(ctx, "", size),
+	}
 }
 
 func adminAvatarURL(mail string, size int) string {

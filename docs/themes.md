@@ -170,6 +170,8 @@ ConfigSchema: []plugin.FieldSchema{
 
 默认主题的 `enable_infinite_scroll` 配置默认关闭。启用后，浏览器接近文章列表底部时会读取分页中的下一页 URL，把返回页面的 `.article .post` 追加到当前列表，并继续观察新的下一页入口；关闭时保留常规分页和手动加载。服务端分页仍然存在，因此搜索引擎和禁用 JavaScript 的访问不会失去后续页面入口。
 
+默认主题的文章过期横幅由 `show_stale_notice` 控制，默认开启。`stale_notice_days` 默认 30，只在开关启用时显示和参与必填校验；模板根据文章最后修改时间计算是否展示横幅。
+
 ## 图片和相对 URL
 
 `FieldImage` 允许填写 URL或通过后台上传。主题必须兼容：

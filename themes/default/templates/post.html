@@ -1,3 +1,19 @@
+{{define "comment_item"}}
+<article id="{{.Anchor}}" class="{{if eq .Level 0}}mdui-card comment-card comment-parent{{else}}comment-child comment-level-{{.Level}}{{end}}" data-comment-item data-comment-id="{{.COID}}" data-comment-author="{{.Author}}">
+  <header class="comment-header">
+    {{if .AvatarURL}}<img class="comment-avatar" src="{{.AvatarURL}}" alt="">{{end}}
+    <div>
+      <strong>{{.AuthorHTML}}{{if .Pending}} <span class="comment-pending">等待审核</span>{{end}}</strong>
+      <span>{{commentDate .Created}}</span>
+    </div>
+  </header>
+  <a class="comment-reply" href="{{.ReplyURL}}" data-comment-reply data-parent-id="{{.COID}}" data-parent-author="{{.Author}}">回复</a>
+  <div class="comment-content">{{if .ParentAuthor}}<a class="comment-reply-name" href="#{{.ParentAnchor}}">@{{.ParentAuthor}}</a> {{end}}{{.BodyHTML}}</div>
+  <div class="comment-reply-slot" data-comment-reply-slot></div>
+  {{if .Children}}<div class="comment-children">{{range .Children}}{{template "comment_item" .}}{{end}}</div>{{end}}
+</article>
+{{end}}
+
 {{define "content"}}
 {{$articleType := fieldString .Fields "articleType"}}
 {{$cover := fieldString .Fields "cover"}}
@@ -23,7 +39,7 @@
       </div>
     </div>
   </header>
-  {{if staleDays .Post.Modified 30}}
+  {{if and (eq (themeValue .ThemeConfig "show_stale_notice" "1") "1") (staleDays .Post.Modified (themeInt .ThemeConfig "stale_notice_days" 30))}}
   <div class="post-alert">
     <mdui-icon name="report"></mdui-icon>
     请注意，本文最后修改于 {{daysSince .Post.Modified}} 天前，其中某些信息可能已经过时。
@@ -61,39 +77,23 @@
   <h2 class="comment-title">评论</h2>
   {{if .CommentOK}}<div class="notice-card">{{if .CommentPending}}评论已提交，正在等待审核。{{else}}评论已提交。{{end}}</div>{{end}}
   {{if .CommentError}}<div class="notice-card notice-error">{{.CommentErrorMessage}}</div>{{end}}
-  <div class="comment-list">
-    {{range .Comments}}
-    <article id="{{.Anchor}}" class="mdui-card comment-card comment-level-{{.Level}}">
-      <header class="comment-header">
-        {{if .AvatarURL}}<img class="comment-avatar" src="{{.AvatarURL}}" alt="">{{end}}
-        <div>
-          <strong>{{.AuthorHTML}}{{if .Pending}} <span class="comment-pending">等待审核</span>{{end}}</strong>
-          <span>{{commentDate .Created}}</span>
-        </div>
-      </header>
-      <div class="comment-content">{{.BodyHTML}}</div>
-      <a class="comment-reply" href="{{.ReplyURL}}">回复</a>
-    </article>
-    {{else}}
-    <p class="muted">还没有评论。</p>
-    {{end}}
-  </div>
-  {{if gt .CommentPager.TotalPages 1}}
-  <nav class="pagination comment-pagination">
-    {{if .CommentPager.HasPrev}}<a href="{{.CommentPager.PrevURL}}"><mdui-icon name="chevron_left"></mdui-icon>上一页</a>{{else}}<span>上一页</span>{{end}}
-    <span>{{.CommentPager.Page}} / {{.CommentPager.TotalPages}}</span>
-    {{if .CommentPager.HasNext}}<a href="{{.CommentPager.NextURL}}">下一页<mdui-icon name="chevron_right"></mdui-icon></a>{{else}}<span>下一页</span>{{end}}
-  </nav>
-  {{end}}
-  <form id="comment-form" class="mdui-card comment-respond" method="post" action="/comment">
+  <form id="comment-form" class="mdui-card comment-respond{{if .CommentFormAvatar.Enabled}} has-avatar{{end}}" method="post" action="/comment">
     <input type="hidden" name="_csrf" value="{{.CommentCSRF}}">
     <input type="hidden" name="cid" value="{{.Post.CID}}">
     <input type="hidden" name="parent" value="{{.ReplyTo}}">
     <input class="hp-field" type="text" name="website" tabindex="-1" autocomplete="off">
+    {{if .CommentFormAvatar.Enabled}}
+    <div class="comment-form-avatar-wrap">
+      <img class="comment-form-avatar" src="{{if .CommentIdentity.AvatarURL}}{{.CommentIdentity.AvatarURL}}{{else}}{{.CommentFormAvatar.DefaultURL}}{{end}}" alt="评论头像预览" referrerpolicy="no-referrer" {{if not .CommentIdentity.LoggedIn}}data-comment-avatar-preview data-avatar-template="{{.CommentFormAvatar.Template}}" data-avatar-default="{{.CommentFormAvatar.DefaultURL}}"{{end}}>
+    </div>
+    {{end}}
+    <div class="comment-respond-head">
+      <strong class="comment-respond-title">发表评论</strong>
+      <mdui-button-icon type="button" class="comment-cancel-reply" title="取消回复" hidden><mdui-icon name="close"></mdui-icon></mdui-button-icon>
+    </div>
     {{if .CommentIdentity.LoggedIn}}
     <div class="comment-current-user">
-      {{if .CommentIdentity.AvatarURL}}<img class="comment-avatar" src="{{.CommentIdentity.AvatarURL}}" alt="" referrerpolicy="no-referrer">{{end}}
-      <strong>{{.CommentIdentity.Name}}</strong>
+      <strong>以 {{.CommentIdentity.Name}} 身份评论</strong>
     </div>
     {{else}}
     <div class="comment-web">
@@ -108,6 +108,19 @@
     <img class="comment-bg-image" src="{{$commentBgImg}}" alt="">
     {{end}}
   </form>
+  <div class="comment-list">
+    {{range .Comments}}{{template "comment_item" .}}
+    {{else}}
+    <p class="muted">还没有评论。</p>
+    {{end}}
+  </div>
+  {{if gt .CommentPager.TotalPages 1}}
+  <nav class="pagination comment-pagination">
+    {{if .CommentPager.HasPrev}}<a href="{{.CommentPager.PrevURL}}"><mdui-icon name="chevron_left"></mdui-icon>上一页</a>{{else}}<span>上一页</span>{{end}}
+    <span>{{.CommentPager.Page}} / {{.CommentPager.TotalPages}}</span>
+    {{if .CommentPager.HasNext}}<a href="{{.CommentPager.NextURL}}">下一页<mdui-icon name="chevron_right"></mdui-icon></a>{{else}}<span>下一页</span>{{end}}
+  </nav>
+  {{end}}
 </section>
 {{end}}
 {{end}}

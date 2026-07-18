@@ -546,6 +546,8 @@ type Plugin interface {
 | | `enable_infinite_scroll` | 滚动接近文章列表底部时自动加载下一页（默认关闭） |
 | | `enable_toc` | 文章页显示目录 |
 | | `enable_back_to_top` | 显示回到顶部按钮 |
+| 文章显示 | `show_stale_notice` | 显示文章过期提醒横幅 |
+| | `stale_notice_days` | 最后修改超过多少天时触发提醒（默认 30） |
 | 页脚 | `footer_html` | 底部自定义 HTML |
 
 ### 内容字段

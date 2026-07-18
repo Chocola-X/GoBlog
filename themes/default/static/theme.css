@@ -1179,6 +1179,7 @@ html.mdui-theme-dark .post-content table tr:nth-child(even) td {
 .comment-list {
   display: grid;
   gap: 20px;
+  margin-top: 20px;
 }
 
 .comment-card {
@@ -1186,11 +1187,28 @@ html.mdui-theme-dark .post-content table tr:nth-child(even) td {
   padding: 15px 20px;
 }
 
+.comment-child {
+  position: relative;
+  padding-top: 15px;
+  border-top: 1px solid rgba(var(--mdui-color-outline-variant), 0.65);
+}
+
+.comment-children {
+  display: grid;
+  gap: 15px;
+  margin-top: 15px;
+}
+
+.comment-reply-slot:empty {
+  display: none;
+}
+
 .comment-header {
   display: grid;
   grid-template-columns: 50px minmax(0, 1fr);
   align-items: center;
   gap: 14px;
+  padding-right: 52px;
 }
 
 .comment-avatar {
@@ -1231,23 +1249,31 @@ html.mdui-theme-dark .post-content table tr:nth-child(even) td {
 }
 
 .comment-reply {
+  position: absolute;
+  top: 16px;
+  right: 20px;
   display: inline-flex;
-  margin-left: 64px;
+  min-height: 30px;
+  align-items: center;
+  padding: 0 8px;
+  border-radius: 4px;
   color: rgb(var(--mdui-color-primary));
 }
 
-.comment-level-1 {
-  margin-left: 32px;
+.comment-child > .comment-reply {
+  top: 15px;
+  right: 0;
 }
 
-.comment-level-2 {
-  margin-left: 64px;
+.comment-reply:hover,
+.comment-reply:focus-visible {
+  background: rgba(var(--mdui-color-primary), 0.1);
 }
 
-.comment-level-3,
-.comment-level-4,
-.comment-level-5 {
-  margin-left: 96px;
+.comment-reply-name {
+  color: rgb(var(--mdui-color-primary));
+  font-weight: 500;
+  text-decoration: none;
 }
 
 .notice-card {
@@ -1264,8 +1290,73 @@ html.mdui-theme-dark .post-content table tr:nth-child(even) td {
   position: relative;
   margin-top: 20px;
   padding: 16px;
-  overflow: hidden;
+  overflow: visible;
   isolation: isolate;
+}
+
+.comment-respond.has-avatar {
+  margin-top: 58px;
+  padding-top: 48px;
+}
+
+.comment-respond.is-replying {
+  width: 100%;
+  margin: 16px 0 2px;
+  box-sizing: border-box;
+  border-top: 1px solid rgba(var(--mdui-color-primary), 0.24);
+  border-radius: 5px;
+  background: rgba(var(--mdui-color-primary-container), calc(var(--cuckoo-card-opacity) * 0.72));
+  box-shadow: none;
+}
+
+.comment-respond.is-replying.has-avatar {
+  margin-top: 58px;
+}
+
+.comment-form-avatar-wrap {
+  position: absolute;
+  top: -40px;
+  left: 50%;
+  z-index: 2;
+  display: grid;
+  width: 80px;
+  height: 80px;
+  place-items: center;
+  border: 4px solid rgba(var(--mdui-color-surface), 0.96);
+  border-radius: 50%;
+  background: rgb(var(--mdui-color-surface-container));
+  box-shadow: 0 3px 10px rgba(var(--mdui-color-shadow), 0.2);
+  transform: translateX(-50%);
+}
+
+.comment-form-avatar {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  border-radius: 50%;
+}
+
+.comment-respond-head {
+  display: flex;
+  min-height: 40px;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+
+.comment-respond-title {
+  color: rgb(var(--mdui-color-on-surface));
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.comment-cancel-reply {
+  color: rgb(var(--mdui-color-primary));
+}
+
+.comment-cancel-reply[hidden] {
+  display: none;
 }
 
 .comment-bg-image {
@@ -1281,7 +1372,7 @@ html.mdui-theme-dark .post-content table tr:nth-child(even) td {
   opacity: 0.82;
 }
 
-.comment-respond > :not(.comment-bg-image) {
+.comment-respond > :not(.comment-bg-image):not(.comment-form-avatar-wrap) {
   position: relative;
   z-index: 1;
 }
@@ -1546,16 +1637,7 @@ mdui-icon {
     max-width: 100%;
   }
 
-  .comment-level-1,
-  .comment-level-2,
-  .comment-level-3,
-  .comment-level-4,
-  .comment-level-5 {
-    margin-left: 0;
-  }
-
-  .comment-content,
-  .comment-reply {
+  .comment-content {
     margin-left: 0;
   }
 

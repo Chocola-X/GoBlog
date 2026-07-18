@@ -48,6 +48,7 @@ func init() {
 		Embedded:     true,
 		Funcs: template.FuncMap{
 			"themeValue":   themeValue,
+			"themeInt":     themeInt,
 			"themeOpacity": themeOpacity,
 			"gravatar":     gravatarURL,
 			"avatarURL":    avatarURL,
@@ -93,6 +94,8 @@ func init() {
 			{Name: "enable_infinite_scroll", Label: "启用文章列表无限下拉", Group: "侧栏和导航", Type: plugin.FieldCheckbox, Default: "0", Description: "滚动接近文章列表底部时自动加载下一页；关闭时保留常规分页和手动加载"},
 			{Name: "enable_toc", Label: "文章页显示目录", Group: "侧栏和导航", Type: plugin.FieldCheckbox, Default: "1"},
 			{Name: "enable_back_to_top", Label: "显示回到顶部按钮", Group: "侧栏和导航", Type: plugin.FieldCheckbox, Default: "1"},
+			{Name: "show_stale_notice", Label: "显示文章过期提醒", Group: "文章显示", Type: plugin.FieldCheckbox, Default: "1", Description: "文章最后修改时间超过设定天数时显示提醒横幅", Wide: true},
+			{Name: "stale_notice_days", Label: "触发提醒的天数", Group: "文章显示", Type: plugin.FieldNumber, Default: "30", Description: "按文章最后修改时间计算", Min: "1", Max: "3650", Step: "1", Required: true, ShowWhenField: "show_stale_notice", ShowWhenValue: "1"},
 			{Name: "footer_html", Label: "底部 HTML", Group: "页脚", Type: plugin.FieldTextarea, Description: "留空时显示 Powered by GopherInk", Wide: true},
 		},
 		ContentFields: []plugin.FieldSchema{
@@ -150,6 +153,14 @@ func themeOpacity(values map[string]string, key, fallback string) string {
 		value = 1
 	}
 	return strconv.FormatFloat(value, 'f', -1, 64)
+}
+
+func themeInt(values map[string]string, key string, fallback int) int {
+	value, err := strconv.Atoi(themeValue(values, key, strconv.Itoa(fallback)))
+	if err != nil || value < 1 {
+		return fallback
+	}
+	return value
 }
 
 func gravatarURL(email string, size int) string {
