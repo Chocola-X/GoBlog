@@ -7268,7 +7268,7 @@ func (a *App) enrichThemeData(ctx context.Context, data map[string]any) {
 		}
 	}
 	if _, ok := data["Archives"]; !ok {
-		data["Archives"] = a.archiveLinks(ctx, 18)
+		data["Archives"] = a.archiveLinks(ctx, 0)
 	}
 	if _, ok := data["Tags"]; !ok {
 		if tags, err := a.Metas.ListCloud(ctx, "tag", 30); err == nil {

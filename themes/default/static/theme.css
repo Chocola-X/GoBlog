@@ -236,6 +236,8 @@ body.drawer-open .drawer-overlay {
   position: fixed;
   inset: 0 auto 0 0;
   z-index: 80;
+  display: flex;
+  flex-direction: column;
   width: min(320px, calc(100vw - 56px));
   overflow-x: hidden;
   overflow-y: auto;
@@ -310,7 +312,8 @@ html.mdui-theme-dark .drawer-divider {
 
 .drawer-list {
   display: grid;
-  padding: 8px 0 52px;
+  flex: 0 0 auto;
+  padding: 8px 0;
 }
 
 .drawer-list a,
@@ -388,10 +391,8 @@ html.mdui-theme-dark .drawer-empty {
 }
 
 .drawer-bottom {
-  position: absolute;
-  right: 0;
-  bottom: 0;
-  left: 0;
+  flex: 0 0 auto;
+  margin-top: auto;
   padding: 12px;
   color: rgba(0, 0, 0, 0.58);
   border-top: 1px solid rgba(0, 0, 0, 0.12);

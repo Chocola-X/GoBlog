@@ -534,8 +534,8 @@ type Plugin interface {
 | 背景和装饰 | `background_image` | 桌面背景图 |
 | | `mobile_background_image` | 移动端背景图 |
 | | `sidebar_image` | 侧栏封面图 |
-| | `fallback_no_cover` | 未设置封面时回落为无封面样式 |
-| | `default_cover` | 默认文章封面（关闭无封面回落时必填） |
+| | `fallback_no_cover` | “文章”类型未设置封面时回落为无封面样式 |
+| | `default_cover` | 默认文章封面（关闭无封面回落时必填；不覆盖显式“无封面/日常”类型） |
 | | `comment_bg_image` | 评论框装饰图 |
 | | `post_end_image` | 文章底部装饰图 |
 | | `favicon` | Favicon |

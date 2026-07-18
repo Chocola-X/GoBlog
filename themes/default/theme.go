@@ -60,7 +60,11 @@ func init() {
 				if fields == nil {
 					return ""
 				}
-				return strings.TrimSpace(fmt.Sprint(fields[name]))
+				value, ok := fields[name]
+				if !ok || value == nil {
+					return ""
+				}
+				return strings.TrimSpace(fmt.Sprint(value))
 			},
 		},
 		ConfigSchema: []plugin.FieldSchema{
@@ -77,8 +81,8 @@ func init() {
 			{Name: "background_image", Label: "桌面背景图 URL", Group: "背景和装饰图片", Type: plugin.FieldImage, Description: "可输入 URL 或上传图片；留空时使用 MDUI 主题色背景；支持 {random} 随机占位符"},
 			{Name: "mobile_background_image", Label: "移动端背景图 URL", Group: "背景和装饰图片", Type: plugin.FieldImage, Description: "留空时沿用桌面背景图；支持 {random} 随机占位符"},
 			{Name: "sidebar_image", Label: "侧栏封面图 URL", Group: "背景和装饰图片", Type: plugin.FieldImage, Description: "资料卡顶部封面；留空时使用主题色；支持 {random} 随机占位符"},
-			{Name: "fallback_no_cover", Label: "启用文章未设置封面时回落为无封面", Group: "背景和装饰图片", Type: plugin.FieldCheckbox, Default: "1", Description: "启用后，未单独设置封面的文章使用无封面样式", Wide: true},
-			{Name: "default_cover", Label: "默认文章封面 URL", Group: "背景和装饰图片", Type: plugin.FieldImage, Description: "文章未设置封面时使用；支持 {random} 随机占位符，例如 https://api.mikupara.com/h?id={random}", Required: true, ShowWhenField: "fallback_no_cover", ShowWhenValue: "0"},
+			{Name: "fallback_no_cover", Label: "启用文章未设置封面时回落为无封面", Group: "背景和装饰图片", Type: plugin.FieldCheckbox, Default: "1", Description: "仅影响“文章”类型且自身未设置封面的内容；明确选择“无封面”或“日常”的内容保持对应样式", Wide: true},
+			{Name: "default_cover", Label: "默认文章封面 URL", Group: "背景和装饰图片", Type: plugin.FieldImage, Description: "关闭上方回落后，用于未设置封面的“文章”类型内容；支持 {random}，例如 https://api.mikupara.com/h?id={random}", Required: true, ShowWhenField: "fallback_no_cover", ShowWhenValue: "0"},
 			{Name: "comment_bg_image", Label: "评论框装饰图 URL", Group: "背景和装饰图片", Type: plugin.FieldImage, Description: "显示在评论输入框右侧；留空时不显示；支持 {random} 随机占位符"},
 			{Name: "post_end_image", Label: "文章底部装饰图 URL", Group: "背景和装饰图片", Type: plugin.FieldImage, Description: "显示在文章内容底部右下角；留空时不显示；支持 {random} 随机占位符"},
 			{Name: "favicon", Label: "Favicon URL", Group: "背景和装饰图片", Type: plugin.FieldImage, Default: "/theme/default/favicon.svg", Description: "留空时使用 GopherInk 默认 Logo；支持 {random} 随机占位符"},
