@@ -86,6 +86,7 @@ func init() {
 			{Name: "show_recent_comments", Label: "显示最新回复", Group: "侧栏和导航", Type: plugin.FieldCheckbox, Default: "1"},
 			{Name: "show_tag_cloud", Label: "显示标签云", Group: "侧栏和导航", Type: plugin.FieldCheckbox, Default: "1"},
 			{Name: "enable_pjax", Label: "启用 PJAX 导航", Group: "侧栏和导航", Type: plugin.FieldCheckbox, Default: "1"},
+			{Name: "enable_infinite_scroll", Label: "启用文章列表无限下拉", Group: "侧栏和导航", Type: plugin.FieldCheckbox, Default: "0", Description: "滚动接近文章列表底部时自动加载下一页；关闭时保留常规分页和手动加载"},
 			{Name: "enable_toc", Label: "文章页显示目录", Group: "侧栏和导航", Type: plugin.FieldCheckbox, Default: "1"},
 			{Name: "enable_back_to_top", Label: "显示回到顶部按钮", Group: "侧栏和导航", Type: plugin.FieldCheckbox, Default: "1"},
 			{Name: "footer_html", Label: "底部 HTML", Group: "页脚", Type: plugin.FieldTextarea, Description: "留空时显示 Powered by GopherInk", Wide: true},

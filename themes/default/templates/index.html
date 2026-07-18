@@ -63,8 +63,7 @@
   <strong>{{.Page}} / {{.TotalPages}}</strong>
   {{if .HasNext}}<a class="next" href="{{.NextURL}}">下一页<mdui-icon name="chevron_right"></mdui-icon></a>{{else}}<span>下一页</span>{{end}}
 </nav>
-{{if .HasNext}}<a class="changePage changePage-load" href="{{.NextURL}}">加载更多</a>{{else}}<div class="changePage">到底了啦</div>{{end}}
-<div class="changePage changePage-end">加载中...</div>
+{{if .HasNext}}<a class="changePage changePage-load" href="{{.NextURL}}" aria-live="polite">加载更多</a>{{else}}<div class="changePage">到底了啦</div>{{end}}
 {{end}}
 {{end}}
 {{end}}

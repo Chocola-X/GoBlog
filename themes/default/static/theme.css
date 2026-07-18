@@ -681,8 +681,13 @@ html.mdui-theme-dark .drawer-bottom {
   transform: translateY(-2px);
 }
 
-.changePage-end {
+body[data-infinite-scroll="1"] .pagination {
   display: none;
+}
+
+.changePage.is-loading {
+  pointer-events: none;
+  transform: none;
 }
 
 .site-sidebar {

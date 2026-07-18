@@ -2,6 +2,8 @@
   const body = document.body;
   const progress = document.querySelector(".pjax-progress");
   const color = body.dataset.primary || "#ff4081";
+  let infiniteObserver = null;
+  let pageAppendPending = false;
 
   function setAccent() {
     document.documentElement.style.setProperty("--cuckoo-accent", color);
@@ -224,6 +226,7 @@
 
     const nextBody = doc.body;
     body.dataset.pjax = nextBody.dataset.pjax || body.dataset.pjax;
+    body.dataset.infiniteScroll = nextBody.dataset.infiniteScroll || "0";
     body.dataset.themeMode = nextBody.dataset.themeMode || body.dataset.themeMode;
     document.title = doc.title;
     return true;
@@ -251,6 +254,11 @@
   }
 
   async function appendNextPage(link) {
+    if (pageAppendPending) return;
+    pageAppendPending = true;
+    const originalLabel = link.textContent;
+    link.classList.add("is-loading");
+    link.textContent = "加载中...";
     showProgress();
     try {
       const response = await fetch(link.href, { headers: { "X-PJAX": "true" } });
@@ -269,13 +277,34 @@
       if (nextLoad && currentLoad) {
         currentLoad.href = nextLoad.href;
       } else {
-        currentLoad?.replaceWith(doc.querySelector(".changePage") || document.createTextNode(""));
+        const end = doc.querySelector(".changePage:not(.changePage-load)");
+        currentLoad?.replaceWith(end || document.createTextNode(""));
       }
     } catch (err) {
       window.location.href = link.href;
     } finally {
+      if (link.isConnected) {
+        link.classList.remove("is-loading");
+        link.textContent = originalLabel;
+      }
+      pageAppendPending = false;
       hideProgress();
+      initInfiniteScroll();
     }
+  }
+
+  function initInfiniteScroll() {
+    infiniteObserver?.disconnect();
+    infiniteObserver = null;
+    if (body.dataset.infiniteScroll !== "1") return;
+    const link = document.querySelector(".changePage-load");
+    if (!link || !("IntersectionObserver" in window)) return;
+    infiniteObserver = new IntersectionObserver((entries) => {
+      if (entries.some((entry) => entry.isIntersecting)) {
+        appendNextPage(link);
+      }
+    }, { rootMargin: "320px 0px" });
+    infiniteObserver.observe(link);
   }
 
   function bindGlobalEvents() {
@@ -374,6 +403,7 @@
     wrapTables();
     codeCopy();
     initCommentDraft();
+    initInfiniteScroll();
     refreshBackTop();
     closeDrawer();
   }
