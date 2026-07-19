@@ -1194,6 +1194,7 @@ html.mdui-theme-dark .post-content table tr:nth-child(even) td {
 }
 
 .comments-wrap {
+  min-width: 0;
   margin-top: 20px;
 }
 
@@ -1210,23 +1211,31 @@ html.mdui-theme-dark .post-content table tr:nth-child(even) td {
 
 .comment-list {
   display: grid;
+  min-width: 0;
+  grid-template-columns: minmax(0, 1fr);
   gap: 20px;
   margin-top: 20px;
 }
 
 .comment-card {
   position: relative;
+  min-width: 0;
+  max-width: 100%;
   padding: 15px 20px;
 }
 
 .comment-child {
   position: relative;
+  min-width: 0;
+  max-width: 100%;
   padding-top: 15px;
   border-top: 1px solid rgba(var(--mdui-color-outline-variant), 0.65);
 }
 
 .comment-children {
   display: grid;
+  min-width: 0;
+  grid-template-columns: minmax(0, 1fr);
   gap: 15px;
   margin-top: 15px;
 }
@@ -1290,12 +1299,31 @@ html.mdui-theme-dark .post-content table tr:nth-child(even) td {
 }
 
 .comment-content {
+  min-width: 0;
   margin: 10px 30px 10px 64px;
   line-height: 1.75;
+  overflow-wrap: anywhere;
 }
 
 .comment-content p {
   margin: 0 0 8px;
+}
+
+.comment-content pre,
+.comment-content table {
+  display: block;
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+.comment-content pre {
+  white-space: pre;
+}
+
+.comment-content img,
+.comment-content video {
+  max-width: 100%;
+  height: auto;
 }
 
 .comment-reply {
