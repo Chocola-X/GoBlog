@@ -2,7 +2,7 @@
 
 ## 插件模型
 
-GopherInk 插件是参与主程序构建的 Go 包。插件包调用 `plugin.Register`，主程序通过空白导入使其 `init` 执行。插件代码不支持运行时安装、热加载或卸载；每次新增或修改后必须重新编译并重启。
+GopherInk 插件是参与主程序构建的 Go 包。插件包调用 `plugin.Register`，统一构建器扫描 `plugins/` 并生成临时空白导入，使插件的 `init` 执行。插件代码不支持运行时安装、热加载或卸载；每次新增或修改后必须重新编译并重启。
 
 后台“启用/停用”只改变当前二进制中插件的活动状态：
 
@@ -54,13 +54,16 @@ func filterTitle(ctx context.Context, value any) (any, error) {
 }
 ```
 
-在 `cmd/gopherink/plugins.go` 加入：
+插件目录根部存在非测试 Go 文件即可被发现。普通目录直接属于 GopherInk module；需要作为独立仓库发布时，也可以在插件目录放置自己的 `go.mod`。检查并构建：
 
-```go
-_ "github.com/Chocola-X/GopherInk/plugins/example"
+```bash
+make list-plugins
+make build
 ```
 
-然后重新构建。插件的 `Name()` 是稳定技术标识，配置、启用状态和钩子归属都使用它；发布后不要随意更名。
+不使用 `make` 时执行 `go run ./cmd/gopherink-builder -list` 和 `go run ./cmd/gopherink-builder -o gopherink`。构建器只加载每个直接子目录的根包，不递归导入内部辅助包。直接使用原生 `go build ./cmd/gopherink` 不触发自动发现。
+
+插件的 `Name()` 是稳定技术标识，配置、启用状态和钩子归属都使用它；发布后不要随意更名。
 
 ## 元信息和版本要求
 
@@ -664,5 +667,5 @@ func countView(rt *plugin.Runtime, w http.ResponseWriter, r *http.Request) {
 6. 上传存储插件同时处理替换、删除、URL和缩略图数据。
 7. 插件路由明确方法、输入上限、Content-Type、认证和 CSRF 边界。
 8. 监听自动保存和发布时检查 `Operation`，避免重复外发任务。
-9. 修改源码后重新编译；后台启停不能加载新代码。
+9. 修改源码后先确认 `make list-plugins` 能发现插件，再重新编译；后台启停不能加载新代码。
 10. 新公开路由在 WAF 开启状态下验证限流、404和缓存行为。

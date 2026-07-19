@@ -34,14 +34,16 @@ GopherInk 是一个服务端渲染的 Go CMS。程序将后台模板、后台静
 
 ## 构建时扩展
 
-插件和主题由 `cmd/gopherink/plugins.go` 空白导入，包的 `init` 函数调用 `plugin.Register` 或 `plugin.RegisterTheme` 完成登记：
+内置主题由 `cmd/gopherink/plugins.go` 显式导入。插件使用 `cmd/gopherink-builder` 扫描 `plugins/` 直接子目录，在构建期间生成临时空白导入；包的 `init` 函数调用 `plugin.Register` 或 `plugin.RegisterTheme` 完成登记：
 
 ```go
 import (
-    _ "github.com/Chocola-X/GopherInk/plugins/sitemap"
+    _ "github.com/Chocola-X/GopherInk-CommentNotifier" // 构建器生成
     _ "github.com/Chocola-X/GopherInk/themes/default"
 )
 ```
+
+插件目录可以属于根 module，也可以带独立 `go.mod`。后者会被加入临时 Go workspace，构建完成后自动清理，不修改根 `go.mod` / `go.sum`。Go 编译器本身不会扫描未导入的包，因此自动插件集成必须通过 `make build` 或 `go run ./cmd/gopherink-builder` 进入。
 
 这意味着：
 

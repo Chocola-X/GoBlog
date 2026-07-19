@@ -2,6 +2,8 @@ refer/*
 data/*
 /gopherink
 /goblog
+/.gopherink-build/
+/cmd/gopherink/zz_plugins_autoload.go
 .vscode/
 /function_test/
 /website/

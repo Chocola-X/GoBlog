@@ -4,12 +4,16 @@
 
 - Go 版本以根目录 `go.mod` 的 `go` 指令为准。
 - 默认 SQLite 驱动需要 CGO 和可用的 C 编译器。
-- 新增或修改主题、插件后需要重新编译。
+- 新增或修改主题、插件后需要重新编译；插件使用统一构建器自动发现。
 
 ```bash
-go build -o gopherink ./cmd/gopherink
+make build
+# 等价的跨平台 Go 命令：
+go run ./cmd/gopherink-builder -o gopherink
 ./gopherink
 ```
+
+`make list-plugins` 或 `go run ./cmd/gopherink-builder -list` 会列出参与构建的插件。构建器扫描 `plugins/` 的直接子目录：目录根部必须包含至少一个非测试 `.go` 文件；目录可属于主项目 module，也可带有独立 `go.mod`。独立 module 会加入仅本次编译使用的临时 workspace，根目录 `go.mod` 和 `go.sum` 不会被改写。直接运行 `go build ./cmd/gopherink` 不执行目录发现，因此不适合构建外置插件。
 
 默认使用 HTTP 监听 `0.0.0.0:8086`，SQLite 数据库位于 `data/gopherink.db`。首次在交互式终端启动且没有配置文件、默认数据库或外部启动参数时，程序依次询问数据库、上传目录、绑定地址、是否启用 HTTPS、端口和允许网段，并把结果写入 `data/config.json`。HTTPS 默认不启用；选择启用后端口默认变为 `443`，并继续询问证书链和私钥路径。数据库连接成功后才会创建 Schema，然后进入浏览器 Web 安装流程设置站点资料和管理员。
 
@@ -262,4 +266,4 @@ printf 'new-strong-password\n' | ./gopherink user reset-password --id 1 --passwo
 4. 仅信任明确的反向代理 IP/CIDR。
 5. 根据服务器资源调整上传大小、图片处理预算和缩略图策略。
 6. 根据访问量设置公开缓存 TTL 和各类 WAF 限流。
-7. 变更插件或主题后重新编译，并在上线前验证其路由和钩子。
+7. 变更插件后先用 `make list-plugins` 核对发现结果，再重新编译，并在上线前验证其路由和钩子。
