@@ -151,7 +151,7 @@ func (Plugin) ConfigSchema() []plugin.FieldSchema {
 }
 ```
 
-站点配置保存到选项 `plugin:example` 的 JSON 中。插件路由中读取：
+站点配置保存到选项 `plugin:example` 的 JSON 中。`Runtime.Config` 返回已保存配置，并为尚未保存的字段补齐 `ConfigSchema` 声明的非空默认值。插件路由中读取：
 
 ```go
 cfg, err := rt.Config(r.Context(), "example")
@@ -165,6 +165,44 @@ prefix := cfg["prefix"]
 支持字段类型为 `text`、`password`、`textarea`、`radio`、`checkbox`、`select`、`number`、`color` 和 `image`。`FieldSchema` 还支持分组、默认值、说明、必填、条件显示、数值边界、步长、选项、适用内容类型、只读和整行宽度。条件字段使用 `ShowWhenField` 和 `ShowWhenValue` 声明依赖，`Required` 只会校验当前可见的字段。
 
 核心会自动提供 `/admin/plugins/<插件名>/config` 配置页。该页面使用后台原生 MDUI Schema 表单，并经过管理员鉴权、CSRF 校验、字段校验、持久化和统一 Snackbar 提示。需要设置页的插件应优先使用这个入口，不必注册自定义写入路由。
+
+### 设置页操作按钮
+
+设置之外的即时操作，例如测试 SMTP、验证 API 凭据或重建插件索引，应实现 `AdminActionProvider`。核心会把操作按钮放在插件配置页的“保存”按钮旁边：
+
+```go
+func (Plugin) AdminActions() []plugin.AdminAction {
+    return []plugin.AdminAction{{
+        Name:        "test-connection",
+        Label:       "测试连接",
+        Icon:        "send",
+        Variant:     "outlined",
+        Description: "使用已经保存的配置发起连接测试",
+    }}
+}
+
+func (Plugin) HandleAdminAction(ctx context.Context, rt *plugin.Runtime, action string) (plugin.AdminNotice, error) {
+    if action != "test-connection" {
+        return plugin.AdminNotice{}, fmt.Errorf("unknown action %q", action)
+    }
+    cfg, err := rt.Config(ctx, "example")
+    if err != nil {
+        return plugin.AdminNotice{}, err
+    }
+    if err := testConnection(ctx, cfg); err != nil {
+        return plugin.AdminNotice{}, fmt.Errorf("连接测试失败：%w", err)
+    }
+    return plugin.AdminNotice{
+        Type:    plugin.NoticeSuccess,
+        Mode:    plugin.NoticeSnackbar,
+        Message: "连接测试成功。",
+    }, nil
+}
+```
+
+`Name` 只能使用小写字母开头，并由小写字母、数字、`-`、`_` 组成，最长 64 个字符。`Variant` 支持 `filled`、`elevated`、`tonal`、`text` 和 `outlined`；空值或未知值会回落为 `outlined`。
+
+操作固定以 POST 请求到 `/admin/plugins/<插件名>/action/<操作名>`。核心会校验插件声明、管理员权限和 CSRF，并通过 PJAX 返回插件设置页。处理器只接收 `context.Context` 和 `Runtime`，有意不接收表单内容；动作应读取已经保存的配置，不能顺带持久化当前表单。返回的 `AdminNotice` 会按指定模式展示；返回错误时核心会自动生成错误 Snackbar。不要再为这类动作注册公开测试路由。
 
 ## 后台提示信息
 

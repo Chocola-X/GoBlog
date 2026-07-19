@@ -74,8 +74,13 @@
   {{else}}
     <span class="muted">没有可配置项目。</span>
   {{end}}
-  <div class="form-actions">
+  <div class="form-actions schema-form-actions">
     <mdui-button type="submit"><mdui-icon slot="icon" name="save"></mdui-icon>保存</mdui-button>
+    {{range .AdminActions}}
+    <mdui-button type="submit" variant="{{.Variant}}" formaction="/admin/plugins/{{$.PluginName}}/action/{{.Name}}" formmethod="post" {{if .Description}}title="{{.Description}}"{{end}}>
+      <mdui-icon slot="icon" name="{{.Icon}}"></mdui-icon>{{.Label}}
+    </mdui-button>
+    {{end}}
   </div>
 </form>
 {{with .AssetManager}}

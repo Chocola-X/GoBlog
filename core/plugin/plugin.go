@@ -379,6 +379,21 @@ type AdminNoticeProvider interface {
 	AdminNotices(context.Context, *Runtime, map[string]string) []AdminNotice
 }
 
+// AdminAction describes a POST action rendered next to a plugin's save button.
+type AdminAction struct {
+	Name        string
+	Label       string
+	Icon        string
+	Variant     string
+	Description string
+}
+
+// AdminActionProvider handles authenticated, CSRF-protected plugin settings actions.
+type AdminActionProvider interface {
+	AdminActions() []AdminAction
+	HandleAdminAction(context.Context, *Runtime, string) (AdminNotice, error)
+}
+
 type FieldType string
 
 const (

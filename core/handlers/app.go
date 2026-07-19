@@ -2628,9 +2628,53 @@ func (a *App) adminPluginRoutes(w http.ResponseWriter, r *http.Request) {
 		a.adminPluginConfig(w, r, name, false)
 	case "personal":
 		a.adminPluginConfig(w, r, name, true)
+	case "action":
+		if r.Method != http.MethodPost {
+			methodNotAllowed(w, http.MethodPost)
+			return
+		}
+		if len(parts) != 3 {
+			http.NotFound(w, r)
+			return
+		}
+		a.adminPluginAction(w, r, name, parts[2])
 	default:
 		http.NotFound(w, r)
 	}
+}
+
+func (a *App) adminPluginAction(w http.ResponseWriter, r *http.Request, name, actionName string) {
+	p, ok := a.Plugins.Plugin(name)
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	provider, ok := p.(plugin.AdminActionProvider)
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	actions := normalizeAdminActions(provider.AdminActions())
+	declared := false
+	for _, action := range actions {
+		if action.Name == actionName {
+			declared = true
+			break
+		}
+	}
+	if !declared {
+		http.NotFound(w, r)
+		return
+	}
+
+	notice, err := provider.HandleAdminAction(r.Context(), a.pluginRuntime(), actionName)
+	if err != nil {
+		notice = plugin.AdminNotice{Type: plugin.NoticeError, Mode: plugin.NoticeSnackbar, Message: err.Error()}
+	}
+	if strings.TrimSpace(notice.Message) == "" {
+		notice = plugin.AdminNotice{Type: plugin.NoticeSuccess, Mode: plugin.NoticeSnackbar, Message: "操作已完成。"}
+	}
+	a.flashRedirect(w, r, "/admin/plugins/"+neturl.PathEscape(name)+"/config", http.StatusSeeOther, notice)
 }
 
 type pluginView struct {
@@ -2738,11 +2782,15 @@ func (a *App) adminPluginConfig(w http.ResponseWriter, r *http.Request, name str
 		schema = provider.ConfigSchema()
 	}
 	var noticeProvider func(context.Context, map[string]string) []plugin.AdminNotice
+	var adminActions []plugin.AdminAction
 	if !personal {
 		if provider, ok := p.(plugin.AdminNoticeProvider); ok {
 			noticeProvider = func(ctx context.Context, values map[string]string) []plugin.AdminNotice {
 				return provider.AdminNotices(ctx, a.pluginRuntime(), copyStringMap(values))
 			}
+		}
+		if provider, ok := p.(plugin.AdminActionProvider); ok {
+			adminActions = normalizeAdminActions(provider.AdminActions())
 		}
 	}
 	key := pluginOptionKey(name)
@@ -2750,15 +2798,17 @@ func (a *App) adminPluginConfig(w http.ResponseWriter, r *http.Request, name str
 		key = pluginPersonalOptionKey(name)
 	}
 	a.schemaForm(w, r, schemaFormConfig{
-		Title:     title,
-		Template:  "schema_form.html",
-		BackURL:   "/admin/plugins",
-		OptionKey: key,
-		UserID:    userID,
-		Schema:    schema,
-		SavedURL:  r.URL.Path,
-		Saved:     r.URL.Query().Get("saved") == "1",
-		Notices:   noticeProvider,
+		Title:        title,
+		Template:     "schema_form.html",
+		BackURL:      "/admin/plugins",
+		OptionKey:    key,
+		UserID:       userID,
+		Schema:       schema,
+		SavedURL:     r.URL.Path,
+		Saved:        r.URL.Query().Get("saved") == "1",
+		Notices:      noticeProvider,
+		AdminActions: adminActions,
+		PluginName:   name,
 	})
 }
 
@@ -3008,6 +3058,8 @@ type schemaFormConfig struct {
 	UploadURL    string
 	AssetManager *settingsAssetManager
 	Notices      func(context.Context, map[string]string) []plugin.AdminNotice
+	AdminActions []plugin.AdminAction
+	PluginName   string
 }
 
 type schemaFieldView struct {
@@ -3087,6 +3139,7 @@ func (a *App) renderSchemaForm(w http.ResponseWriter, r *http.Request, cfg schem
 		"Schema": cfg.Schema, "SchemaGroups": schemaGroups(cfg.Schema, values), "Values": values,
 		"Saved": cfg.Saved, "Error": errorMessage, "UploadURL": uploadURL, "AssetManager": cfg.AssetManager,
 		"AdminNotices": notices,
+		"AdminActions": cfg.AdminActions, "PluginName": cfg.PluginName,
 	})
 }
 
@@ -8281,7 +8334,18 @@ func themeOptionKey(name string) string {
 }
 
 func (a *App) pluginConfig(ctx context.Context, name string) (map[string]string, error) {
-	return a.optionJSONForUser(ctx, pluginOptionKey(name), 0)
+	values, err := a.optionJSONForUser(ctx, pluginOptionKey(name), 0)
+	if err != nil {
+		return nil, err
+	}
+	if a.Plugins != nil {
+		if p, ok := a.Plugins.Plugin(name); ok {
+			if provider, ok := p.(plugin.ConfigProvider); ok {
+				a.applySchemaDefaults(provider.ConfigSchema(), values)
+			}
+		}
+	}
+	return values, nil
 }
 
 func (a *App) pluginRuntime() *plugin.Runtime {
@@ -8424,6 +8488,33 @@ func normalizeAdminNotices(notices []plugin.AdminNotice) []plugin.AdminNotice {
 			notice.Mode = plugin.NoticeAuto
 		}
 		out = append(out, notice)
+	}
+	return out
+}
+
+var adminActionNamePattern = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,63}$`)
+
+func normalizeAdminActions(actions []plugin.AdminAction) []plugin.AdminAction {
+	out := make([]plugin.AdminAction, 0, len(actions))
+	seen := map[string]bool{}
+	for _, action := range actions {
+		action.Name = strings.TrimSpace(action.Name)
+		action.Label = strings.TrimSpace(action.Label)
+		action.Icon = strings.TrimSpace(action.Icon)
+		action.Description = strings.TrimSpace(action.Description)
+		if !adminActionNamePattern.MatchString(action.Name) || action.Label == "" || seen[action.Name] {
+			continue
+		}
+		seen[action.Name] = true
+		if action.Icon == "" {
+			action.Icon = "play_arrow"
+		}
+		switch action.Variant {
+		case "filled", "elevated", "tonal", "text":
+		default:
+			action.Variant = "outlined"
+		}
+		out = append(out, action)
 	}
 	return out
 }
