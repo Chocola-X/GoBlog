@@ -59,6 +59,7 @@ type Runtime struct {
 	CommentByID       func(context.Context, int64) (PublicComment, error)
 	ContentURL        func(context.Context, int64) (string, error)
 	CommentURL        func(context.Context, int64) (string, error)
+	AvatarURL         func(context.Context, string, int) string
 	IncrementIntField func(context.Context, int64, string, int64) (int64, error)
 	Option            func(context.Context, string) (string, error)
 	Config            func(context.Context, string) (map[string]string, error)

@@ -93,6 +93,15 @@ https://weavatar.com/avatar/{hash}?s={size}
 
 可用占位符为 `{hash}` 和 `{size}`。评论头像还会应用头像开关和等级参数。插件可使用 `comment.avatar` 修改或清空最终 URL。
 
+插件需要把邮箱转换为与站点配置一致的头像地址时，使用 `Runtime.AvatarURL(ctx, email, size)`。该接口只接收邮箱并返回哈希化 URL，不会向插件暴露其他用户数据；站点后续修改 `avatar_url_template` 或头像等级后，插件生成的地址会同步变化。
+
+```go
+avatarURL := ""
+if rt.AvatarURL != nil {
+    avatarURL = rt.AvatarURL(ctx, comment.Mail, 72)
+}
+```
+
 不要把原始邮箱拼接进公开头像 URL；自定义模板应只使用哈希占位符。
 
 ## 用户角色

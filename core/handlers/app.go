@@ -8451,6 +8451,7 @@ func (a *App) pluginRuntime() *plugin.Runtime {
 		CommentByID:       a.Comments.CommentByIDPlugin,
 		ContentURL:        a.pluginContentURL,
 		CommentURL:        a.pluginCommentURL,
+		AvatarURL:         a.emailAvatarURL,
 		IncrementIntField: a.Contents.IncrementIntField,
 		Option:            a.Options.Get,
 		Config:            a.pluginConfig,
