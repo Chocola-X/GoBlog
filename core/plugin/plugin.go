@@ -65,12 +65,17 @@ type Runtime struct {
 	Config            func(context.Context, string) (map[string]string, error)
 	PersonalConfig    func(context.Context, string, int64) (map[string]string, error)
 	DispatchHook      func(context.Context, string, any) (HookDispatch, error)
+	ServiceAvailable  func(string) bool
+	CallService       func(context.Context, string, ...any) (any, error)
 	NotifyAdmin       func(http.ResponseWriter, *http.Request, ...AdminNotice)
 }
 
 type runtimeContextKey struct{}
 
-var ErrRuntimeUnavailable = errors.New("plugin runtime unavailable")
+var (
+	ErrRuntimeUnavailable = errors.New("plugin runtime unavailable")
+	ErrServiceUnavailable = errors.New("plugin service unavailable")
+)
 
 func ContextWithRuntime(ctx context.Context, runtime *Runtime) context.Context {
 	if runtime == nil {
@@ -88,6 +93,10 @@ func RuntimeFromContext(ctx context.Context) (*Runtime, bool) {
 }
 
 type RouteHandler func(*Runtime, http.ResponseWriter, *http.Request)
+
+// ServiceFunc exposes one named capability to other active plugins and themes.
+// Structured return values remain subject to html/template escaping in themes.
+type ServiceFunc func(context.Context, *Runtime, ...any) (any, error)
 
 type Route struct {
 	Plugin  string
@@ -535,6 +544,7 @@ type Manager struct {
 	plugins       []Plugin
 	pluginNames   map[string]Plugin
 	hooks         map[string][]ownedHook
+	services      map[string]ownedService
 	routes        []ownedRoute
 	adminMenus    []ownedAdminMenu
 	themes        map[string]Theme
@@ -548,6 +558,7 @@ var Default = NewManager()
 func NewManager() *Manager {
 	return &Manager{
 		hooks:         make(map[string][]ownedHook),
+		services:      make(map[string]ownedService),
 		themes:        make(map[string]Theme),
 		pluginNames:   make(map[string]Plugin),
 		activePlugins: make(map[string]bool),
@@ -640,6 +651,47 @@ func (m *Manager) HasActiveHook(name string) bool {
 		}
 	}
 	return false
+}
+
+// RegisterService publishes a single-owner named service from Plugin.Init.
+// Duplicate names fail during startup so callers never observe an ambiguous provider.
+func (m *Manager) RegisterService(name string, fn ServiceFunc) {
+	if name == "" {
+		panic("plugin: service name must not be empty")
+	}
+	if fn == nil {
+		panic("plugin: service handler must not be nil")
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.registering == "" {
+		panic("plugin: RegisterService must be called from Plugin.Init")
+	}
+	if _, exists := m.services[name]; exists {
+		panic("plugin: duplicate service " + name)
+	}
+	m.services[name] = ownedService{Plugin: m.registering, Fn: fn}
+}
+
+func (m *Manager) HasActiveService(name string) bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	service, ok := m.services[name]
+	return ok && (service.Plugin == "" || m.activePlugins[service.Plugin])
+}
+
+func (m *Manager) CallActiveService(ctx context.Context, runtime *Runtime, name string, args ...any) (any, error) {
+	m.mu.RLock()
+	service, ok := m.services[name]
+	active := ok && (service.Plugin == "" || m.activePlugins[service.Plugin])
+	m.mu.RUnlock()
+	if !active {
+		return nil, ErrServiceUnavailable
+	}
+	if runtime == nil {
+		return nil, ErrRuntimeUnavailable
+	}
+	return service.Fn(ContextWithRuntime(ctx, runtime), runtime, args...)
 }
 
 func (m *Manager) RegisterRoute(method, pattern string, handler RouteHandler) {
@@ -786,6 +838,11 @@ type ownedHook struct {
 	Sequence  uint64
 	Fn        HookFunc
 	RuntimeFn RuntimeHookFunc
+}
+
+type ownedService struct {
+	Plugin string
+	Fn     ServiceFunc
 }
 
 type ownedRoute struct {

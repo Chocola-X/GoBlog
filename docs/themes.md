@@ -349,7 +349,52 @@ AdjustData: func(ctx context.Context, data map[string]any) error {
 },
 ```
 
-它没有直接数据库服务句柄。需要数据库数据时，应优先由核心提供稳定模板数据，或通过插件钩子/运行时接口扩展，不要在主题中打开第二套数据库连接。
+它没有直接数据库服务句柄。需要数据库数据时，应优先由核心提供稳定模板数据，或通过插件命名服务扩展，不要在主题中打开第二套数据库连接。渲染请求的 context 包含只读插件 Runtime，可按需获取：
+
+```go
+AdjustData: func(ctx context.Context, data map[string]any) error {
+    rt, ok := plugin.RuntimeFromContext(ctx)
+    if !ok || rt.ServiceAvailable == nil || !rt.ServiceAvailable("links.list") {
+        return nil
+    }
+    links, err := rt.CallService(ctx, "links.list", 12, "friends")
+    if err != nil {
+        return err
+    }
+    data["FriendLinks"] = links
+    return nil
+},
+```
+
+这里取得的 Runtime 与插件收到的 Runtime 使用相同启停和权限边界，不会暴露核心数据库对象。
+
+## 调用插件服务
+
+主题模板可以调用已启用插件通过 `RegisterService` 公开的命名服务。核心保留两个模板函数：
+
+- `pluginServiceAvailable "name"`：服务存在且所属插件已启用时返回 `true`。
+- `pluginCall "name" arg...`：调用服务并返回结构化结果；失败会终止模板渲染。
+
+以友情链接插件提供的 `links.list` 为例：
+
+```gotemplate
+{{if pluginServiceAvailable "links.list"}}
+  <ul class="friend-links">
+    {{range pluginCall "links.list" 12 "friends"}}
+      <li>
+        <a href="{{.URL}}" target="_blank" rel="noopener noreferrer">
+          {{.Name}}
+        </a>
+        {{with .Description}}<span>{{.}}</span>{{end}}
+      </li>
+    {{end}}
+  </ul>
+{{end}}
+```
+
+主题应始终先检查服务是否可用，使插件停用或未编译时页面仍可渲染。服务返回的普通字符串和结构字段继续由 `html/template` 自动转义；只有插件明确返回 `template.HTML` 的内容才会作为 HTML 输出，因此主题不应再用 `safeHTML` 绕过未知插件数据的转义。
+
+这套接口适合查询型能力，不取代 `frontend.head`、`frontend.footer` 等事件钩子。命名服务不会产生新 URL，也不会改变主题的静态资源挂载方式。
 
 ## 前端注入钩子
 

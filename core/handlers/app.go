@@ -7340,6 +7340,7 @@ func (a *App) renderThemeStatus(w http.ResponseWriter, r *http.Request, page str
 		return
 	}
 	lang := a.option(r.Context(), "site_language", "zh-CN")
+	pluginRuntime := a.pluginRuntime()
 	funcs := template.FuncMap{
 		"date": func(ts int64) string { return a.formatDate(r.Context(), ts, "post_date_format") },
 		"T":    func(key string) string { return i18n.T(lang, key) },
@@ -7373,6 +7374,16 @@ func (a *App) renderThemeStatus(w http.ResponseWriter, r *http.Request, page str
 	for name, fn := range theme.Funcs {
 		funcs[name] = fn
 	}
+	// These names are reserved core bridges so themes cannot bypass plugin state checks.
+	funcs["pluginServiceAvailable"] = func(name string) bool {
+		return pluginRuntime.ServiceAvailable != nil && pluginRuntime.ServiceAvailable(name)
+	}
+	funcs["pluginCall"] = func(name string, args ...any) (any, error) {
+		if pluginRuntime.CallService == nil {
+			return nil, plugin.ErrServiceUnavailable
+		}
+		return pluginRuntime.CallService(r.Context(), name, args...)
+	}
 	tmpl, err := template.New("base.html").Funcs(funcs).ParseFS(theme.Templates, "templates/base.html", "templates/"+page)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -7384,7 +7395,8 @@ func (a *App) renderThemeStatus(w http.ResponseWriter, r *http.Request, page str
 		data["ThemeConfig"] = themeConfig
 	}
 	if theme.AdjustData != nil {
-		if err := theme.AdjustData(r.Context(), data); err != nil {
+		themeContext := plugin.ContextWithRuntime(r.Context(), pluginRuntime)
+		if err := theme.AdjustData(themeContext, data); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
@@ -8460,6 +8472,10 @@ func (a *App) pluginRuntime() *plugin.Runtime {
 	}
 	runtime.DispatchHook = func(ctx context.Context, name string, payload any) (plugin.HookDispatch, error) {
 		return a.Plugins.DispatchActive(plugin.ContextWithRuntime(ctx, runtime), name, payload)
+	}
+	runtime.ServiceAvailable = a.Plugins.HasActiveService
+	runtime.CallService = func(ctx context.Context, name string, args ...any) (any, error) {
+		return a.Plugins.CallActiveService(ctx, runtime, name, args...)
 	}
 	return runtime
 }
