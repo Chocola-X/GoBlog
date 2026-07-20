@@ -58,7 +58,7 @@ func filterTitle(ctx context.Context, value any) (any, error) {
 插件目录根部存在非测试 Go 文件即可被发现。普通目录直接属于 GopherInk module；需要作为独立仓库发布时，也可以在插件目录放置自己的 `go.mod`。检查并构建：
 
 ```bash
-make list-plugins
+make list-components
 make build
 ```
 
@@ -860,5 +860,5 @@ func countView(rt *plugin.Runtime, w http.ResponseWriter, r *http.Request) {
 6. 上传存储插件同时处理替换、删除、URL和缩略图数据。
 7. 插件路由明确方法、输入上限、Content-Type、认证和 CSRF 边界。
 8. 监听自动保存和发布时检查 `Operation`，避免重复外发任务。
-9. 修改源码后先确认 `make list-plugins` 能发现插件，再重新编译；后台启停不能加载新代码。
+9. 修改源码后先确认 `make list-components` 能发现插件，再重新编译；后台启停不能加载新代码。
 10. 新公开路由在 WAF 开启状态下验证限流、404和缓存行为。

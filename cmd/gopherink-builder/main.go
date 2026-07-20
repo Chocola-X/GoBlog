@@ -13,9 +13,9 @@ import (
 	"strings"
 )
 
-const generatedPluginFile = "zz_plugins_autoload.go"
+const generatedPluginFile = "zz_components_autoload.go"
 
-type discoveredPlugin struct {
+type discoveredPackage struct {
 	Directory  string
 	ImportPath string
 	ModuleDir  string
@@ -32,7 +32,7 @@ func main() {
 	)
 	flag.StringVar(&output, "o", "gopherink", "output binary path")
 	flag.StringVar(&tags, "tags", "", "comma-separated Go build tags")
-	flag.BoolVar(&listOnly, "list", false, "list discovered plugins without building")
+	flag.BoolVar(&listOnly, "list", false, "list discovered plugins and themes without building")
 	flag.BoolVar(&verbose, "v", false, "print packages while building")
 	flag.BoolVar(&trimPath, "trimpath", false, "remove local file system paths from the binary")
 	flag.BoolVar(&raceEnabled, "race", false, "enable the Go race detector")
@@ -53,12 +53,19 @@ func run(output, tags string, listOnly, verbose, trimPath, raceEnabled bool) err
 	if err != nil {
 		return fmt.Errorf("read root module: %w", err)
 	}
-	plugins, err := discoverPlugins(root, rootModule)
+	plugins, err := discoverPackages(root, rootModule, "plugins", false)
+	if err != nil {
+		return err
+	}
+	themes, err := discoverPackages(root, rootModule, "themes", true)
 	if err != nil {
 		return err
 	}
 	for _, item := range plugins {
 		fmt.Printf("plugin: %s (%s)\n", item.Directory, item.ImportPath)
+	}
+	for _, item := range themes {
+		fmt.Printf("theme: %s (%s)\n", item.Directory, item.ImportPath)
 	}
 	if listOnly {
 		return nil
@@ -74,16 +81,19 @@ func run(output, tags string, listOnly, verbose, trimPath, raceEnabled bool) err
 	defer os.RemoveAll(buildDir)
 
 	generatedPath := filepath.Join(root, "cmd", "gopherink", generatedPluginFile)
-	if err := os.Remove(generatedPath); err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("remove stale generated plugin imports: %w", err)
+	for _, name := range []string{generatedPluginFile, "zz_plugins_autoload.go"} {
+		stalePath := filepath.Join(root, "cmd", "gopherink", name)
+		if err := os.Remove(stalePath); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("remove stale generated component imports: %w", err)
+		}
 	}
 	defer os.Remove(generatedPath)
-	if err := writePluginImports(generatedPath, plugins); err != nil {
+	if err := writeComponentImports(generatedPath, plugins, themes); err != nil {
 		return err
 	}
 
 	workspacePath := filepath.Join(buildDir, "go.work")
-	if err := writeWorkspace(workspacePath, root, plugins); err != nil {
+	if err := writeWorkspace(workspacePath, root, plugins, themes); err != nil {
 		return err
 	}
 
@@ -136,45 +146,51 @@ func projectRoot() (string, error) {
 	}
 }
 
-func discoverPlugins(root, rootModule string) ([]discoveredPlugin, error) {
-	pluginsDir := filepath.Join(root, "plugins")
-	entries, err := os.ReadDir(pluginsDir)
+func discoverPackages(root, rootModule, folder string, requireAtLeastOne bool) ([]discoveredPackage, error) {
+	baseDir := filepath.Join(root, folder)
+	entries, err := os.ReadDir(baseDir)
 	if err != nil {
-		return nil, fmt.Errorf("read plugins directory: %w", err)
+		if os.IsNotExist(err) && !requireAtLeastOne {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("read %s directory: %w", folder, err)
 	}
-	plugins := make([]discoveredPlugin, 0, len(entries))
+	packages := make([]discoveredPackage, 0, len(entries))
 	for _, entry := range entries {
 		name := entry.Name()
 		if !entry.IsDir() || strings.HasPrefix(name, ".") || strings.HasPrefix(name, "_") {
 			continue
 		}
-		dir := filepath.Join(pluginsDir, name)
+		dir := filepath.Join(baseDir, name)
 		hasSource, err := hasRootGoSource(dir)
 		if err != nil {
-			return nil, fmt.Errorf("inspect plugin %s: %w", name, err)
+			return nil, fmt.Errorf("inspect %s %s: %w", strings.TrimSuffix(folder, "s"), name, err)
 		}
 		if !hasSource {
 			continue
 		}
 
-		item := discoveredPlugin{Directory: name}
+		item := discoveredPackage{Directory: name}
 		if info, statErr := os.Stat(filepath.Join(dir, "go.mod")); statErr == nil && !info.IsDir() {
 			item.ImportPath, err = modulePath(dir)
 			if err != nil {
-				return nil, fmt.Errorf("read plugin module %s: %w", name, err)
+				return nil, fmt.Errorf("read %s module %s: %w", strings.TrimSuffix(folder, "s"), name, err)
 			}
 			item.ModuleDir = dir
 		} else if statErr != nil && !os.IsNotExist(statErr) {
-			return nil, fmt.Errorf("inspect plugin module %s: %w", name, statErr)
+			return nil, fmt.Errorf("inspect %s module %s: %w", strings.TrimSuffix(folder, "s"), name, statErr)
 		} else {
-			item.ImportPath = strings.TrimRight(rootModule, "/") + "/plugins/" + name
+			item.ImportPath = strings.TrimRight(rootModule, "/") + "/" + folder + "/" + name
 		}
-		plugins = append(plugins, item)
+		packages = append(packages, item)
 	}
-	sort.Slice(plugins, func(i, j int) bool {
-		return plugins[i].ImportPath < plugins[j].ImportPath
+	sort.Slice(packages, func(i, j int) bool {
+		return packages[i].ImportPath < packages[j].ImportPath
 	})
-	return plugins, nil
+	if requireAtLeastOne && len(packages) == 0 {
+		return nil, fmt.Errorf("%s directory must contain at least one buildable package", folder)
+	}
+	return packages, nil
 }
 
 func hasRootGoSource(dir string) (bool, error) {
@@ -209,13 +225,18 @@ func modulePath(dir string) (string, error) {
 	return path, nil
 }
 
-func writePluginImports(path string, plugins []discoveredPlugin) error {
+func writeComponentImports(path string, plugins, themes []discoveredPackage) error {
 	var source bytes.Buffer
 	source.WriteString("// Code generated by gopherink-builder; DO NOT EDIT.\n\n")
 	source.WriteString("package main\n\n")
-	if len(plugins) > 0 {
+	if len(plugins)+len(themes) > 0 {
 		source.WriteString("import (\n")
 		for _, item := range plugins {
+			source.WriteString("\t_ ")
+			source.WriteString(strconv.Quote(item.ImportPath))
+			source.WriteByte('\n')
+		}
+		for _, item := range themes {
 			source.WriteString("\t_ ")
 			source.WriteString(strconv.Quote(item.ImportPath))
 			source.WriteByte('\n')
@@ -224,15 +245,15 @@ func writePluginImports(path string, plugins []discoveredPlugin) error {
 	}
 	formatted, err := format.Source(source.Bytes())
 	if err != nil {
-		return fmt.Errorf("format generated plugin imports: %w", err)
+		return fmt.Errorf("format generated component imports: %w", err)
 	}
 	if err := os.WriteFile(path, formatted, 0o644); err != nil {
-		return fmt.Errorf("write generated plugin imports: %w", err)
+		return fmt.Errorf("write generated component imports: %w", err)
 	}
 	return nil
 }
 
-func writeWorkspace(path, root string, plugins []discoveredPlugin) error {
+func writeWorkspace(path, root string, packageGroups ...[]discoveredPackage) error {
 	version, err := goVersion(root)
 	if err != nil {
 		return err
@@ -240,14 +261,16 @@ func writeWorkspace(path, root string, plugins []discoveredPlugin) error {
 	workspaceDir := filepath.Dir(path)
 	modules := []string{root}
 	seen := map[string]bool{filepath.Clean(root): true}
-	for _, item := range plugins {
-		if item.ModuleDir == "" {
-			continue
-		}
-		clean := filepath.Clean(item.ModuleDir)
-		if !seen[clean] {
-			seen[clean] = true
-			modules = append(modules, clean)
+	for _, packages := range packageGroups {
+		for _, item := range packages {
+			if item.ModuleDir == "" {
+				continue
+			}
+			clean := filepath.Clean(item.ModuleDir)
+			if !seen[clean] {
+				seen[clean] = true
+				modules = append(modules, clean)
+			}
 		}
 	}
 	sort.Strings(modules)

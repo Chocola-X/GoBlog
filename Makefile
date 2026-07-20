@@ -2,10 +2,12 @@ GO ?= go
 OUTPUT ?= gopherink
 BUILDER_FLAGS ?=
 
-.PHONY: build list-plugins
+.PHONY: build list-components list-plugins
 
 build:
 	$(GO) run ./cmd/gopherink-builder -o "$(OUTPUT)" $(BUILDER_FLAGS)
 
-list-plugins:
+list-components:
 	$(GO) run ./cmd/gopherink-builder -list
+
+list-plugins: list-components

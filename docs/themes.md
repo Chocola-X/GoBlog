@@ -2,7 +2,9 @@
 
 ## 加载模型
 
-主题是编译进 GopherInk 的 Go 包。主题包在 `init` 中调用 `plugin.RegisterTheme`，并在 `cmd/gopherink/plugins.go` 通过空白导入参与构建。新增或修改主题后必须重新编译并重启。
+主题是编译进 GopherInk 的 Go 包。主题包在 `init` 中调用 `plugin.RegisterTheme`，统一构建器会扫描 `themes/` 的直接子目录并生成临时空白导入。新增、删除或修改主题后必须重新编译并重启。
+
+`themes/` 必须至少包含一个可构建主题包；可以删除默认主题，只保留第三方主题进行编译。主题目录可以属于主项目 module，也可以自带独立 `go.mod`。
 
 后台“主题”页面只能在已编译主题之间切换，不支持上传压缩包后热加载源码。
 
@@ -56,11 +58,7 @@ func init() {
 }
 ```
 
-然后在 `cmd/gopherink/plugins.go` 加入：
-
-```go
-_ "github.com/Chocola-X/GopherInk/themes/example"
-```
+把主题目录放入 `themes/` 后执行 `make build` 或 `go run ./cmd/gopherink-builder -o gopherink` 即可参与构建，不需要手动修改 `cmd/gopherink/plugins.go`。
 
 ## 主题设置提示
 

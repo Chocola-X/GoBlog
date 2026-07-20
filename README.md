@@ -31,7 +31,7 @@
 
 插件优先级、接管信号，以及内容、评论、附件的生命周期和字段扩展接口见 [插件与钩子开发](docs/plugins-and-hooks.md)。架构、配置、主题、安全和兼容接口等开发说明见 [开发文档目录](docs/README.md)。
 
-插件和主题采用构建时集成：每次新增或修改源码后都需要重新编译并重启，后台启停不会热加载代码。统一构建器会自动发现 `plugins/` 下的插件目录，主题仍由主程序显式登记。
+插件和主题采用构建时集成：每次新增或修改源码后都需要重新编译并重启，后台启停不会热加载代码。统一构建器会自动发现 `plugins/` 下的插件目录和 `themes/` 下的主题目录；插件目录可以为空，主题目录必须至少包含一个可构建主题。
 
 ## 快速开始
 
@@ -43,7 +43,7 @@ make build
 go run ./cmd/gopherink-builder -o gopherink
 ```
 
-构建器会列出并自动导入 `plugins/` 的直接子目录，支持主项目内的普通包和自带 `go.mod` 的独立插件仓库。可先运行 `make list-plugins` 核对发现结果。直接执行 `go build ./cmd/gopherink` 不会扫描目录，只包含源码中显式导入的内置组件。
+构建器会列出并自动导入 `plugins/` 与 `themes/` 的直接子目录，支持主项目内的普通包和自带 `go.mod` 的独立扩展仓库。可先运行 `make list-components` 核对发现结果。直接执行 `go build ./cmd/gopherink` 不会扫描目录，只包含源码中显式导入的组件。
 
 > SQLite 驱动依赖 CGO，编译时需要安装 C 编译器（如 `gcc`）。
 
@@ -137,12 +137,12 @@ postgres://user:password@127.0.0.1:5432/gopherink?sslmode=disable
 
 ```
 GopherInk/
-├── cmd/gopherink-builder/      # 自动发现插件并构建主程序
+├── cmd/gopherink-builder/      # 自动发现插件和主题并构建主程序
 ├── cmd/gopherink/              # 程序入口
 │   ├── main.go                 # 命令分发、服务初始化和监听
 │   ├── runtime_config.go       # JSON 配置、环境变量、CLI 和首次引导
 │   ├── user_commands.go        # 用户列表和密码重置应急命令
-│   └── plugins.go              # 内置插件/主题注册（空白导入）
+│   └── plugins.go              # 构建器生成空白导入时的包占位
 ├── admin/                   # 后台管理界面
 │   ├── embed.go             # embed.FS 嵌入声明
 │   ├── assets/              # 后台静态资源
