@@ -513,6 +513,12 @@ type ContentFieldsProvider interface {
 	ContentFieldSchema() []FieldSchema
 }
 
+type CommentBadge struct {
+	Label string
+	Icon  string
+	Tone  string
+}
+
 type Theme struct {
 	Name                  string
 	DisplayName           string
@@ -531,6 +537,7 @@ type Theme struct {
 	AdminPages            []AdminPage
 	RenderAdminPage       func(context.Context, *Runtime, string, AdminPageRenderContext) (template.HTML, error)
 	HandleAdminPageAction func(context.Context, *Runtime, string, map[string][]string) (AdminPageActionResult, error)
+	CommentBadges         func(context.Context, *Runtime, map[string]string, []PublicComment) map[int64]CommentBadge
 	Capabilities          ThemeCapabilities
 	AdjustData            func(context.Context, map[string]any) error
 	EditableDir           string

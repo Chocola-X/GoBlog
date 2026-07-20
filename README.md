@@ -529,7 +529,7 @@ type Plugin interface {
 | 分组 | 配置项 | 说明 |
 |------|--------|------|
 | 资料卡 | `display_name` | 资料卡名称（留空用站点标题） |
-| | `profile_email` | Gravatar 邮箱 |
+| | `profile_email` | 头像邮箱（使用 CMS 统一邮箱头像设置） |
 | | `profile_avatar` | 自定义头像 URL |
 | | `bio` | 资料卡描述（留空用站点描述） |
 | 配色和透明度 | `primary_preset` | 预设主题色（10 种） |
@@ -570,8 +570,7 @@ type Plugin interface {
 |------|------|
 | `themeValue(values, key, fallback...)` | 获取主题配置值 |
 | `themeOpacity(values, key, fallback)` | 获取透明度值（0-1 钳制） |
-| `gravatar(email, size)` | 生成 Gravatar URL（MD5, identicon 回退） |
-| `avatarURL(values, email, size)` | 优先自定义头像，否则 Gravatar |
+| `emailAvatarURL(email, size)` | 按 CMS 统一设置生成邮箱头像 URL |
 | `assetURL(value)` | 资源 URL 处理 |
 | `safeHTML(value)` | 标记为安全 HTML |
 | `readingTime(text)` | 阅读时间估算（400 字/分钟） |

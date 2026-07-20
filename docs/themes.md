@@ -105,6 +105,7 @@ plugin.RegisterTheme(plugin.Theme{
 | `AdminPages` | 主题设置页中的原生附加选项卡 |
 | `RenderAdminPage` | 渲染附加选项卡的可信后台 HTML |
 | `HandleAdminPageAction` | 处理附加选项卡经过鉴权和 CSRF 校验的 POST 操作 |
+| `CommentBadges` | 批量生成主题评论头像标志，不改变核心评论对象 |
 | `Capabilities` | 声明主题实现的核心协议能力 |
 | `AdjustData` | 渲染模板前补充或修改数据 |
 | `EditableDir` | 非嵌入主题允许编辑的目录 |
@@ -143,7 +144,19 @@ plugin.RegisterTheme(plugin.Theme{
 
 选项卡地址由核心生成，为 `/admin/themes/<主题名>/config?tab=<页面名>`。`ConfigPatch` 只覆盖返回的键，普通 Schema 设置保存时也会保留附加页面管理的键。回调输出属于编译进程序的可信主题代码，但仍应使用 `html/template` 渲染外部数据；不要把用户输入直接拼进 `template.HTML`。
 
-默认主题的友链功能使用这一接口，将目标独立页面、是否乱序和友链 JSON 保存在 `theme:default` 配置中，不修改内容自定义字段或核心数据库结构。目标页面支持 CID、自定义 slug、`/page/slug.html` 和完整页面 URL，且保存时必须解析为已发布独立页面。邮箱仅用于服务端生成头像和匹配评论身份，不应写入公开页面。
+默认主题的友链功能使用这一接口，将目标独立页面、是否乱序和友链 JSON 保存在 `theme:default` 配置中，不修改内容自定义字段或核心数据库结构。目标页面支持 CID、自定义 slug、`/page/slug.html` 和完整页面 URL，且保存时必须解析为已发布独立页面。每条友链必须填写邮箱或图标 URL；显式图标优先，留空时通过统一邮箱头像接口生成。邮箱还用于匹配评论身份，不应写入公开页面。
+
+## 统一邮箱头像
+
+主题模板通过核心保留函数 `emailAvatarURL` 把邮箱转换为头像地址：
+
+```gotemplate
+<img src="{{emailAvatarURL .ProfileEmail 160}}" alt="">
+```
+
+该函数与插件的 `Runtime.AvatarURL(ctx, email, size)` 使用同一实现，会统一应用后台“自定义邮箱获取头像的替换链接”、`{hash}`、`{size}` 和头像等级设置。主题不应自行计算 MD5 或硬编码 Gravatar 域名。需要允许用户直接指定图片时，先判断显式图片 URL，留空后再调用 `emailAvatarURL`。
+
+`CommentBadges` 在一次请求中接收当前页面的评论副本，可以按邮箱或作者身份返回以评论 ID 为键的 `CommentBadge`。默认主题使用它显示博主和友链好友标志。回调应批量处理，避免逐条评论查询数据库。
 
 ## 评论守卫
 

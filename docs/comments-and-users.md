@@ -95,6 +95,8 @@ https://weavatar.com/avatar/{hash}?s={size}
 
 插件需要把邮箱转换为与站点配置一致的头像地址时，使用 `Runtime.AvatarURL(ctx, email, size)`。该接口只接收邮箱并返回哈希化 URL，不会向插件暴露其他用户数据；站点后续修改 `avatar_url_template` 或头像等级后，插件生成的地址会同步变化。
 
+主题 Go 代码同样通过请求 context 中的 `Runtime.AvatarURL` 调用；主题模板直接使用 `emailAvatarURL(email, size)`。后台模板使用 `adminAvatarURL`。三者最终都进入核心的同一头像地址生成逻辑。
+
 ```go
 avatarURL := ""
 if rt.AvatarURL != nil {

@@ -1358,6 +1358,7 @@ html.mdui-theme-dark .post-content table tr:nth-child(even) td {
 }
 
 .comment-header {
+  position: relative;
   display: grid;
   grid-template-columns: 50px minmax(0, 1fr);
   align-items: center;
@@ -1372,16 +1373,10 @@ html.mdui-theme-dark .post-content table tr:nth-child(even) td {
   border-radius: 50%;
 }
 
-.comment-avatar-wrap {
-  position: relative;
-  width: 50px;
-  height: 50px;
-}
-
 .comment-avatar-badge {
   position: absolute;
-  right: -3px;
-  bottom: -3px;
+  top: 33px;
+  left: 33px;
   display: grid;
   width: 20px;
   height: 20px;

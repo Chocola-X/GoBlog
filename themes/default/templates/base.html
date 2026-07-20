@@ -64,7 +64,7 @@
 
   <div class="drawer-overlay" aria-hidden="true"></div>
   <aside class="mdui-drawer drawer" aria-label="站点导航">
-    <div class="drawer-img"><img src="{{avatarURL .ThemeConfig .ProfileEmail 128}}" alt=""></div>
+    <div class="drawer-img"><img src="{{with assetURL (themeValue .ThemeConfig "profile_avatar")}}{{.}}{{else}}{{emailAvatarURL (themeValue .ThemeConfig "profile_email" .ProfileEmail) 128}}{{end}}" alt=""></div>
     <div class="drawer-contact">
       <strong>{{themeValue .ThemeConfig "display_name" (index .Site "site_title")}}</strong>
       <span>{{themeValue .ThemeConfig "bio" (index .Site "site_description")}}</span>
@@ -102,7 +102,7 @@
       <section class="mdui-card mdui-hoverable sidebar-info">
         <div class="sidebar-info-img">
           <div class="sidebar-info-bg"{{with assetURL (themeValue .ThemeConfig "sidebar_image")}} style="--sidebar-bg-image: url('{{.}}')"{{end}}></div>
-          <img class="sidebar-avatar" src="{{avatarURL .ThemeConfig .ProfileEmail 160}}" alt="">
+          <img class="sidebar-avatar" src="{{with assetURL (themeValue .ThemeConfig "profile_avatar")}}{{.}}{{else}}{{emailAvatarURL (themeValue .ThemeConfig "profile_email" .ProfileEmail) 160}}{{end}}" alt="">
         </div>
         <div class="sidebar-info-body">
           <div class="sidebar-info-name">{{themeValue .ThemeConfig "display_name" (index .Site "site_title")}}</div>

@@ -30,6 +30,7 @@ type friendLink struct {
 	Description string `json:"description"`
 	URL         string `json:"url"`
 	Email       string `json:"email"`
+	IconURL     string `json:"icon_url,omitempty"`
 }
 
 type friendLinkView struct {
@@ -47,13 +48,6 @@ type friendAdminPageData struct {
 	TargetTitle  string
 	TargetURL    string
 	TargetNotice string
-}
-
-type commentTemplateData struct {
-	Comment      any
-	Friend       bool
-	Owner        bool
-	FriendEmails map[string]bool
 }
 
 type friendPageTarget struct {
@@ -133,7 +127,8 @@ func friendLinksFromForm(form map[string][]string) ([]friendLink, error) {
 	descriptions := form["friend_description"]
 	urls := form["friend_url"]
 	emails := form["friend_email"]
-	if len(names) != len(descriptions) || len(names) != len(urls) || len(names) != len(emails) {
+	iconURLs := form["friend_icon_url"]
+	if len(names) != len(descriptions) || len(names) != len(urls) || len(names) != len(emails) || len(names) != len(iconURLs) {
 		return nil, fmt.Errorf("友链表单数据不完整，请刷新页面后重试")
 	}
 	if len(names) > maxFriendLinks {
@@ -146,6 +141,7 @@ func friendLinksFromForm(form map[string][]string) ([]friendLink, error) {
 			Description: strings.TrimSpace(descriptions[i]),
 			URL:         strings.TrimSpace(urls[i]),
 			Email:       strings.ToLower(strings.TrimSpace(emails[i])),
+			IconURL:     strings.TrimSpace(iconURLs[i]),
 		}
 		position := i + 1
 		switch {
@@ -159,8 +155,12 @@ func friendLinksFromForm(form map[string][]string) ([]friendLink, error) {
 			return nil, fmt.Errorf("第 %d 条友链的描述不能超过 250 个字符", position)
 		case !validFriendURL(link.URL):
 			return nil, fmt.Errorf("第 %d 条友链的 URL 必须是有效的 HTTP 或 HTTPS 地址", position)
-		case !validFriendEmail(link.Email):
+		case link.Email == "" && link.IconURL == "":
+			return nil, fmt.Errorf("第 %d 条友链必须填写邮箱或友链图标 URL", position)
+		case link.Email != "" && !validFriendEmail(link.Email):
 			return nil, fmt.Errorf("第 %d 条友链的邮箱格式不正确", position)
+		case link.IconURL != "" && !validFriendIconURL(link.IconURL):
+			return nil, fmt.Errorf("第 %d 条友链的图标 URL 格式不正确", position)
 		}
 		links = append(links, link)
 	}
@@ -181,6 +181,18 @@ func validFriendEmail(value string) bool {
 	}
 	address, err := mail.ParseAddress(value)
 	return err == nil && strings.EqualFold(address.Address, value)
+}
+
+func validFriendIconURL(value string) bool {
+	if len(value) > 2048 {
+		return false
+	}
+	value = strings.ReplaceAll(strings.TrimSpace(value), "{random}", "1")
+	if strings.HasPrefix(value, "/") && !strings.HasPrefix(value, "//") {
+		parsed, err := url.ParseRequestURI(value)
+		return err == nil && parsed.Path != ""
+	}
+	return validFriendURL(value)
 }
 
 func decodeFriendLinks(raw string) ([]friendLink, error) {
@@ -275,14 +287,6 @@ func friendPageTargetMatches(content models.Content, value string) bool {
 func adjustDefaultThemeData(ctx context.Context, data map[string]any) error {
 	config, _ := data["ThemeConfig"].(map[string]string)
 	links, _ := decodeFriendLinks(config[friendLinksKey])
-	emails := make(map[string]bool, len(links))
-	for _, link := range links {
-		if email := strings.ToLower(strings.TrimSpace(link.Email)); email != "" {
-			emails[email] = true
-		}
-	}
-	data["FriendEmails"] = emails
-
 	content, ok := data["Post"].(models.Content)
 	if !ok || content.Type != models.ContentTypePage || !friendPageTargetMatches(content, config[friendPageTargetKey]) {
 		return nil
@@ -291,7 +295,9 @@ func adjustDefaultThemeData(ctx context.Context, data map[string]any) error {
 	runtime, _ := plugin.RuntimeFromContext(ctx)
 	for _, link := range links {
 		view := friendLinkView{Name: link.Name, Description: link.Description, URL: link.URL}
-		if runtime != nil && runtime.AvatarURL != nil {
+		if link.IconURL != "" {
+			view.AvatarURL = assetURL(link.IconURL)
+		} else if runtime != nil && runtime.AvatarURL != nil {
 			view.AvatarURL = runtime.AvatarURL(ctx, link.Email, 160)
 		}
 		views = append(views, view)
@@ -304,13 +310,24 @@ func adjustDefaultThemeData(ctx context.Context, data map[string]any) error {
 	return nil
 }
 
-func newCommentTemplateData(comment any, mail string, authorID, ownerID int64, friendEmails map[string]bool) commentTemplateData {
-	return commentTemplateData{
-		Comment:      comment,
-		Friend:       friendEmails[strings.ToLower(strings.TrimSpace(mail))],
-		Owner:        authorID > 0 && authorID == ownerID,
-		FriendEmails: friendEmails,
+func friendCommentBadges(_ context.Context, _ *plugin.Runtime, config map[string]string, comments []plugin.PublicComment) map[int64]plugin.CommentBadge {
+	links, _ := decodeFriendLinks(config[friendLinksKey])
+	emails := make(map[string]bool, len(links))
+	for _, link := range links {
+		if email := strings.ToLower(strings.TrimSpace(link.Email)); email != "" {
+			emails[email] = true
+		}
 	}
+	badges := make(map[int64]plugin.CommentBadge)
+	for _, comment := range comments {
+		switch {
+		case comment.AuthorID > 0 && comment.AuthorID == comment.OwnerID:
+			badges[comment.COID] = plugin.CommentBadge{Label: "博主", Icon: "bolt", Tone: "owner"}
+		case emails[strings.ToLower(strings.TrimSpace(comment.Mail))]:
+			badges[comment.COID] = plugin.CommentBadge{Label: "好朋友", Icon: "bolt", Tone: "friend"}
+		}
+	}
+	return badges
 }
 
 func firstFriendFormValue(form map[string][]string, name string) string {

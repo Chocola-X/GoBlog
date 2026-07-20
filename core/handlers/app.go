@@ -5328,7 +5328,7 @@ func (a *App) commentsForPost(r *http.Request, post models.Content) ([]commentVi
 	} else if maxLevel > 7 {
 		maxLevel = 7
 	}
-	views := a.commentViews(r, comments, roots[start:end], maxLevel)
+	views := a.commentViews(r, comments, roots[start:end], maxLevel, a.themeCommentBadges(r.Context(), comments))
 	pager := commentPagination{
 		Page:       page,
 		PageSize:   pageSize,
@@ -5342,7 +5342,7 @@ func (a *App) commentsForPost(r *http.Request, post models.Content) ([]commentVi
 	return views, pager, nil
 }
 
-func (a *App) commentViews(r *http.Request, comments []models.Comment, roots []models.Comment, maxLevel int) []commentView {
+func (a *App) commentViews(r *http.Request, comments []models.Comment, roots []models.Comment, maxLevel int, badges map[int64]plugin.CommentBadge) []commentView {
 	children := make(map[int64][]models.Comment)
 	byID := make(map[int64]models.Comment)
 	for _, comment := range comments {
@@ -5357,7 +5357,7 @@ func (a *App) commentViews(r *http.Request, comments []models.Comment, roots []m
 		if maxLevel > 0 && displayLevel >= maxLevel {
 			displayLevel = maxLevel - 1
 		}
-		view := a.commentView(r, comment, displayLevel)
+		view := a.commentView(r, comment, displayLevel, badges[comment.COID])
 		if parent, ok := byID[comment.Parent]; ok {
 			view.ParentAuthor = parent.Author
 			view.ParentAnchor = fmt.Sprintf("comment-%d", parent.COID)
@@ -5374,7 +5374,7 @@ func (a *App) commentViews(r *http.Request, comments []models.Comment, roots []m
 	return out
 }
 
-func (a *App) commentView(r *http.Request, comment models.Comment, level int) commentView {
+func (a *App) commentView(r *http.Request, comment models.Comment, level int, badge plugin.CommentBadge) commentView {
 	comment = a.filterComment(r.Context(), comment)
 	return commentView{
 		Comment:    comment,
@@ -5385,7 +5385,30 @@ func (a *App) commentView(r *http.Request, comment models.Comment, level int) co
 		ReplyURL:   commentReplyURL(r, comment.COID),
 		Anchor:     fmt.Sprintf("comment-%d", comment.COID),
 		Pending:    comment.Status == "waiting",
+		Badge:      badge,
 	}
+}
+
+func (a *App) themeCommentBadges(ctx context.Context, comments []models.Comment) map[int64]plugin.CommentBadge {
+	theme, ok := a.activeTheme(ctx)
+	if !ok || theme.CommentBadges == nil || len(comments) == 0 {
+		return nil
+	}
+	config, err := a.themeConfig(ctx, theme.Name)
+	if err != nil {
+		return nil
+	}
+	publicComments := make([]plugin.PublicComment, 0, len(comments))
+	for _, comment := range comments {
+		publicComments = append(publicComments, plugin.PublicComment{
+			COID: comment.COID, CID: comment.CID, Created: comment.Created, Author: comment.Author,
+			AuthorID: comment.AuthorID, OwnerID: comment.OwnerID, Mail: comment.Mail, URL: comment.URL,
+			IP: comment.IP, Agent: comment.Agent, Text: comment.Text, Type: comment.Type,
+			Status: comment.Status, Parent: comment.Parent,
+		})
+	}
+	runtime := a.pluginRuntime()
+	return theme.CommentBadges(plugin.ContextWithRuntime(ctx, runtime), runtime, config, publicComments)
 }
 
 func (a *App) relatedPosts(ctx context.Context, post models.Content, categories, tags []models.Meta, limit int) ([]models.Content, error) {
@@ -6663,6 +6686,7 @@ type commentView struct {
 	ReplyURL      string
 	Anchor        string
 	Pending       bool
+	Badge         plugin.CommentBadge
 }
 
 type publicCommentIdentity struct {
@@ -7121,14 +7145,6 @@ func (a *App) commentFormAvatar(ctx context.Context, size int) commentFormAvatar
 	}
 }
 
-func adminAvatarURL(mail string, size int) string {
-	if size <= 0 {
-		size = 96
-	}
-	sum := md5.Sum([]byte(strings.ToLower(strings.TrimSpace(mail))))
-	return "https://www.gravatar.com/avatar/" + hex.EncodeToString(sum[:]) + "?s=" + strconv.Itoa(size) + "&d=mp&r=g"
-}
-
 func (a *App) publicCommentIdentity(r *http.Request) publicCommentIdentity {
 	user, ok := a.currentUser(r)
 	if !ok {
@@ -7475,6 +7491,9 @@ func (a *App) renderThemeStatus(w http.ResponseWriter, r *http.Request, page str
 		funcs[name] = fn
 	}
 	// These names are reserved core bridges so themes cannot bypass plugin state checks.
+	funcs["emailAvatarURL"] = func(email string, size int) string {
+		return a.emailAvatarURL(r.Context(), email, size)
+	}
 	funcs["pluginServiceAvailable"] = func(name string) bool {
 		return pluginRuntime.ServiceAvailable != nil && pluginRuntime.ServiceAvailable(name)
 	}

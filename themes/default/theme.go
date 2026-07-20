@@ -1,7 +1,6 @@
 package defaulttheme
 
 import (
-	"crypto/md5"
 	"embed"
 	"fmt"
 	"html/template"
@@ -56,19 +55,17 @@ func init() {
 		}},
 		RenderAdminPage:       renderFriendAdminPage,
 		HandleAdminPageAction: handleFriendAdminPageAction,
+		CommentBadges:         friendCommentBadges,
 		AdjustData:            adjustDefaultThemeData,
 		Funcs: template.FuncMap{
 			"themeValue":   themeValue,
 			"themeInt":     themeInt,
 			"themeOpacity": themeOpacity,
-			"gravatar":     gravatarURL,
-			"avatarURL":    avatarURL,
 			"assetURL":     assetURL,
 			"safeHTML":     func(value string) template.HTML { return template.HTML(value) },
 			"readingTime":  readingTime,
 			"daysSince":    daysSince,
 			"staleDays":    staleDays,
-			"commentItem":  newCommentTemplateData,
 			"fieldString": func(fields map[string]any, name string) string {
 				if fields == nil {
 					return ""
@@ -82,8 +79,8 @@ func init() {
 		},
 		ConfigSchema: []plugin.FieldSchema{
 			{Name: "display_name", Label: "资料卡名称", Group: "资料卡", Type: plugin.FieldText, Default: "GopherInk", Description: "留空时使用站点标题"},
-			{Name: "profile_email", Label: "头像邮箱", Group: "资料卡", Type: plugin.FieldText, Description: "用于生成 Gravatar/Cravatar 头像，不在前台明文展示"},
-			{Name: "profile_avatar", Label: "头像图片 URL", Group: "资料卡", Type: plugin.FieldImage, Description: "单独指定头像图片；留空时按头像邮箱生成 Gravatar；支持 {random} 随机占位符"},
+			{Name: "profile_email", Label: "头像邮箱", Group: "资料卡", Type: plugin.FieldText, Description: "使用后台统一邮箱头像地址生成头像，不在前台明文展示"},
+			{Name: "profile_avatar", Label: "头像图片 URL", Group: "资料卡", Type: plugin.FieldImage, Description: "单独指定头像图片；留空时使用 CMS 的邮箱头像地址设置生成头像；支持 {random} 随机占位符"},
 			{Name: "bio", Label: "资料卡描述", Group: "资料卡", Type: plugin.FieldText, Description: "留空时使用站点描述", Wide: true},
 			{Name: "primary_preset", Label: "常用主题色", Group: "配色和透明度", Type: plugin.FieldSelect, Default: "#ff4081", Options: colorOptions},
 			{Name: "custom_primary", Label: "自定义主题色", Group: "配色和透明度", Type: plugin.FieldColor, Description: "填写 #RRGGBB 后优先于常用主题色", Options: colorOptions},
@@ -173,24 +170,6 @@ func themeInt(values map[string]string, key string, fallback int) int {
 		return fallback
 	}
 	return value
-}
-
-func gravatarURL(email string, size int) string {
-	if size <= 0 {
-		size = 160
-	}
-	sum := md5.Sum([]byte(strings.ToLower(strings.TrimSpace(email))))
-	query := url.Values{}
-	query.Set("s", fmt.Sprint(size))
-	query.Set("d", "identicon")
-	return "https://www.gravatar.com/avatar/" + fmt.Sprintf("%x", sum[:]) + "?" + query.Encode()
-}
-
-func avatarURL(values map[string]string, fallbackEmail string, size int) string {
-	if url := themeValue(values, "profile_avatar"); url != "" {
-		return assetURL(url)
-	}
-	return gravatarURL(themeValue(values, "profile_email", fallbackEmail), size)
 }
 
 func assetURL(value string) string {
