@@ -18,8 +18,9 @@ import (
 )
 
 type ContentService struct {
-	db            DB
-	revisionLimit atomic.Int64
+	db              DB
+	revisionEnabled atomic.Bool
+	revisionLimit   atomic.Int64
 }
 
 type SaveContentInput struct {
@@ -78,17 +79,23 @@ type SaveFieldInput struct {
 
 func NewContentService(db any) *ContentService {
 	service := &ContentService{db: WrapDB(db)}
+	service.revisionEnabled.Store(true)
 	service.revisionLimit.Store(20)
 	return service
 }
 
 func (s *ContentService) SetRevisionLimit(limit int) {
-	if limit < 1 {
+	s.SetRevisionConfig(true, limit)
+}
+
+func (s *ContentService) SetRevisionConfig(enabled bool, limit int) {
+	if limit < 0 {
 		limit = 20
 	}
-	if limit > 1000 {
-		limit = 1000
+	if limit > 10000 {
+		limit = 10000
 	}
+	s.revisionEnabled.Store(enabled)
 	s.revisionLimit.Store(int64(limit))
 }
 
@@ -1118,7 +1125,7 @@ func (s *ContentService) saveRevisionTx(ctx context.Context, tx *sql.Tx, c model
 }
 
 func (s *ContentService) saveRevisionTxLike(ctx context.Context, db execer, c models.Content) error {
-	if c.CID <= 0 || c.Type == models.ContentTypeRevision || c.Type == models.ContentTypeAttach {
+	if !s.revisionEnabled.Load() || c.CID <= 0 || c.Type == models.ContentTypeAttach {
 		return nil
 	}
 	_, err := db.ExecContext(ctx, `
@@ -1129,13 +1136,15 @@ func (s *ContentService) saveRevisionTxLike(ctx context.Context, db execer, c mo
 		return err
 	}
 	limit := s.revisionLimit.Load()
-	if limit < 1 {
-		limit = 20
+	if limit <= 0 {
+		return nil
 	}
 	_, _ = db.ExecContext(ctx, `
 		DELETE FROM gb_revisions
 		WHERE cid = ? AND rid NOT IN (
-			SELECT rid FROM gb_revisions WHERE cid = ? ORDER BY rid DESC LIMIT ?
+			SELECT rid FROM (
+				SELECT rid FROM gb_revisions WHERE cid = ? ORDER BY rid DESC LIMIT ?
+			) AS kept_revisions
 		)
 	`, c.CID, c.CID, limit)
 	return nil

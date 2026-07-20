@@ -104,7 +104,7 @@ func (a *App) ensureDraftRepair(ctx context.Context) error {
 func (a *App) Handler() http.Handler {
 	mux := http.NewServeMux()
 	a.syncActivePlugins(context.Background())
-	a.Contents.SetRevisionLimit(optionInt(a.option(context.Background(), "revision_limit", "20"), 20))
+	a.applyContentRevisionOptions(context.Background())
 
 	adminAssets, _ := fs.Sub(admin.FS, "assets")
 	mux.Handle("/admin/assets/", http.StripPrefix("/admin/assets/", http.FileServer(http.FS(adminAssets))))
@@ -856,9 +856,11 @@ func (a *App) contentForm(w http.ResponseWriter, r *http.Request, typ string, id
 			"ContentFieldGroups":    fieldForm.Groups,
 			"Fields":                fieldForm.CustomFields,
 			"Revisions":             revisions,
+			"RevisionEnabled":       optionBool(a.option(r.Context(), "revision_enabled", "1")),
 			"PreviewURL":            preview,
 			"EditorMediaSources":    a.editorMediaSources(r),
 			"EditingDraft":          editingDraft,
+			"AutosaveEnabled":       optionBool(a.option(r.Context(), "content_autosave_enabled", "1")),
 			"CanSetContentPassword": roleRank(formUser.Role) >= roleRank("editor"),
 		})
 	case http.MethodPost:
@@ -894,6 +896,10 @@ func (a *App) contentForm(w http.ResponseWriter, r *http.Request, typ string, id
 		if errs := validateContentInput(input); !errs.Empty() {
 			item = applyContentInput(item, input)
 			a.renderContentForm(w, r, typ, id, item, metasFromIDs(input.CategoryIDs), metasFromNames(input.Tags), fieldModels(input.Fields), errs)
+			return
+		}
+		if r.FormValue("snapshot") == "1" {
+			a.saveContentSnapshotFromForm(w, r, typ, id, input, formUser.UID)
 			return
 		}
 		if id == 0 {
@@ -983,6 +989,70 @@ func (a *App) contentForm(w http.ResponseWriter, r *http.Request, typ string, id
 		a.flashRedirect(w, r, contentActionURL(typ, id), http.StatusSeeOther, flashNotice{Type: "success", Message: "内容已保存。"})
 	default:
 		methodNotAllowed(w, http.MethodGet+", "+http.MethodPost)
+	}
+}
+
+func (a *App) saveContentSnapshotFromForm(w http.ResponseWriter, r *http.Request, typ string, id int64, input services.SaveContentInput, authorID int64) {
+	if !optionBool(a.option(r.Context(), "revision_enabled", "1")) {
+		http.Error(w, "快照功能已关闭", http.StatusBadRequest)
+		return
+	}
+	targetID := id
+	if targetID == 0 {
+		targetID, _ = strconv.ParseInt(r.FormValue("cid"), 10, 64)
+	}
+	if targetID <= 0 {
+		http.Error(w, "请先保存草稿后再创建快照", http.StatusBadRequest)
+		return
+	}
+	if !a.canEditContent(w, r, targetID, typ) {
+		return
+	}
+	target, err := a.Contents.ByID(r.Context(), targetID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			http.NotFound(w, r)
+			return
+		}
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	base := target
+	revisionCID := target.CID
+	if target.DraftOf > 0 {
+		revisionCID = target.DraftOf
+		if published, err := a.Contents.ByID(r.Context(), revisionCID); err == nil {
+			base = published
+		}
+	}
+	revision := contentRevisionFromInput(revisionCID, base, input, authorID)
+	if err := a.Contents.SaveRevision(r.Context(), revision); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	a.flashRedirect(w, r, contentActionURL(typ, revisionCID), http.StatusSeeOther, flashNotice{Type: "success", Message: "快照已保存。"})
+}
+
+func contentRevisionFromInput(cid int64, base models.Content, input services.SaveContentInput, authorID int64) models.Content {
+	status := base.Status
+	if status == "" {
+		status = models.ContentStatusDraft
+	}
+	return models.Content{
+		CID:          cid,
+		Title:        input.Title,
+		Slug:         input.Slug,
+		Text:         input.Text,
+		Type:         base.Type,
+		Status:       status,
+		Password:     input.Password,
+		SortOrder:    input.SortOrder,
+		AuthorID:     authorID,
+		Template:     input.Template,
+		Parent:       input.Parent,
+		AllowComment: boolString(input.AllowComment),
+		AllowPing:    boolString(input.AllowPing),
+		AllowFeed:    boolString(input.AllowFeed),
 	}
 }
 
@@ -1180,9 +1250,11 @@ func (a *App) renderContentForm(w http.ResponseWriter, r *http.Request, typ stri
 		"ContentFieldGroups":    fieldForm.Groups,
 		"Fields":                fieldForm.CustomFields,
 		"Revisions":             revisions,
+		"RevisionEnabled":       optionBool(a.option(r.Context(), "revision_enabled", "1")),
 		"PreviewURL":            a.previewURL(r, item),
 		"EditorMediaSources":    a.editorMediaSources(r),
 		"EditingDraft":          publishedID > 0,
+		"AutosaveEnabled":       optionBool(a.option(r.Context(), "content_autosave_enabled", "1")),
 		"CanSetContentPassword": roleRank(formUser.Role) >= roleRank("editor"),
 	})
 }
@@ -2084,7 +2156,7 @@ func (a *App) adminOptionsGeneral(w http.ResponseWriter, r *http.Request) {
 	if !a.requireRole(w, r, "administrator") {
 		return
 	}
-	keys := []string{"site_title", "site_description", "site_keywords", "base_url", "site_language", "site_timezone", "allow_register", "register_default_role", "cookie_prefix", "cookie_secure", "cookie_samesite", "upload_allowed_exts", "upload_max_size", "upload_image_processing", "upload_webp_quality", "image_processing_memory_mb", "thumbnail_format", "thumbnail_quality", "upload_replace_same_ext_only", "attachment_delete_policy"}
+	keys := []string{"site_title", "site_description", "site_keywords", "base_url", "site_language", "site_timezone", "allow_register", "register_default_role", "cookie_prefix", "cookie_secure", "cookie_samesite", "content_autosave_enabled", "upload_allowed_exts", "upload_max_size", "upload_image_processing", "upload_webp_quality", "image_processing_memory_mb", "thumbnail_format", "thumbnail_quality", "upload_replace_same_ext_only", "attachment_delete_policy"}
 	if r.Method == http.MethodGet {
 		options, err := a.Options.All(r.Context())
 		if err != nil {
@@ -2166,6 +2238,10 @@ func prepareGeneralOptions(options map[string]string) map[string]string {
 	return out
 }
 
+func (a *App) applyContentRevisionOptions(ctx context.Context) {
+	a.Contents.SetRevisionConfig(optionBool(a.option(ctx, "revision_enabled", "1")), optionInt(a.option(ctx, "revision_limit", "20"), 20))
+}
+
 func validateImageProcessingOptions(r *http.Request) error {
 	mode := strings.TrimSpace(r.FormValue("upload_image_processing"))
 	switch mode {
@@ -2212,13 +2288,13 @@ func (a *App) adminOptionsReading(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		limit := optionInt(r.FormValue("revision_limit"), 20)
-		if limit < 1 || limit > 1000 {
-			http.Error(w, "修订版本数必须是 1 到 1000 的整数", http.StatusBadRequest)
+		if limit < 0 || limit > 10000 {
+			http.Error(w, "修订版本数必须是 0 到 10000 的整数，0 表示无限制", http.StatusBadRequest)
 			return
 		}
-		a.Contents.SetRevisionLimit(limit)
+		a.Contents.SetRevisionConfig(optionBool(formBoolValue(r.Form["revision_enabled"])), limit)
 	}
-	a.optionsForm(w, r, "阅读设置", "options_reading.html", []string{"post_date_format", "page_size", "posts_list_size", "content_render_mode", "feed_full_text", "front_page_type", "front_page_cid", "posts_index_path", "revision_limit"})
+	a.optionsForm(w, r, "阅读设置", "options_reading.html", []string{"post_date_format", "page_size", "posts_list_size", "content_render_mode", "feed_full_text", "front_page_type", "front_page_cid", "posts_index_path", "revision_enabled", "revision_limit"})
 }
 
 func (a *App) adminOptionsDiscussion(w http.ResponseWriter, r *http.Request) {
@@ -2595,7 +2671,7 @@ func (a *App) optionsForm(w http.ResponseWriter, r *http.Request, title, tmpl st
 			return
 		}
 		for _, key := range keys {
-			if err := a.Options.Set(r.Context(), key, r.FormValue(key)); err != nil {
+			if err := a.Options.Set(r.Context(), key, optionsFormValue(r, key)); err != nil {
 				http.Error(w, err.Error(), http.StatusInternalServerError)
 				return
 			}
@@ -2603,6 +2679,15 @@ func (a *App) optionsForm(w http.ResponseWriter, r *http.Request, title, tmpl st
 		a.flashRedirect(w, r, r.URL.Path, http.StatusSeeOther, flashNotice{Type: "success", Message: "设置已保存。"})
 	default:
 		methodNotAllowed(w, http.MethodGet+", "+http.MethodPost)
+	}
+}
+
+func optionsFormValue(r *http.Request, key string) string {
+	switch key {
+	case "content_autosave_enabled", "revision_enabled":
+		return formBoolValue(r.Form[key])
+	default:
+		return r.FormValue(key)
 	}
 }
 
@@ -3404,6 +3489,11 @@ func (a *App) adminAutosave(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := r.ParseForm(); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	prepareContent := r.FormValue("_prepare_content") == "1"
+	if !prepareContent && !optionBool(a.option(r.Context(), "content_autosave_enabled", "1")) {
+		http.Error(w, "autosave disabled", http.StatusForbidden)
 		return
 	}
 	typ := r.FormValue("type")

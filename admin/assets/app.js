@@ -460,6 +460,7 @@
       var saving = false;
       var pending = false;
       var submitting = false;
+      var autosaveEnabled = form.dataset.autosave !== "0";
 
       function markClean() {
         adminDirty = false;
@@ -528,6 +529,9 @@
         adminDirty = true;
         if (status) {
           status.textContent = "有未保存修改";
+        }
+        if (!autosaveEnabled) {
+          return;
         }
         clearTimeout(timer);
         timer = setTimeout(function () {
@@ -830,6 +834,7 @@
     syncContentSchemaFields(form);
     var data = new FormData(form);
     data.set("_csrf", csrfToken());
+    data.set("_prepare_content", "1");
     return fetch("/admin/autosave", {
       method: "POST",
       body: data,

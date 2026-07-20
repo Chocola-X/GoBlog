@@ -3,12 +3,11 @@ package models
 import "time"
 
 const (
-	ContentTypePost     = "post"
-	ContentTypePage     = "page"
-	ContentTypeAttach   = "attachment"
-	ContentTypeRevision = "revision"
-	ContentStatusPost   = "publish"
-	ContentStatusDraft  = "draft"
+	ContentTypePost    = "post"
+	ContentTypePage    = "page"
+	ContentTypeAttach  = "attachment"
+	ContentStatusPost  = "publish"
+	ContentStatusDraft = "draft"
 )
 
 type Content struct {

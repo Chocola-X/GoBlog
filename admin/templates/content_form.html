@@ -43,7 +43,7 @@
 </div>
 {{if .Saved}}<div class="notice">已保存。</div>{{end}}
 {{if .EditingDraft}}<div class="notice">正在编辑草稿，发布后将替换已发布的版本。</div>{{end}}
-<form method="post" action="{{.Action}}" class="form-panel field-stack" data-preserve-scroll>
+<form method="post" action="{{.Action}}" class="form-panel field-stack" data-preserve-scroll data-autosave="{{if .AutosaveEnabled}}1{{else}}0{{end}}">
   <input type="hidden" name="cid" value="{{if .FormCID}}{{.FormCID}}{{end}}">
   <input type="hidden" name="type" value="{{.Type}}">
   <mdui-text-field name="title" label="标题" value="{{.Content.Title}}" {{if fieldError .Errors "title"}}helper="{{fieldError .Errors "title"}}"{{end}} required></mdui-text-field>
@@ -173,6 +173,7 @@
   <div class="autosave-status muted" aria-live="polite"></div>
   <div class="form-actions">
     {{if .PreviewURL}}<mdui-button variant="outlined" href="{{.PreviewURL}}" target="_blank">预览</mdui-button>{{end}}
+    {{if and .RevisionEnabled .FormCID}}<mdui-button type="submit" variant="outlined" name="snapshot" value="1"><mdui-icon slot="icon" name="history"></mdui-icon>保存快照</mdui-button>{{end}}
     <mdui-button type="submit" variant="outlined" name="status" value="draft"><mdui-icon slot="icon" name="save"></mdui-icon>保存草稿</mdui-button>
     <mdui-button type="submit" name="status" value="publish"><mdui-icon slot="icon" name="publish"></mdui-icon>{{if eq .Type "page"}}发布页面{{else}}发布文章{{end}}</mdui-button>
     <mdui-button type="submit" variant="outlined" name="discard" value="1" formnovalidate data-reset-scroll><mdui-icon slot="icon" name="delete_sweep"></mdui-icon>丢弃草稿</mdui-button>

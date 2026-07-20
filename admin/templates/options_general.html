@@ -55,6 +55,15 @@
     </mdui-select>
   </fieldset>
 
+  <fieldset class="fieldset">
+    <legend>写作体验</legend>
+    <div class="comment-option-row">
+      <mdui-checkbox name="content_autosave_enabled" value="1" {{if eq (index .Options "content_autosave_enabled") "1"}}checked{{end}}>启用文章和页面草稿自动保存</mdui-checkbox>
+      <input type="hidden" name="content_autosave_enabled" value="0">
+    </div>
+    <span class="muted full-span">关闭后不会在编辑过程中定时保存正文；上传附件前仍会按需创建当前内容草稿。</span>
+  </fieldset>
+
   <fieldset class="fieldset upload-attachment-settings">
     <legend>上传和附件</legend>
     <mdui-text-field name="upload_max_size_mb" label="上传文件大小上限（MB）" type="number" min="1" max="2048" step="1" value="{{index .Options "upload_max_size_mb"}}"></mdui-text-field>

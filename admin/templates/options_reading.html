@@ -29,7 +29,11 @@
 
   <fieldset class="fieldset">
     <legend>修订版本</legend>
-    <mdui-text-field name="revision_limit" label="每篇内容保留的修订版本数" type="number" min="1" max="1000" step="1" helper="默认 20，包含文章和独立页面" value="{{index .Options "revision_limit"}}"></mdui-text-field>
+    <div class="comment-option-row">
+      <mdui-checkbox name="revision_enabled" value="1" {{if eq (index .Options "revision_enabled") "1"}}checked{{end}}>启用文章和页面快照</mdui-checkbox>
+      <input type="hidden" name="revision_enabled" value="0">
+    </div>
+    <mdui-text-field name="revision_limit" label="每篇内容保留的快照数量" type="number" min="0" max="10000" step="1" helper="默认 20；填写 0 表示不限制数量" value="{{index .Options "revision_limit"}}"></mdui-text-field>
   </fieldset>
   <div class="form-actions"><mdui-button type="submit">保存设置</mdui-button></div>
 </form>
