@@ -397,6 +397,7 @@ select {
 .markdown-editor-wrap {
   display: grid;
   gap: 10px;
+  min-width: 0;
 }
 
 .markdown-toolbar {
@@ -425,6 +426,7 @@ select {
 .markdown-editor-shell {
   position: relative;
   min-height: 360px;
+  min-width: 0;
 }
 
 .markdown-editor-shell .content-editor {
@@ -464,8 +466,12 @@ select {
 
 .markdown-preview {
   box-sizing: border-box;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
   min-height: 360px;
   padding: 16px;
+  overflow-x: hidden;
   overflow-wrap: anywhere;
   border: 1px solid rgb(var(--mdui-color-outline-variant));
   border-radius: 8px;
@@ -487,10 +493,35 @@ select {
 }
 
 .markdown-preview pre {
+  box-sizing: border-box;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
   overflow-x: auto;
   padding: 12px;
   border-radius: 6px;
+  color: rgb(var(--mdui-color-on-surface));
   background: rgba(var(--mdui-color-surface-container-lowest), 0.72);
+  white-space: pre;
+}
+
+.markdown-preview pre code {
+  display: block;
+  box-sizing: border-box;
+  width: max-content;
+  min-width: 100%;
+  max-width: none;
+  padding: 0;
+  overflow: visible;
+  color: inherit;
+  background: transparent;
+  border: 0;
+  white-space: inherit;
+}
+
+.markdown-preview :not(pre) > code {
+  color: rgb(var(--mdui-color-on-secondary-container));
+  background: rgba(var(--mdui-color-secondary-container), 0.58);
 }
 
 .md-heading {
