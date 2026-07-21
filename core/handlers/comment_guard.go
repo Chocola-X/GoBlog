@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/Chocola-X/GopherInk/core/models"
+	"github.com/Chocola-X/GopherInk/core/plugin"
 )
 
 const (
@@ -94,10 +95,32 @@ func (a *App) issueCommentGuardToken(r *http.Request, cid int64, visitorID strin
 }
 
 func (a *App) consumeCommentGuard(r *http.Request, cid int64) bool {
+	token := strings.TrimSpace(r.FormValue("_comment_guard"))
+	valid := a.validateCommentGuardToken(r, cid, token)
+	payload := plugin.CommentGuardPayload{
+		Request: r,
+		CID:     cid,
+		Token:   token,
+		Valid:   valid,
+	}
+	out, err := a.Plugins.ApplyActive(r.Context(), plugin.HookCommentGuard, payload)
+	if err != nil {
+		return false
+	}
+	next, ok := out.(plugin.CommentGuardPayload)
+	if !ok {
+		return valid
+	}
+	if !valid && next.Valid && !next.Handled {
+		return false
+	}
+	return next.Valid
+}
+
+func (a *App) validateCommentGuardToken(r *http.Request, cid int64, token string) bool {
 	if !strings.EqualFold(r.Header.Get("X-Requested-With"), "XMLHttpRequest") || r.Header.Get("X-GopherInk-Comment") != "submit" {
 		return false
 	}
-	token := strings.TrimSpace(r.FormValue("_comment_guard"))
 	parts := strings.Split(token, ".")
 	if len(parts) != 6 || parts[0] != "v1" {
 		return false

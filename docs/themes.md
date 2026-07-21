@@ -8,7 +8,7 @@
 
 后台“主题”页面只能在已编译主题之间切换，不支持上传压缩包后热加载源码。
 
-主题的后台扩展页、数据调整回调和评论徽章回调会收到带主题名 owner 的 `plugin.Runtime`。确实需要保存主题私有的大量结构化数据时，可以复用 [插件数据库](plugins-and-hooks.md#插件数据库) 接口；常规主题设置仍应优先使用 `ConfigSchema`。
+主题的后台扩展页、数据调整回调、运行时初始化和评论增强回调会收到带主题名 owner 的 `plugin.Runtime`。确实需要保存主题私有的大量结构化数据时，可以复用 [插件数据库](plugins-and-hooks.md#插件数据库) 接口；常规主题设置仍应优先使用 `ConfigSchema`。
 
 ## 最小主题结构
 
@@ -107,8 +107,9 @@ plugin.RegisterTheme(plugin.Theme{
 | `AdminPages` | 主题设置页中的原生附加选项卡 |
 | `RenderAdminPage` | 渲染附加选项卡的可信后台 HTML |
 | `HandleAdminPageAction` | 处理附加选项卡经过鉴权和 CSRF 校验的 POST 操作 |
-| `CommentBadges` | 批量生成主题评论头像标志，不改变核心评论对象 |
+| `EnrichComments` | 批量生成主题评论增强数据，例如头像标志、CSS 类和额外字段 |
 | `Capabilities` | 声明主题实现的核心协议能力 |
+| `InitRuntime` | 每次前台渲染前调整主题运行时参数 |
 | `AdjustData` | 渲染模板前补充或修改数据 |
 | `EditableDir` | 非嵌入主题允许编辑的目录 |
 | `Embedded` | 标记资源是否嵌入二进制 |
@@ -158,7 +159,24 @@ plugin.RegisterTheme(plugin.Theme{
 
 该函数与插件的 `Runtime.AvatarURL(ctx, email, size)` 使用同一实现，会统一应用后台“自定义邮箱获取头像的替换链接”、`{hash}`、`{size}` 和头像等级设置。主题不应自行计算 MD5 或硬编码 Gravatar 域名。需要允许用户直接指定图片时，先判断显式图片 URL，留空后再调用 `emailAvatarURL`。
 
-`CommentBadges` 在一次请求中接收当前页面的评论副本，可以按邮箱或作者身份返回以评论 ID 为键的 `CommentBadge`。默认主题使用它显示博主和友链好友标志。回调应批量处理，避免逐条评论查询数据库。
+`EnrichComments` 在一次请求中接收当前页面的评论副本，可以按邮箱、作者身份或主题配置返回以评论 ID 为键的 `CommentEnrichment`。`CommentEnrichment.Badges` 用于显示博主、友链好友等头像标志，`CSSClasses` 用于追加主题样式类，`Extra` 可携带主题模板自用的数据。默认主题使用它显示博主和友链好友标志。回调应批量处理，避免逐条评论查询数据库。
+
+## 运行时初始化
+
+`InitRuntime` 在前台模板渲染前执行，适合让主题按自身配置调整运行时行为，例如每页文章数、评论排序、阅读模式或主题侧边栏数据准备。回调收到的 Runtime 已绑定到当前主题：
+
+```go
+InitRuntime: func(ctx context.Context, rt *plugin.Runtime) error {
+    mode := "markdown"
+    if rt.ContentRenderMode != nil {
+        mode = rt.ContentRenderMode(ctx)
+    }
+    _ = mode
+    return nil
+},
+```
+
+这不是后台保存钩子，也不应执行昂贵的一次性迁移。需要持久配置时仍使用 `ConfigSchema`、`ConfigHandler` 或主题附加页面。
 
 ## 评论守卫
 
@@ -248,6 +266,12 @@ form?.addEventListener("submit", async (event) => {
 目标模板通常定义供基础模板调用的 block。可直接参考 `themes/default/templates/` 的 `base.html`、`index.html`、`post.html` 和 `404.html`。
 
 模板函数若返回 `template.HTML`，输入必须是可信内容。默认主题的 `safeHTML` 仅用于已经过服务端或插件明确处理的 HTML，不应直接包裹查询参数、评论原文等访客输入。
+
+核心还提供 `isArchiveType` 模板函数，用于判断当前归档类型，作用接近 Typecho 的 `$this->is()`：
+
+```gotemplate
+{{if isArchiveType . "post"}}...{{end}}
+```
 
 ## 主题静态资源
 

@@ -144,6 +144,8 @@ type Runtime struct {
 	ListUsers         func(context.Context, PublicUserQuery) ([]PublicUser, int64, error)
 	ListMetas         func(context.Context, PublicMetaQuery) ([]PublicMeta, int64, error)
 	ListRevisions     func(context.Context, int64) ([]PublicRevision, error)
+	ListThemeFiles    func(context.Context, string) ([]string, error)
+	ThemeEditableDir  func(context.Context, string) (string, bool)
 	ContentURL        func(context.Context, int64) (string, error)
 	CommentURL        func(context.Context, int64) (string, error)
 	AvatarURL         func(context.Context, string, int) string
@@ -377,8 +379,8 @@ const (
 	HookCommentPermalink        = "comment.permalink"
 	HookCommentListRender       = "comment.list_render"
 	HookCommentReplyLink        = "comment.reply_link"
-	HookCommentCancelReply      = "comment.cancel_reply_link"
 	HookCommentPageNav          = "comment.page_nav"
+	HookCommentGuard            = "comment.guard_validate"
 	HookUploadBeforeSave        = "upload.before_save"
 	HookUploadHandle            = "upload.handle"
 	HookUploadAfterSave         = "upload.after_save"
@@ -601,6 +603,15 @@ type CommentLinkPayload struct {
 	Content PublicContent
 	URL     string
 	HTML    template.HTML
+}
+
+type CommentGuardPayload struct {
+	Request *http.Request
+	CID     int64
+	Token   string
+	Valid   bool
+	Reason  string
+	Handled bool
 }
 
 type UploadPayload struct {

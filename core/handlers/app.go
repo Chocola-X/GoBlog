@@ -9455,6 +9455,8 @@ func (a *App) pluginRuntime() *plugin.Runtime {
 		ListUsers:         a.Users.ListUsersPlugin,
 		ListMetas:         a.Metas.ListMetasPlugin,
 		ListRevisions:     a.listRevisionsPlugin,
+		ListThemeFiles:    a.listThemeFilesPlugin,
+		ThemeEditableDir:  a.themeEditableDirPlugin,
 		ContentURL:        a.pluginContentURL,
 		CommentURL:        a.pluginCommentURL,
 		AvatarURL:         a.emailAvatarURL,
@@ -10955,6 +10957,23 @@ func (a *App) listRevisionsPlugin(ctx context.Context, cid int64) ([]plugin.Publ
 		})
 	}
 	return out, nil
+}
+
+func (a *App) themeEditableDirPlugin(ctx context.Context, name string) (string, bool) {
+	_ = ctx
+	theme, ok := a.Plugins.Theme(strings.TrimSpace(name))
+	if !ok || theme.Embedded || strings.TrimSpace(theme.EditableDir) == "" {
+		return "", false
+	}
+	return theme.EditableDir, true
+}
+
+func (a *App) listThemeFilesPlugin(ctx context.Context, name string) ([]string, error) {
+	dir, ok := a.themeEditableDirPlugin(ctx, name)
+	if !ok {
+		return nil, fmt.Errorf("theme is not editable")
+	}
+	return editableThemeFiles(dir)
 }
 
 func (a *App) getContentFieldsPlugin(ctx context.Context, cid int64) (map[string]any, error) {
