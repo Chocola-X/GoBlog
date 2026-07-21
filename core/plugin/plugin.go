@@ -54,29 +54,93 @@ type PublicComment struct {
 	Parent   int64
 }
 
+type PublicMeta struct {
+	MID         int64
+	Name        string
+	Slug        string
+	Type        string
+	Description string
+	Count       int64
+	SortOrder   int64
+	Parent      int64
+}
+
+type PublicContentQuery struct {
+	CID           int64
+	Slug          string
+	SlugID        int64
+	Type          string
+	Status        string
+	Keywords      string
+	Category      int64
+	Tag           int64
+	AuthorID      int64
+	Year          int
+	Month         int
+	Day           int
+	Limit         int
+	Offset        int
+	IncludeDrafts bool
+	ExcludeFuture bool
+}
+
+type PublicCommentQuery struct {
+	COID     int64
+	Status   string
+	Type     string
+	Keywords string
+	CID      int64
+	AuthorID int64
+	OwnerID  int64
+	Mail     string
+	IP       string
+	Limit    int
+	Offset   int
+}
+
+type PublicUserQuery struct {
+	UID      int64
+	Name     string
+	Mail     string
+	Role     string
+	Keywords string
+	Limit    int
+	Offset   int
+}
+
+type PublicMetaQuery struct {
+	MID    int64
+	Type   string
+	Slug   string
+	Parent int64
+	Used   bool
+	Limit  int
+	Offset int
+}
+
 type Runtime struct {
-	OwnerKind         string
-	Owner             string
-	ListPublished     func(context.Context, int, int) ([]PublicContent, error)
-	ContentByID       func(context.Context, int64) (PublicContent, error)
-	PageBySlug        func(context.Context, string) (PublicContent, error)
-	UserByID          func(context.Context, int64) (PublicUser, error)
-	CommentByID       func(context.Context, int64) (PublicComment, error)
-	ContentURL        func(context.Context, int64) (string, error)
-	CommentURL        func(context.Context, int64) (string, error)
-	AvatarURL         func(context.Context, string, int) string
-	IncrementIntField func(context.Context, int64, string, int64) (int64, error)
-	Option            func(context.Context, string) (string, error)
-	Config            func(context.Context, string) (map[string]string, error)
-	PersonalConfig    func(context.Context, string, int64) (map[string]string, error)
-	DispatchHook      func(context.Context, string, any) (HookDispatch, error)
-	ServiceAvailable  func(string) bool
-	CallService       func(context.Context, string, ...any) (any, error)
-	NotifyAdmin       func(http.ResponseWriter, *http.Request, ...AdminNotice)
-	OpenSQLiteFor     func(context.Context, string, string) (*sql.DB, string, error)
-	SQLitePath        func(string, string) (string, error)
-	SQLiteSize        func(string, string) (int64, error)
-	ClearSQLite       func(context.Context, string, string) error
+	OwnerKind        string
+	Owner            string
+	ListContents     func(context.Context, PublicContentQuery) ([]PublicContent, int64, error)
+	ListComments     func(context.Context, PublicCommentQuery) ([]PublicComment, int64, error)
+	ListUsers        func(context.Context, PublicUserQuery) ([]PublicUser, int64, error)
+	ListMetas        func(context.Context, PublicMetaQuery) ([]PublicMeta, int64, error)
+	ContentURL       func(context.Context, int64) (string, error)
+	CommentURL       func(context.Context, int64) (string, error)
+	AvatarURL        func(context.Context, string, int) string
+	ClientIP         func(*http.Request) string
+	CurrentUser      func(*http.Request) (PublicUser, bool)
+	Option           func(context.Context, string) (string, error)
+	Config           func(context.Context, string) (map[string]string, error)
+	PersonalConfig   func(context.Context, string, int64) (map[string]string, error)
+	DispatchHook     func(context.Context, string, any) (HookDispatch, error)
+	ServiceAvailable func(string) bool
+	CallService      func(context.Context, string, ...any) (any, error)
+	NotifyAdmin      func(http.ResponseWriter, *http.Request, ...AdminNotice)
+	OpenSQLiteFor    func(context.Context, string, string) (*sql.DB, string, error)
+	SQLitePath       func(string, string) (string, error)
+	SQLiteSize       func(string, string) (int64, error)
+	ClearSQLite      func(context.Context, string, string) error
 }
 
 type runtimeContextKey struct{}
@@ -190,7 +254,7 @@ const (
 	HookContentMarkdown         = "content.markdown"
 	HookContentAutoParagraph    = "content.auto_paragraph"
 	HookExcerpt                 = "content.excerpt"
-	HookContentSearch           = "content.search"
+	HookContentList             = "content.list"
 	HookContentFields           = "content.fields"
 	HookContentFieldReadOnly    = "content.field_read_only"
 	HookCommentBeforeSave       = "comment.before_save"
@@ -222,7 +286,15 @@ const (
 	HookAttachmentAfterDelete   = "attachment.after_delete"
 	HookAttachmentURL           = "attachment.url"
 	HookAttachmentData          = "attachment.data"
+	HookRequestBefore           = "request.before"
 	HookRequestAfter            = "request.after"
+	HookUserLoginBefore         = "user.login_before"
+	HookUserLoginAuthenticated  = "user.login_authenticated"
+	HookUserLoginAfter          = "user.login_after"
+	HookUserLoginFail           = "user.login_fail"
+	HookUserLogout              = "user.logout"
+	HookUserRegisterBefore      = "user.register_before"
+	HookUserRegisterAfter       = "user.register_after"
 	HookAdminMenu               = "admin.menu"
 	HookFrontendHead            = "frontend.head"
 	HookFrontendFooter          = "frontend.footer"
@@ -271,13 +343,14 @@ type ContentParserPayload struct {
 	Handled bool
 }
 
-type ContentSearchPayload struct {
-	Stage    string
-	Keywords string
-	Query    any
-	Results  any
-	Total    int64
-	Handled  bool
+type ContentListPayload struct {
+	Stage   string
+	View    string
+	Title   string
+	Query   any
+	Results any
+	Total   int64
+	Handled bool
 }
 
 type ContentFieldsPayload struct {
@@ -400,19 +473,50 @@ type AttachmentDataPayload struct {
 }
 
 type RequestPayload struct {
-	Method      string
-	Path        string
-	RawQuery    string
-	RemoteAddr  string
-	IP          string
-	UserAgent   string
-	Referer     string
-	Status      int
-	Bytes       int64
-	Duration    int64
-	Admin       bool
-	Static      bool
-	ContentType string
+	Method          string
+	Path            string
+	RawQuery        string
+	RemoteAddr      string
+	IP              string
+	UserAgent       string
+	Referer         string
+	Status          int
+	Bytes           int64
+	Duration        int64
+	Admin           bool
+	Static          bool
+	ContentType     string
+	Headers         map[string]string
+	ResponseHeaders map[string]string
+	Body            string
+	Handled         bool
+}
+
+type UserLoginPayload struct {
+	Name      string
+	User      PublicUser
+	IP        string
+	UserAgent string
+	Next      string
+	Success   bool
+	Error     string
+	Blocked   bool
+	Message   string
+}
+
+type UserLogoutPayload struct {
+	User      PublicUser
+	IP        string
+	UserAgent string
+}
+
+type UserRegisterPayload struct {
+	User      PublicUser
+	Input     any
+	IP        string
+	UserAgent string
+	Blocked   bool
+	Message   string
 }
 
 type AdminMenuItem struct {

@@ -118,29 +118,62 @@ func (s *UserService) ByID(ctx context.Context, id int64) (models.User, error) {
 	return u, err
 }
 
-func (s *UserService) UserByIDPlugin(ctx context.Context, id int64) (plugin.PublicUser, error) {
-	user, err := s.ByID(ctx, id)
+func (s *UserService) ListUsersPlugin(ctx context.Context, query plugin.PublicUserQuery) ([]plugin.PublicUser, int64, error) {
+	users, err := s.ListFiltered(ctx, query)
 	if err != nil {
-		return plugin.PublicUser{}, err
+		return nil, 0, err
 	}
-	return plugin.PublicUser{
-		UID: user.UID, Name: user.Name, Mail: user.Mail, URL: user.URL,
-		ScreenName: user.ScreenName, Role: user.Role,
-	}, nil
+	out := make([]plugin.PublicUser, 0, len(users))
+	for _, user := range users {
+		out = append(out, plugin.PublicUser{
+			UID: user.UID, Name: user.Name, Mail: user.Mail, URL: user.URL,
+			ScreenName: user.ScreenName, Role: user.Role,
+		})
+	}
+	total, err := s.CountFiltered(ctx, query)
+	return out, total, err
 }
 
 func (s *UserService) List(ctx context.Context, keywords string) ([]models.User, error) {
+	return s.ListFiltered(ctx, plugin.PublicUserQuery{Keywords: keywords})
+}
+
+func (s *UserService) ListFiltered(ctx context.Context, query plugin.PublicUserQuery) ([]models.User, error) {
 	args := []any{}
-	where := ""
-	if keywords != "" {
-		where = "WHERE name LIKE ? OR screenName LIKE ? OR mail LIKE ?"
-		kw := "%" + keywords + "%"
+	var where []string
+	if query.UID > 0 {
+		where = append(where, "uid = ?")
+		args = append(args, query.UID)
+	}
+	if query.Name != "" {
+		where = append(where, "name = ?")
+		args = append(args, query.Name)
+	}
+	if query.Mail != "" {
+		where = append(where, "mail = ?")
+		args = append(args, query.Mail)
+	}
+	if query.Role != "" && query.Role != "all" {
+		where = append(where, "role = ?")
+		args = append(args, query.Role)
+	}
+	if query.Keywords != "" {
+		where = append(where, "(name LIKE ? OR screenName LIKE ? OR mail LIKE ?)")
+		kw := "%" + query.Keywords + "%"
 		args = append(args, kw, kw, kw)
 	}
-	rows, err := s.db.QueryContext(ctx, `
+	whereSQL := ""
+	if len(where) > 0 {
+		whereSQL = "WHERE " + strings.Join(where, " AND ")
+	}
+	sqlQuery := `
 		SELECT uid, name, password, COALESCE(mail,''), COALESCE(url,''), COALESCE(screenName,''), created, activated, logged, role, COALESCE(authCode,'')
-		FROM gb_users `+where+` ORDER BY uid ASC
-	`, args...)
+		FROM gb_users ` + whereSQL + ` ORDER BY uid ASC`
+	if query.Limit > 0 {
+		sqlQuery += ` LIMIT ? OFFSET ?`
+		args = append(args, query.Limit, query.Offset)
+	}
+	rows, err := s.db.QueryContext(ctx, sqlQuery, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -155,6 +188,39 @@ func (s *UserService) List(ctx context.Context, keywords string) ([]models.User,
 		users = append(users, u)
 	}
 	return users, rows.Err()
+}
+
+func (s *UserService) CountFiltered(ctx context.Context, query plugin.PublicUserQuery) (int64, error) {
+	args := []any{}
+	var where []string
+	if query.UID > 0 {
+		where = append(where, "uid = ?")
+		args = append(args, query.UID)
+	}
+	if query.Name != "" {
+		where = append(where, "name = ?")
+		args = append(args, query.Name)
+	}
+	if query.Mail != "" {
+		where = append(where, "mail = ?")
+		args = append(args, query.Mail)
+	}
+	if query.Role != "" && query.Role != "all" {
+		where = append(where, "role = ?")
+		args = append(args, query.Role)
+	}
+	if query.Keywords != "" {
+		where = append(where, "(name LIKE ? OR screenName LIKE ? OR mail LIKE ?)")
+		kw := "%" + query.Keywords + "%"
+		args = append(args, kw, kw, kw)
+	}
+	whereSQL := ""
+	if len(where) > 0 {
+		whereSQL = "WHERE " + strings.Join(where, " AND ")
+	}
+	var total int64
+	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM gb_users `+whereSQL, args...).Scan(&total)
+	return total, err
 }
 
 func (s *UserService) Save(ctx context.Context, input SaveUserInput, id int64) (int64, error) {

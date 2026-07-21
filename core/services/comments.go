@@ -30,10 +30,15 @@ type SaveCommentInput struct {
 }
 
 type CommentQuery struct {
+	COID     int64
 	Status   string
 	Keywords string
 	CID      int64
 	Type     string
+	AuthorID int64
+	OwnerID  int64
+	Mail     string
+	IP       string
 	Limit    int
 	Offset   int
 }
@@ -61,9 +66,29 @@ func (s *CommentService) ListPage(ctx context.Context, query CommentQuery) ([]mo
 		args = append(args, status)
 		where = append(where, "cm.status = ?")
 	}
+	if query.COID > 0 {
+		where = append(where, "cm.coid = ?")
+		args = append(args, query.COID)
+	}
 	if query.CID > 0 {
 		where = append(where, "cm.cid = ?")
 		args = append(args, query.CID)
+	}
+	if query.AuthorID > 0 {
+		where = append(where, "cm.authorId = ?")
+		args = append(args, query.AuthorID)
+	}
+	if query.OwnerID > 0 {
+		where = append(where, "cm.ownerId = ?")
+		args = append(args, query.OwnerID)
+	}
+	if query.Mail != "" {
+		where = append(where, "cm.mail = ?")
+		args = append(args, query.Mail)
+	}
+	if query.IP != "" {
+		where = append(where, "cm.ip = ?")
+		args = append(args, query.IP)
 	}
 	if query.Type != "" && query.Type != "all" {
 		where = append(where, "cm.type = ?")
@@ -115,9 +140,29 @@ func (s *CommentService) CountFiltered(ctx context.Context, query CommentQuery) 
 		where = append(where, "status = ?")
 		args = append(args, status)
 	}
+	if query.COID > 0 {
+		where = append(where, "coid = ?")
+		args = append(args, query.COID)
+	}
 	if query.CID > 0 {
 		where = append(where, "cid = ?")
 		args = append(args, query.CID)
+	}
+	if query.AuthorID > 0 {
+		where = append(where, "authorId = ?")
+		args = append(args, query.AuthorID)
+	}
+	if query.OwnerID > 0 {
+		where = append(where, "ownerId = ?")
+		args = append(args, query.OwnerID)
+	}
+	if query.Mail != "" {
+		where = append(where, "mail = ?")
+		args = append(args, query.Mail)
+	}
+	if query.IP != "" {
+		where = append(where, "ip = ?")
+		args = append(args, query.IP)
 	}
 	if query.Type != "" && query.Type != "all" {
 		where = append(where, "type = ?")
@@ -228,17 +273,38 @@ func (s *CommentService) ByID(ctx context.Context, id int64) (models.Comment, er
 	return c, err
 }
 
-func (s *CommentService) CommentByIDPlugin(ctx context.Context, id int64) (plugin.PublicComment, error) {
-	comment, err := s.ByID(ctx, id)
-	if err != nil {
-		return plugin.PublicComment{}, err
+func (s *CommentService) ListCommentsPlugin(ctx context.Context, query plugin.PublicCommentQuery) ([]plugin.PublicComment, int64, error) {
+	q := CommentQuery{
+		COID:     query.COID,
+		Status:   query.Status,
+		Type:     query.Type,
+		Keywords: query.Keywords,
+		CID:      query.CID,
+		AuthorID: query.AuthorID,
+		OwnerID:  query.OwnerID,
+		Mail:     query.Mail,
+		IP:       query.IP,
+		Limit:    query.Limit,
+		Offset:   query.Offset,
 	}
-	return plugin.PublicComment{
-		COID: comment.COID, CID: comment.CID, Created: comment.Created, Author: comment.Author,
-		AuthorID: comment.AuthorID, OwnerID: comment.OwnerID, Mail: comment.Mail, URL: comment.URL,
-		IP: comment.IP, Agent: comment.Agent, Text: comment.Text, Type: comment.Type,
-		Status: comment.Status, Parent: comment.Parent,
-	}, nil
+	total, err := s.CountFiltered(ctx, q)
+	if err != nil {
+		return nil, 0, err
+	}
+	comments, err := s.ListPage(ctx, q)
+	if err != nil {
+		return nil, 0, err
+	}
+	out := make([]plugin.PublicComment, 0, len(comments))
+	for _, comment := range comments {
+		out = append(out, plugin.PublicComment{
+			COID: comment.COID, CID: comment.CID, Created: comment.Created, Author: comment.Author,
+			AuthorID: comment.AuthorID, OwnerID: comment.OwnerID, Mail: comment.Mail, URL: comment.URL,
+			IP: comment.IP, Agent: comment.Agent, Text: comment.Text, Type: comment.Type,
+			Status: comment.Status, Parent: comment.Parent,
+		})
+	}
+	return out, total, nil
 }
 
 func (s *CommentService) HasApprovedAuthor(ctx context.Context, author, mail string) (bool, error) {

@@ -220,6 +220,13 @@ func (a *App) Handler() http.Handler {
 		ctx := plugin.ContextWithRuntime(r.Context(), runtime)
 		recorder := &statusResponseWriter{ResponseWriter: w}
 		start := time.Now()
+		if handled, err := a.dispatchRequestBefore(recorder, r.WithContext(ctx)); handled || err != nil {
+			if err != nil {
+				http.Error(recorder, err.Error(), http.StatusInternalServerError)
+			}
+			a.dispatchRequestAfter(r, recorder, time.Since(start))
+			return
+		}
 		mux.ServeHTTP(recorder, r.WithContext(ctx))
 		a.dispatchRequestAfter(r, recorder, time.Since(start))
 	})
@@ -254,6 +261,36 @@ func (w *statusResponseWriter) Flush() {
 	}
 }
 
+func (a *App) dispatchRequestBefore(w http.ResponseWriter, r *http.Request) (bool, error) {
+	if a.Plugins == nil || !a.Plugins.HasActiveHook(plugin.HookRequestBefore) {
+		return false, nil
+	}
+	payload := a.requestPayload(r)
+	out, err := a.Plugins.ApplyActive(r.Context(), plugin.HookRequestBefore, payload)
+	if err != nil {
+		return false, err
+	}
+	next, ok := out.(plugin.RequestPayload)
+	if !ok || !next.Handled {
+		return false, nil
+	}
+	for name, value := range next.ResponseHeaders {
+		if strings.TrimSpace(name) != "" {
+			w.Header().Set(name, value)
+		}
+	}
+	if strings.TrimSpace(next.ContentType) != "" {
+		w.Header().Set("Content-Type", next.ContentType)
+	}
+	status := next.Status
+	if status < 100 {
+		status = http.StatusOK
+	}
+	w.WriteHeader(status)
+	_, _ = io.WriteString(w, next.Body)
+	return true, nil
+}
+
 func (a *App) dispatchRequestAfter(r *http.Request, recorder *statusResponseWriter, duration time.Duration) {
 	if a.Plugins == nil || !a.Plugins.HasActiveHook(plugin.HookRequestAfter) {
 		return
@@ -262,27 +299,43 @@ func (a *App) dispatchRequestAfter(r *http.Request, recorder *statusResponseWrit
 	if status == 0 {
 		status = http.StatusOK
 	}
-	payload := plugin.RequestPayload{
-		Method:      r.Method,
-		Path:        r.URL.Path,
-		RawQuery:    r.URL.RawQuery,
-		RemoteAddr:  r.RemoteAddr,
-		IP:          a.clientIP(r),
-		UserAgent:   r.UserAgent(),
-		Referer:     r.Referer(),
-		Status:      status,
-		Bytes:       recorder.bytes,
-		Duration:    duration.Milliseconds(),
-		Admin:       strings.HasPrefix(r.URL.Path, "/admin"),
-		Static:      requestPathIsStatic(r.URL.Path),
-		ContentType: recorder.Header().Get("Content-Type"),
-	}
+	payload := a.requestPayload(r)
+	payload.Status = status
+	payload.Bytes = recorder.bytes
+	payload.Duration = duration.Milliseconds()
+	payload.ContentType = recorder.Header().Get("Content-Type")
 	runtime := a.pluginRuntime()
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		_, _ = a.Plugins.ApplyActive(plugin.ContextWithRuntime(ctx, runtime), plugin.HookRequestAfter, payload)
 	}()
+}
+
+func (a *App) requestPayload(r *http.Request) plugin.RequestPayload {
+	return plugin.RequestPayload{
+		Method:     r.Method,
+		Path:       r.URL.Path,
+		RawQuery:   r.URL.RawQuery,
+		RemoteAddr: r.RemoteAddr,
+		IP:         a.clientIP(r),
+		UserAgent:  r.UserAgent(),
+		Referer:    r.Referer(),
+		Admin:      strings.HasPrefix(r.URL.Path, "/admin"),
+		Static:     requestPathIsStatic(r.URL.Path),
+		Headers:    requestHeaderMap(r),
+	}
+}
+
+func requestHeaderMap(r *http.Request) map[string]string {
+	if len(r.Header) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(r.Header))
+	for name, values := range r.Header {
+		out[name] = strings.Join(values, ", ")
+	}
+	return out
 }
 
 func requestPathIsStatic(pathValue string) bool {
@@ -308,6 +361,23 @@ func (a *App) adminLogin(w http.ResponseWriter, r *http.Request) {
 		}
 		name := strings.TrimSpace(r.FormValue("name"))
 		next := safeNext(r.FormValue("next"))
+		loginPayload := plugin.UserLoginPayload{Name: name, IP: a.clientIP(r), UserAgent: r.UserAgent(), Next: next}
+		if out, err := a.Plugins.ApplyActive(r.Context(), plugin.HookUserLoginBefore, loginPayload); err != nil {
+			a.renderAdmin(w, r, "login.html", map[string]any{"Title": "登录", "Error": err.Error(), "Name": name, "Next": next})
+			return
+		} else if nextPayload, ok := out.(plugin.UserLoginPayload); ok {
+			loginPayload = nextPayload
+			name = strings.TrimSpace(loginPayload.Name)
+			next = safeNext(loginPayload.Next)
+			if loginPayload.Blocked {
+				message := strings.TrimSpace(loginPayload.Message)
+				if message == "" {
+					message = "登录被插件策略拒绝。"
+				}
+				a.renderAdmin(w, r, "login.html", map[string]any{"Title": "登录", "Error": message, "Name": name, "Next": next})
+				return
+			}
+		}
 		if !a.loginAllowed(a.clientIP(r), name) {
 			a.renderAdmin(w, r, "login.html", map[string]any{"Title": "登录", "Error": "尝试过于频繁，请稍后再试", "Name": name, "Next": next})
 			return
@@ -321,12 +391,33 @@ func (a *App) adminLogin(w http.ResponseWriter, r *http.Request) {
 		user, err := a.Users.Authenticate(r.Context(), name, r.FormValue("password"))
 		if err != nil {
 			a.recordLoginFailure(a.clientIP(r), name)
+			loginPayload.Success = false
+			loginPayload.Error = err.Error()
+			_, _ = a.Plugins.ApplyActive(r.Context(), plugin.HookUserLoginFail, loginPayload)
 			a.renderAdmin(w, r, "login.html", map[string]any{"Title": "登录", "Error": "用户名或密码不正确", "Name": name, "Next": next})
 			return
+		}
+		loginPayload.User = publicUserForPlugin(user)
+		loginPayload.Success = true
+		if out, err := a.Plugins.ApplyActive(r.Context(), plugin.HookUserLoginAuthenticated, loginPayload); err != nil {
+			a.renderAdmin(w, r, "login.html", map[string]any{"Title": "登录", "Error": err.Error(), "Name": name, "Next": next})
+			return
+		} else if nextPayload, ok := out.(plugin.UserLoginPayload); ok {
+			loginPayload = nextPayload
+			next = safeNext(loginPayload.Next)
+			if loginPayload.Blocked {
+				message := strings.TrimSpace(loginPayload.Message)
+				if message == "" {
+					message = "登录被插件策略拒绝。"
+				}
+				a.renderAdmin(w, r, "login.html", map[string]any{"Title": "登录", "Error": message, "Name": name, "Next": next})
+				return
+			}
 		}
 		a.recordLoginSuccess(a.clientIP(r))
 		secret, _ := a.Options.Get(r.Context(), "auth_secret")
 		auth.SetVersionedSessionWithOptions(w, secret, user.UID, user.AuthCode, a.cookieOptions(r.Context()))
+		_, _ = a.Plugins.ApplyActive(r.Context(), plugin.HookUserLoginAfter, loginPayload)
 		if next == "" {
 			next = "/admin"
 		}
@@ -375,10 +466,53 @@ func (a *App) adminRegister(w http.ResponseWriter, r *http.Request) {
 			a.renderAdmin(w, r, "register.html", map[string]any{"Title": "注册", "User": models.User{Name: input.Name, Mail: input.Mail, URL: input.URL, ScreenName: input.ScreenName}, "Errors": errs})
 			return
 		}
-		if _, err := a.Users.Save(r.Context(), input, 0); err != nil {
+		registerPayload := plugin.UserRegisterPayload{
+			Input:     input,
+			IP:        a.clientIP(r),
+			UserAgent: r.UserAgent(),
+			User: plugin.PublicUser{
+				Name: input.Name, Mail: input.Mail, URL: input.URL,
+				ScreenName: input.ScreenName, Role: input.Role,
+			},
+		}
+		if out, err := a.Plugins.ApplyActive(r.Context(), plugin.HookUserRegisterBefore, registerPayload); err != nil {
+			a.renderAdmin(w, r, "register.html", map[string]any{"Title": "注册", "User": models.User{Name: input.Name, Mail: input.Mail, URL: input.URL, ScreenName: input.ScreenName}, "Error": err.Error()})
+			return
+		} else if nextPayload, ok := out.(plugin.UserRegisterPayload); ok {
+			registerPayload = nextPayload
+			if nextInput, ok := registerPayload.Input.(services.SaveUserInput); ok {
+				input = nextInput
+			}
+			if registerPayload.Blocked {
+				message := strings.TrimSpace(registerPayload.Message)
+				if message == "" {
+					message = "注册被插件策略拒绝。"
+				}
+				a.renderAdmin(w, r, "register.html", map[string]any{"Title": "注册", "User": models.User{Name: input.Name, Mail: input.Mail, URL: input.URL, ScreenName: input.ScreenName}, "Error": message})
+				return
+			}
+		}
+		errs = validateUserInput(input, true)
+		validatePasswordConfirmation(&errs, input.Password, r.FormValue("confirm"), true)
+		if strings.TrimSpace(input.Mail) == "" {
+			errs.Add("mail", "不能为空")
+		}
+		a.addUserUniqueErrors(r.Context(), &errs, input.Name, input.Mail, 0)
+		if !errs.Empty() {
+			a.renderAdmin(w, r, "register.html", map[string]any{"Title": "注册", "User": models.User{Name: input.Name, Mail: input.Mail, URL: input.URL, ScreenName: input.ScreenName}, "Errors": errs})
+			return
+		}
+		uid, err := a.Users.Save(r.Context(), input, 0)
+		if err != nil {
 			a.renderAdmin(w, r, "register.html", map[string]any{"Title": "注册", "User": models.User{Name: input.Name, Mail: input.Mail, URL: input.URL, ScreenName: input.ScreenName}, "Error": err.Error()})
 			return
 		}
+		if user, err := a.Users.ByID(r.Context(), uid); err == nil {
+			registerPayload.User = publicUserForPlugin(user)
+		} else {
+			registerPayload.User.UID = uid
+		}
+		_, _ = a.Plugins.ApplyActive(r.Context(), plugin.HookUserRegisterAfter, registerPayload)
 		a.flashRedirect(w, r, "/admin/login", http.StatusSeeOther, flashNotice{Type: "success", Message: "注册成功，请登录。"})
 	default:
 		methodNotAllowed(w, http.MethodGet+", "+http.MethodPost)
@@ -453,6 +587,13 @@ func (a *App) adminLogout(w http.ResponseWriter, r *http.Request) {
 	if !a.validCSRFFor(r, "admin") {
 		http.Error(w, "invalid csrf token", http.StatusForbidden)
 		return
+	}
+	if user, ok := a.currentUser(r); ok {
+		_, _ = a.Plugins.ApplyActive(r.Context(), plugin.HookUserLogout, plugin.UserLogoutPayload{
+			User:      publicUserForPlugin(user),
+			IP:        a.clientIP(r),
+			UserAgent: r.UserAgent(),
+		})
 	}
 	auth.ClearSessionWithOptions(w, a.cookieOptions(r.Context()))
 	a.flashRedirect(w, r, "/admin/login", http.StatusSeeOther, flashNotice{Type: "success", Message: "已退出。"})
@@ -600,7 +741,7 @@ func (a *App) adminPosts(w http.ResponseWriter, r *http.Request) {
 	if roleRank(user.Role) < roleRank("editor") {
 		query.AuthorID = user.UID
 	}
-	posts, err := a.listContentsWithSearchHook(r.Context(), query)
+	posts, _, err := a.listContentsWithListHook(r.Context(), "admin.posts", "文章", query)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -636,7 +777,7 @@ func (a *App) adminPages(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	pages, err := a.listContentsWithSearchHook(r.Context(), services.ContentQuery{Type: models.ContentTypePage, Status: r.URL.Query().Get("status"), Keywords: r.URL.Query().Get("keywords"), Limit: 200})
+	pages, _, err := a.listContentsWithListHook(r.Context(), "admin.pages", "页面", services.ContentQuery{Type: models.ContentTypePage, Status: r.URL.Query().Get("status"), Keywords: r.URL.Query().Get("keywords"), Limit: 200})
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -5434,49 +5575,50 @@ func (a *App) renderPostList(w http.ResponseWriter, r *http.Request, query servi
 	a.renderPostListWithData(w, r, query, title, nil)
 }
 
-func (a *App) listContentsWithSearchHook(ctx context.Context, query services.ContentQuery) ([]models.Content, error) {
-	if query.Keywords == "" {
-		return a.Contents.List(ctx, query)
-	}
-	payload := plugin.ContentSearchPayload{Stage: "before", Keywords: query.Keywords, Query: query}
-	out, err := a.Plugins.ApplyActive(ctx, plugin.HookContentSearch, payload)
+func (a *App) listContentsWithListHook(ctx context.Context, view, title string, query services.ContentQuery) ([]models.Content, int64, error) {
+	payload := plugin.ContentListPayload{Stage: "before", View: view, Title: title, Query: query}
+	out, err := a.Plugins.ApplyActive(ctx, plugin.HookContentList, payload)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
-	var results []models.Content
-	if next, ok := out.(plugin.ContentSearchPayload); ok {
+	if next, ok := out.(plugin.ContentListPayload); ok {
 		payload = next
 		if nextQuery, ok := next.Query.(services.ContentQuery); ok {
 			query = nextQuery
 		}
-		if next.Handled {
-			if results, ok := next.Results.([]models.Content); ok {
-				payload.Results = results
-			} else {
-				payload.Results = []models.Content{}
-			}
-		}
 	}
+	var results []models.Content
+	total := payload.Total
 	if payload.Handled {
 		results, _ = payload.Results.([]models.Content)
+		if total == 0 {
+			total = int64(len(results))
+		}
 	} else {
+		total, err = a.Contents.CountList(ctx, query)
+		if err != nil {
+			return nil, 0, err
+		}
 		results, err = a.Contents.List(ctx, query)
 		if err != nil {
-			return nil, err
+			return nil, 0, err
 		}
 	}
 	payload.Stage = "after"
 	payload.Query = query
 	payload.Results = results
-	payload.Total = int64(len(results))
-	if out, err = a.Plugins.ApplyActive(ctx, plugin.HookContentSearch, payload); err != nil {
-		return nil, err
-	} else if next, ok := out.(plugin.ContentSearchPayload); ok {
+	payload.Total = total
+	if out, err = a.Plugins.ApplyActive(ctx, plugin.HookContentList, payload); err != nil {
+		return nil, 0, err
+	} else if next, ok := out.(plugin.ContentListPayload); ok {
 		if filtered, ok := next.Results.([]models.Content); ok {
 			results = filtered
 		}
+		if next.Total > 0 || len(results) == 0 {
+			total = next.Total
+		}
 	}
-	return results, nil
+	return results, total, nil
 }
 
 func (a *App) renderPostListWithData(w http.ResponseWriter, r *http.Request, query services.ContentQuery, title string, extra map[string]any) {
@@ -5491,56 +5633,10 @@ func (a *App) renderPostListWithData(w http.ResponseWriter, r *http.Request, que
 	query.Limit = size
 	query.Offset = (page - 1) * size
 	query.ExcludeFuture = true
-	var total int64
-	var posts []models.Content
-	searchPayload := plugin.ContentSearchPayload{Stage: "before", Keywords: query.Keywords, Query: query}
-	if query.Keywords != "" {
-		out, err := a.Plugins.ApplyActive(r.Context(), plugin.HookContentSearch, searchPayload)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		if next, ok := out.(plugin.ContentSearchPayload); ok {
-			searchPayload = next
-			if nextQuery, ok := next.Query.(services.ContentQuery); ok {
-				query = nextQuery
-			}
-			if next.Handled {
-				posts, _ = next.Results.([]models.Content)
-				total = next.Total
-				if total == 0 {
-					total = int64(len(posts))
-				}
-			}
-		}
-	}
-	if !searchPayload.Handled {
-		var err error
-		total, err = a.Contents.CountList(r.Context(), query)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		posts, err = a.Contents.List(r.Context(), query)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-	}
-	if query.Keywords != "" {
-		searchPayload.Stage = "after"
-		searchPayload.Query = query
-		searchPayload.Results = posts
-		searchPayload.Total = total
-		if out, err := a.Plugins.ApplyActive(r.Context(), plugin.HookContentSearch, searchPayload); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		} else if next, ok := out.(plugin.ContentSearchPayload); ok {
-			if nextPosts, ok := next.Results.([]models.Content); ok {
-				posts = nextPosts
-			}
-			total = next.Total
-		}
+	posts, total, err := a.listContentsWithListHook(r.Context(), "frontend.list", title, query)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
 	}
 	for i := range posts {
 		filtered, err := a.filterContentTitle(r.Context(), posts[i])
@@ -7179,6 +7275,21 @@ func (a *App) currentUser(r *http.Request) (models.User, bool) {
 	}
 	user, err := a.Users.ByID(r.Context(), uid)
 	return user, err == nil
+}
+
+func (a *App) currentUserPlugin(r *http.Request) (plugin.PublicUser, bool) {
+	user, ok := a.currentUser(r)
+	if !ok {
+		return plugin.PublicUser{}, false
+	}
+	return publicUserForPlugin(user), true
+}
+
+func publicUserForPlugin(user models.User) plugin.PublicUser {
+	return plugin.PublicUser{
+		UID: user.UID, Name: user.Name, Mail: user.Mail, URL: user.URL,
+		ScreenName: user.ScreenName, Role: user.Role,
+	}
 }
 
 func (a *App) requireRole(w http.ResponseWriter, r *http.Request, minimum string) bool {
@@ -8876,23 +8987,23 @@ func (a *App) pluginConfig(ctx context.Context, name string) (map[string]string,
 
 func (a *App) pluginRuntime() *plugin.Runtime {
 	runtime := &plugin.Runtime{
-		ListPublished:     a.Contents.ListPublishedPlugin,
-		ContentByID:       a.Contents.ContentByIDPlugin,
-		PageBySlug:        a.Contents.PageBySlugPlugin,
-		UserByID:          a.Users.UserByIDPlugin,
-		CommentByID:       a.Comments.CommentByIDPlugin,
-		ContentURL:        a.pluginContentURL,
-		CommentURL:        a.pluginCommentURL,
-		AvatarURL:         a.emailAvatarURL,
-		IncrementIntField: a.Contents.IncrementIntField,
-		Option:            a.Options.Get,
-		Config:            a.pluginConfig,
-		PersonalConfig:    a.pluginPersonalConfig,
-		NotifyAdmin:       a.setFlash,
-		OpenSQLiteFor:     a.openExtensionSQLite,
-		SQLitePath:        a.extensionSQLitePath,
-		SQLiteSize:        a.extensionSQLiteSize,
-		ClearSQLite:       a.clearExtensionSQLite,
+		ListContents:   a.Contents.ListContentsPlugin,
+		ListComments:   a.Comments.ListCommentsPlugin,
+		ListUsers:      a.Users.ListUsersPlugin,
+		ListMetas:      a.Metas.ListMetasPlugin,
+		ContentURL:     a.pluginContentURL,
+		CommentURL:     a.pluginCommentURL,
+		AvatarURL:      a.emailAvatarURL,
+		ClientIP:       a.clientIP,
+		CurrentUser:    a.currentUserPlugin,
+		Option:         a.Options.Get,
+		Config:         a.pluginConfig,
+		PersonalConfig: a.pluginPersonalConfig,
+		NotifyAdmin:    a.setFlash,
+		OpenSQLiteFor:  a.openExtensionSQLite,
+		SQLitePath:     a.extensionSQLitePath,
+		SQLiteSize:     a.extensionSQLiteSize,
+		ClearSQLite:    a.clearExtensionSQLite,
 	}
 	runtime.DispatchHook = func(ctx context.Context, name string, payload any) (plugin.HookDispatch, error) {
 		return a.Plugins.DispatchActive(plugin.ContextWithRuntime(ctx, runtime), name, payload)

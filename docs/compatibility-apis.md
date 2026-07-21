@@ -22,7 +22,7 @@
 
 - 通过 `plugin.Register` 编译登记。
 - 在 `Init` 中注册 GET 路由。
-- 通过 `Runtime.ListPublished` 读取最多 1000 篇已发布、非未来文章。
+- 通过 `Runtime.ListContents` 读取最多 1000 篇已发布、非未来文章。
 - 使用文章的自定义 Slug，空 Slug 时回退 `SlugID`，并生成 `.html` 固定链接。
 - 输出 XML `urlset`、首页和每项内容的 `lastmod`。
 

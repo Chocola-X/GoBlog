@@ -119,7 +119,7 @@ return payload, nil
 
 `ArchiveMonths` 对已发布、非未来文章按站点时区聚合月份。它不是把日期字符串交给模板临时分组，而是服务层按查询结果生成归档月份及计数。
 
-插件可通过 `content.search` 在 `Stage=before` 修改 `ContentQuery`，或设置 `Handled=true` 返回自己的结果；`Stage=after` 可继续过滤默认结果。
+插件可通过 `content.list` 在 `Stage=before` 修改 `ContentQuery`，或设置 `Handled=true` 返回自己的结果；`Stage=after` 可继续过滤默认结果。该钩子覆盖后台文章/页面列表和前台首页、分类、标签、作者、搜索、归档等内容集合。
 
 ## 正文格式
 

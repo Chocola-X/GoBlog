@@ -33,7 +33,12 @@ func (sitemapPlugin) Init(m *plugin.Manager) {
 }
 
 func handleSitemap(rt *plugin.Runtime, w http.ResponseWriter, r *http.Request) {
-	posts, err := rt.ListPublished(r.Context(), 1000, 0)
+	posts, _, err := rt.ListContents(r.Context(), plugin.PublicContentQuery{
+		Type:          "post",
+		Status:        "publish",
+		ExcludeFuture: true,
+		Limit:         1000,
+	})
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return

@@ -78,9 +78,7 @@ func renderFriendAdminPage(ctx context.Context, rt *plugin.Runtime, page string,
 			data.TargetNotice = contentErr.Error()
 		} else {
 			data.TargetTitle = content.Title
-			if rt.ContentURL != nil {
-				data.TargetURL, _ = rt.ContentURL(ctx, content.CID)
-			}
+			data.TargetURL, _ = rt.ContentURL(ctx, content.CID)
 		}
 	}
 	var output bytes.Buffer
@@ -232,21 +230,27 @@ func resolveFriendPageTarget(ctx context.Context, rt *plugin.Runtime, value stri
 	if rt == nil {
 		return plugin.PublicContent{}, plugin.ErrRuntimeUnavailable
 	}
-	var content plugin.PublicContent
-	if target.CID > 0 {
-		if rt.ContentByID == nil {
-			return plugin.PublicContent{}, plugin.ErrRuntimeUnavailable
-		}
-		content, err = rt.ContentByID(ctx, target.CID)
-	} else {
-		if rt.PageBySlug == nil {
-			return plugin.PublicContent{}, plugin.ErrRuntimeUnavailable
-		}
-		content, err = rt.PageBySlug(ctx, target.Slug)
+	if rt.ListContents == nil {
+		return plugin.PublicContent{}, plugin.ErrRuntimeUnavailable
 	}
+	query := plugin.PublicContentQuery{Type: models.ContentTypePage, Status: "all", IncludeDrafts: true, Limit: 1}
+	if target.CID > 0 {
+		query.CID = target.CID
+	} else {
+		if id, parseErr := strconv.ParseInt(target.Slug, 10, 64); parseErr == nil && id > 0 {
+			query.SlugID = id
+		} else {
+			query.Slug = target.Slug
+		}
+	}
+	contents, _, err := rt.ListContents(ctx, query)
 	if err != nil {
 		return plugin.PublicContent{}, fmt.Errorf("目标独立页面不存在或固定链接不正确")
 	}
+	if len(contents) == 0 {
+		return plugin.PublicContent{}, fmt.Errorf("目标独立页面不存在或固定链接不正确")
+	}
+	content := contents[0]
 	if content.Type != models.ContentTypePage {
 		return plugin.PublicContent{}, fmt.Errorf("目标内容不是独立页面")
 	}

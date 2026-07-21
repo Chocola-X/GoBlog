@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/Chocola-X/GopherInk/core/models"
+	"github.com/Chocola-X/GopherInk/core/plugin"
 	"github.com/Chocola-X/GopherInk/pkg/slug"
 )
 
@@ -52,6 +53,75 @@ func (s *MetaService) ListCloud(ctx context.Context, typ string, limit int) ([]m
 	}
 	defer rows.Close()
 	return scanMetas(rows)
+}
+
+func (s *MetaService) ListMetasPlugin(ctx context.Context, query plugin.PublicMetaQuery) ([]plugin.PublicMeta, int64, error) {
+	metas, err := s.ListFiltered(ctx, query)
+	if err != nil {
+		return nil, 0, err
+	}
+	out := make([]plugin.PublicMeta, 0, len(metas))
+	for _, meta := range metas {
+		out = append(out, plugin.PublicMeta{
+			MID: meta.MID, Name: meta.Name, Slug: meta.Slug, Type: meta.Type,
+			Description: meta.Description, Count: meta.Count, SortOrder: meta.SortOrder,
+			Parent: meta.Parent,
+		})
+	}
+	total, err := s.CountFiltered(ctx, query)
+	return out, total, err
+}
+
+func (s *MetaService) ListFiltered(ctx context.Context, query plugin.PublicMetaQuery) ([]models.Meta, error) {
+	where, args := metaWhere(query)
+	sqlQuery := `
+		SELECT mid, COALESCE(name,''), COALESCE(slug,''), type, COALESCE(description,''), count, sortOrder, parent
+		FROM gb_metas WHERE ` + strings.Join(where, " AND ") + ` ORDER BY sortOrder ASC, mid ASC`
+	if query.Limit > 0 {
+		sqlQuery += ` LIMIT ? OFFSET ?`
+		args = append(args, query.Limit, query.Offset)
+	}
+	rows, err := s.db.QueryContext(ctx, sqlQuery, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanMetas(rows)
+}
+
+func (s *MetaService) CountFiltered(ctx context.Context, query plugin.PublicMetaQuery) (int64, error) {
+	where, args := metaWhere(query)
+	var total int64
+	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM gb_metas WHERE `+strings.Join(where, " AND "), args...).Scan(&total)
+	return total, err
+}
+
+func metaWhere(query plugin.PublicMetaQuery) ([]string, []any) {
+	var args []any
+	var where []string
+	if query.MID > 0 {
+		where = append(where, "mid = ?")
+		args = append(args, query.MID)
+	}
+	if query.Type != "" && query.Type != "all" {
+		where = append(where, "type = ?")
+		args = append(args, query.Type)
+	}
+	if query.Slug != "" {
+		where = append(where, "slug = ?")
+		args = append(args, query.Slug)
+	}
+	if query.Parent > 0 {
+		where = append(where, "parent = ?")
+		args = append(args, query.Parent)
+	}
+	if query.Used {
+		where = append(where, "count > 0")
+	}
+	if len(where) == 0 {
+		where = append(where, "1 = 1")
+	}
+	return where, args
 }
 
 func (s *MetaService) ByID(ctx context.Context, id int64) (models.Meta, error) {

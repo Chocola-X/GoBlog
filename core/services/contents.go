@@ -45,6 +45,9 @@ type SaveContentInput struct {
 }
 
 type ContentQuery struct {
+	CID           int64
+	Slug          string
+	SlugID        int64
 	Type          string
 	Status        string
 	Keywords      string
@@ -153,35 +156,38 @@ func (s *ContentService) ArchiveMonths(ctx context.Context, loc *time.Location, 
 	return out, rows.Err()
 }
 
-func (s *ContentService) ListPublishedPlugin(ctx context.Context, limit, offset int) ([]plugin.PublicContent, error) {
-	contents, err := s.ListPublished(ctx, limit, offset)
+func (s *ContentService) ListContentsPlugin(ctx context.Context, query plugin.PublicContentQuery) ([]plugin.PublicContent, int64, error) {
+	q := ContentQuery{
+		CID:           query.CID,
+		Slug:          query.Slug,
+		SlugID:        query.SlugID,
+		Type:          query.Type,
+		Status:        query.Status,
+		Keywords:      query.Keywords,
+		Category:      query.Category,
+		Tag:           query.Tag,
+		AuthorID:      query.AuthorID,
+		Year:          query.Year,
+		Month:         query.Month,
+		Day:           query.Day,
+		Limit:         query.Limit,
+		Offset:        query.Offset,
+		IncludeDrafts: query.IncludeDrafts,
+		ExcludeFuture: query.ExcludeFuture,
+	}
+	total, err := s.CountList(ctx, q)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
+	}
+	contents, err := s.List(ctx, q)
+	if err != nil {
+		return nil, 0, err
 	}
 	out := make([]plugin.PublicContent, 0, len(contents))
-	for _, c := range contents {
-		out = append(out, plugin.PublicContent{
-			CID: c.CID, Title: c.Title, Slug: c.Slug, SlugID: c.SlugID, Created: c.Created,
-			Modified: c.Modified, Text: c.Text, Type: c.Type, Status: c.Status, AuthorID: c.AuthorID,
-		})
+	for _, content := range contents {
+		out = append(out, publicContentForPlugin(content))
 	}
-	return out, nil
-}
-
-func (s *ContentService) ContentByIDPlugin(ctx context.Context, id int64) (plugin.PublicContent, error) {
-	content, err := s.ByID(ctx, id)
-	if err != nil {
-		return plugin.PublicContent{}, err
-	}
-	return publicContentForPlugin(content), nil
-}
-
-func (s *ContentService) PageBySlugPlugin(ctx context.Context, slug string) (plugin.PublicContent, error) {
-	content, err := s.PageBySlug(ctx, slug)
-	if err != nil {
-		return plugin.PublicContent{}, err
-	}
-	return publicContentForPlugin(content), nil
+	return out, total, nil
 }
 
 func publicContentForPlugin(content models.Content) plugin.PublicContent {
@@ -897,40 +903,6 @@ func (s *ContentService) SaveFields(ctx context.Context, cid int64, fields []Sav
 	return tx.Commit()
 }
 
-func (s *ContentService) IncrementIntField(ctx context.Context, cid int64, name string, delta int64) (int64, error) {
-	ctx = WithWriter(ctx)
-	name = strings.TrimSpace(name)
-	if cid <= 0 || !validFieldName.MatchString(name) {
-		return 0, fmt.Errorf("invalid custom field")
-	}
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return 0, err
-	}
-	defer tx.Rollback()
-	result, err := txExec(ctx, tx, s.db.Dialect(), `UPDATE gb_fields SET type = 'int', intValue = COALESCE(intValue, 0) + ? WHERE cid = ? AND name = ?`, delta, cid, name)
-	if err != nil {
-		return 0, err
-	}
-	affected, err := result.RowsAffected()
-	if err != nil {
-		return 0, err
-	}
-	if affected == 0 {
-		if _, err := txExec(ctx, tx, s.db.Dialect(), `INSERT INTO gb_fields (cid, name, type, strValue, intValue, floatValue) VALUES (?, ?, 'int', '', ?, 0)`, cid, name, delta); err != nil {
-			return 0, err
-		}
-	}
-	var value int64
-	if err := tx.QueryRowContext(ctx, models.Rebind(s.db.Dialect(), `SELECT intValue FROM gb_fields WHERE cid = ? AND name = ? ORDER BY fid DESC LIMIT 1`), cid, name).Scan(&value); err != nil {
-		return 0, err
-	}
-	if err := tx.Commit(); err != nil {
-		return 0, err
-	}
-	return value, nil
-}
-
 func (s *ContentService) saveFieldsTx(ctx context.Context, tx *sql.Tx, cid int64, fields []SaveFieldInput) error {
 	return s.saveFieldsTxLike(ctx, txExecer{tx: tx, dialect: s.db.Dialect()}, cid, fields)
 }
@@ -1259,10 +1231,26 @@ func buildContentWhere(q ContentQuery) ([]string, []any) {
 	if q.Limit <= 0 {
 		q.Limit = 100
 	}
-	args := []any{q.Type}
-	where := []string{"c.type = ?"}
+	var args []any
+	var where []string
+	if q.Type != "all" {
+		where = append(where, "c.type = ?")
+		args = append(args, q.Type)
+	}
 	if !q.IncludeDrafts {
 		where = append(where, "COALESCE(c.draftOf, 0) = 0")
+	}
+	if q.CID > 0 {
+		where = append(where, "c.cid = ?")
+		args = append(args, q.CID)
+	}
+	if q.Slug != "" {
+		where = append(where, "c.slug = ?")
+		args = append(args, q.Slug)
+	}
+	if q.SlugID > 0 {
+		where = append(where, "c.slugId = ?")
+		args = append(args, q.SlugID)
 	}
 	if q.Status != "" && q.Status != "all" {
 		where = append(where, "c.status = ?")
@@ -1304,6 +1292,9 @@ func buildContentWhere(q ContentQuery) ([]string, []any) {
 		}
 		where = append(where, "c.created >= ? AND c.created < ?")
 		args = append(args, start.Unix(), end.Unix())
+	}
+	if len(where) == 0 {
+		where = append(where, "1 = 1")
 	}
 	return where, args
 }
