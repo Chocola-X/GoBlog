@@ -102,6 +102,56 @@ type PublicArchivePeriod struct {
 	URL   string
 }
 
+type ContentFieldInput struct {
+	Name       string
+	Type       string
+	StrValue   string
+	IntValue   int64
+	FloatValue float64
+}
+
+type ContentWriteInput struct {
+	ID           int64
+	PublishedID  int64
+	AuthorID     int64
+	Operation    string
+	Title        string
+	Slug         string
+	SlugID       int64
+	Text         string
+	Type         string
+	Status       string
+	Password     string
+	Created      int64
+	SortOrder    int64
+	Template     string
+	Parent       int64
+	AllowComment bool
+	AllowPing    bool
+	AllowFeed    bool
+	CategoryIDs  []int64
+	Tags         []string
+	Fields       []ContentFieldInput
+	DraftOf      int64
+}
+
+type CommentWriteInput struct {
+	ID        int64
+	Operation string
+	CID       int64
+	Author    string
+	AuthorID  int64
+	OwnerID   int64
+	Mail      string
+	URL       string
+	Text      string
+	Type      string
+	Status    string
+	Parent    int64
+	IP        string
+	Agent     string
+}
+
 type PublicContentQuery struct {
 	CID           int64
 	Slug          string
@@ -177,6 +227,10 @@ type Runtime struct {
 	CurrentUser       func(*http.Request) (PublicUser, bool)
 	Option            func(context.Context, string) (string, error)
 	SetOption         func(context.Context, string, string) error
+	SaveContent       func(context.Context, ContentWriteInput) (PublicContent, error)
+	DeleteContent     func(context.Context, int64) error
+	SaveComment       func(context.Context, CommentWriteInput) (PublicComment, error)
+	DeleteComment     func(context.Context, int64) error
 	Config            func(context.Context, string) (map[string]string, error)
 	PersonalConfig    func(context.Context, string, int64) (map[string]string, error)
 	DispatchHook      func(context.Context, string, any) (HookDispatch, error)

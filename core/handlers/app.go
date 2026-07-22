@@ -35,6 +35,7 @@ import (
 
 	"github.com/Chocola-X/GopherInk/admin"
 	"github.com/Chocola-X/GopherInk/core/models"
+	"github.com/Chocola-X/GopherInk/core/orchestration"
 	"github.com/Chocola-X/GopherInk/core/plugin"
 	"github.com/Chocola-X/GopherInk/core/services"
 	"github.com/Chocola-X/GopherInk/core/validate"
@@ -1177,57 +1178,29 @@ func (a *App) contentForm(w http.ResponseWriter, r *http.Request, typ string, id
 		if publishRequested {
 			operation = "publish"
 		}
-		savePayload := plugin.ContentSavePayload{ID: id, PublishedID: publishedID, AuthorID: uid, Operation: operation, Input: input}
-		if payload, hookErr := a.Plugins.ApplyActive(r.Context(), plugin.HookContentBeforeSave, savePayload); hookErr != nil {
-			http.Error(w, hookErr.Error(), http.StatusBadRequest)
-			return
-		} else if next, ok := payload.(plugin.ContentSavePayload); ok {
-			savePayload = next
-			if nextInput, ok := next.Input.(services.SaveContentInput); ok {
-				input = nextInput
-			}
-		}
-
-		if publishedID > 0 {
-			draftID, err := a.Contents.SaveEditingDraft(r.Context(), publishedID, input, uid)
-			if err != nil {
-				http.Error(w, err.Error(), http.StatusInternalServerError)
-				return
-			}
-			if input.Status == models.ContentStatusPost {
-				if err := a.Contents.PublishDraft(r.Context(), draftID); err != nil {
-					http.Error(w, err.Error(), http.StatusInternalServerError)
-					return
-				}
-				if err := a.runContentAfterSave(r.Context(), savePayload, publishedID); err != nil {
-					http.Error(w, err.Error(), http.StatusInternalServerError)
-					return
-				}
-				a.flashRedirect(w, r, contentActionURL(typ, publishedID), http.StatusSeeOther, flashNotice{Type: "success", Message: "内容已发布。"})
-			} else {
-				if err := a.runContentAfterSave(r.Context(), savePayload, draftID); err != nil {
-					http.Error(w, err.Error(), http.StatusInternalServerError)
-					return
-				}
-				a.flashRedirect(w, r, contentActionURL(typ, publishedID), http.StatusSeeOther, flashNotice{Type: "success", Message: "草稿已保存。"})
-			}
-			return
-		}
-
-		if id == 0 {
-			id, err = a.Contents.Create(r.Context(), input, uid)
-		} else {
-			err = a.Contents.Update(r.Context(), id, input)
-		}
+		savePayload, err := a.contentWriter().SaveContent(r.Context(), orchestration.ContentSaveRequest{
+			ID: id, PublishedID: publishedID, AuthorID: uid, Operation: operation, Input: input,
+		})
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		if err := a.runContentAfterSave(r.Context(), savePayload, id); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+		if nextInput, ok := savePayload.Input.(services.SaveContentInput); ok {
+			input = nextInput
+		}
+		savedID := savePayload.ID
+		if publishedID > 0 {
+			if input.Status == models.ContentStatusPost {
+				a.flashRedirect(w, r, contentActionURL(typ, publishedID), http.StatusSeeOther, flashNotice{Type: "success", Message: "内容已发布。"})
+			} else {
+				a.flashRedirect(w, r, contentActionURL(typ, publishedID), http.StatusSeeOther, flashNotice{Type: "success", Message: "草稿已保存。"})
+			}
 			return
 		}
-		a.flashRedirect(w, r, contentActionURL(typ, id), http.StatusSeeOther, flashNotice{Type: "success", Message: "内容已保存。"})
+		if savedID <= 0 {
+			savedID = id
+		}
+		a.flashRedirect(w, r, contentActionURL(typ, savedID), http.StatusSeeOther, flashNotice{Type: "success", Message: "内容已保存。"})
 	default:
 		methodNotAllowed(w, http.MethodGet+", "+http.MethodPost)
 	}
@@ -1367,25 +1340,13 @@ func (a *App) runContentAfterSave(ctx context.Context, payload plugin.ContentSav
 }
 
 func (a *App) saveContentWithHooks(ctx context.Context, id int64, input services.SaveContentInput, authorID int64, operation string) (int64, error) {
-	payload := plugin.ContentSavePayload{ID: id, AuthorID: authorID, Operation: operation, Input: input}
-	if out, err := a.Plugins.ApplyActive(ctx, plugin.HookContentBeforeSave, payload); err != nil {
-		return id, err
-	} else if next, ok := out.(plugin.ContentSavePayload); ok {
-		payload = next
-		if nextInput, ok := next.Input.(services.SaveContentInput); ok {
-			input = nextInput
-		}
-	}
-	var err error
-	if id == 0 {
-		id, err = a.Contents.Create(ctx, input, authorID)
-	} else {
-		err = a.Contents.Update(ctx, id, input)
-	}
+	payload, err := a.contentWriter().SaveContent(ctx, orchestration.ContentSaveRequest{
+		ID: id, AuthorID: authorID, Operation: operation, Input: input,
+	})
 	if err != nil {
 		return id, err
 	}
-	return id, a.runContentAfterSave(ctx, payload, id)
+	return payload.ID, nil
 }
 
 func (a *App) runContentStatusAfter(ctx context.Context, payload plugin.ContentStatusPayload, id int64) error {
@@ -2047,33 +2008,9 @@ func (a *App) commentForm(w http.ResponseWriter, r *http.Request, id int64, repl
 }
 
 func (a *App) saveCommentWithHooks(ctx context.Context, input services.SaveCommentInput, id int64, operation string, content any) (plugin.CommentSavePayload, error) {
-	payload := plugin.CommentSavePayload{ID: id, Operation: operation, Input: input, Content: content}
-	if payload.Content == nil && input.CID > 0 {
-		if parentContent, err := a.Contents.ByID(ctx, input.CID); err == nil {
-			payload.Content = parentContent
-		}
-	}
-	if out, err := a.Plugins.ApplyActive(ctx, plugin.HookCommentBeforeSave, payload); err != nil {
-		return payload, err
-	} else if next, ok := out.(plugin.CommentSavePayload); ok {
-		payload = next
-		if nextInput, ok := next.Input.(services.SaveCommentInput); ok {
-			input = nextInput
-		}
-	}
-	commentID, err := a.Comments.SaveReturningID(ctx, input, id)
-	if err != nil {
-		return payload, err
-	}
-	payload.ID = commentID
-	payload.Input = input
-	if comment, err := a.Comments.ByID(ctx, commentID); err == nil {
-		payload.Comment = comment
-	}
-	if _, err := a.Plugins.ApplyActive(ctx, plugin.HookCommentAfterSave, payload); err != nil {
-		return payload, err
-	}
-	return payload, nil
+	return a.contentWriter().SaveComment(ctx, orchestration.CommentSaveRequest{
+		ID: id, Operation: operation, Input: input, Content: content,
+	})
 }
 
 func (a *App) markCommentWithHooks(ctx context.Context, id int64, status string) error {
@@ -2106,22 +2043,7 @@ func (a *App) markCommentWithHooks(ctx context.Context, id int64, status string)
 }
 
 func (a *App) deleteCommentWithHooks(ctx context.Context, id int64) error {
-	comment, err := a.Comments.ByID(ctx, id)
-	if err != nil {
-		return err
-	}
-	payload := plugin.CommentActionPayload{ID: id, PreviousStatus: comment.Status, Comment: comment}
-	if content, err := a.Contents.ByID(ctx, comment.CID); err == nil {
-		payload.Content = content
-	}
-	if _, err := a.Plugins.ApplyActive(ctx, plugin.HookCommentBeforeDelete, payload); err != nil {
-		return err
-	}
-	if err := a.Comments.Delete(ctx, id); err != nil {
-		return err
-	}
-	_, err = a.Plugins.ApplyActive(ctx, plugin.HookCommentAfterDelete, payload)
-	return err
+	return a.contentWriter().DeleteComment(ctx, id)
 }
 
 func (a *App) adminUsers(w http.ResponseWriter, r *http.Request) {
@@ -4809,12 +4731,12 @@ func (a *App) deleteAttachmentWithHooks(ctx context.Context, item models.Content
 }
 
 func (a *App) deleteContentWithAttachmentPolicy(ctx context.Context, cid int64) error {
+	return a.contentWriter().DeleteContent(ctx, cid)
+}
+
+func (a *App) deleteContentDataWithAttachmentPolicy(ctx context.Context, cid int64) error {
 	item, err := a.Contents.ByID(ctx, cid)
 	if err != nil {
-		return err
-	}
-	contentPayload := plugin.ContentDeletePayload{ID: cid, Content: item}
-	if _, err := a.Plugins.ApplyActive(ctx, plugin.HookContentBeforeDelete, contentPayload); err != nil {
 		return err
 	}
 	policy := a.option(ctx, "attachment_delete_policy", "keep")
@@ -4836,8 +4758,7 @@ func (a *App) deleteContentWithAttachmentPolicy(ctx context.Context, cid int64) 
 	if err := a.Contents.Delete(ctx, cid); err != nil {
 		return err
 	}
-	_, err = a.Plugins.ApplyActive(ctx, plugin.HookContentAfterDelete, contentPayload)
-	return err
+	return nil
 }
 
 func (a *App) detachContentAttachments(ctx context.Context, item models.Content, attachments []models.Content) error {
@@ -9538,6 +9459,10 @@ func (a *App) pluginRuntime() *plugin.Runtime {
 		CurrentUser:       a.currentUserPlugin,
 		Option:            a.Options.Get,
 		SetOption:         a.Options.Set,
+		SaveContent:       a.saveContentPlugin,
+		DeleteContent:     a.deleteContentPlugin,
+		SaveComment:       a.saveCommentPlugin,
+		DeleteComment:     a.deleteCommentPlugin,
 		Config:            a.pluginConfig,
 		PersonalConfig:    a.pluginPersonalConfig,
 		NotifyAdmin:       a.setFlash,
@@ -9559,6 +9484,15 @@ func (a *App) pluginRuntime() *plugin.Runtime {
 		return a.Plugins.CallActiveService(ctx, runtime, name, args...)
 	}
 	return runtime
+}
+
+func (a *App) contentWriter() *orchestration.Writer {
+	return &orchestration.Writer{
+		Contents:          a.Contents,
+		Comments:          a.Comments,
+		Plugins:           a.Plugins,
+		DeleteContentData: a.deleteContentDataWithAttachmentPolicy,
+	}
 }
 
 func (a *App) extensionSQLitePath(owner, filename string) (string, error) {
@@ -10958,6 +10892,65 @@ func (a *App) contentToPublic(c models.Content) plugin.PublicContent {
 		Template: c.Template, Parent: c.Parent, SortOrder: c.SortOrder,
 		DraftOf: c.DraftOf,
 	}
+}
+
+func (a *App) saveContentPlugin(ctx context.Context, input plugin.ContentWriteInput) (plugin.PublicContent, error) {
+	req := orchestration.ContentInputFromPlugin(input)
+	if req.AuthorID <= 0 {
+		return plugin.PublicContent{}, fmt.Errorf("content author id is required")
+	}
+	if req.Operation == "" {
+		if req.Input.Status == models.ContentStatusPost {
+			req.Operation = "publish"
+		} else {
+			req.Operation = "draft"
+		}
+	}
+	payload, err := a.contentWriter().SaveContent(ctx, req)
+	if err != nil {
+		return plugin.PublicContent{}, err
+	}
+	content, err := a.Contents.ByID(ctx, payload.ID)
+	if err != nil {
+		return plugin.PublicContent{}, err
+	}
+	return a.contentToPublic(content), nil
+}
+
+func (a *App) deleteContentPlugin(ctx context.Context, id int64) error {
+	return a.contentWriter().DeleteContent(ctx, id)
+}
+
+func (a *App) saveCommentPlugin(ctx context.Context, input plugin.CommentWriteInput) (plugin.PublicComment, error) {
+	req := orchestration.CommentInputFromPlugin(input)
+	if req.Input.CID <= 0 {
+		return plugin.PublicComment{}, fmt.Errorf("comment content id is required")
+	}
+	if req.Input.OwnerID <= 0 {
+		if content, err := a.Contents.ByID(ctx, req.Input.CID); err == nil {
+			req.Input.OwnerID = content.AuthorID
+		}
+	}
+	if req.Operation == "" {
+		if req.ID > 0 {
+			req.Operation = "edit"
+		} else {
+			req.Operation = "comment"
+		}
+	}
+	payload, err := a.contentWriter().SaveComment(ctx, req)
+	if err != nil {
+		return plugin.PublicComment{}, err
+	}
+	comment, err := a.Comments.ByID(ctx, payload.ID)
+	if err != nil {
+		return plugin.PublicComment{}, err
+	}
+	return a.commentToPublic(comment), nil
+}
+
+func (a *App) deleteCommentPlugin(ctx context.Context, id int64) error {
+	return a.contentWriter().DeleteComment(ctx, id)
 }
 
 func (a *App) commentToPublic(comment models.Comment) plugin.PublicComment {
