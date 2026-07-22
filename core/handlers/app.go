@@ -9390,41 +9390,53 @@ func (a *App) pluginConfig(ctx context.Context, name string) (map[string]string,
 
 func (a *App) pluginRuntime() *plugin.Runtime {
 	runtime := &plugin.Runtime{
-		ListContents:      a.Contents.ListContentsPlugin,
-		ListComments:      a.Comments.ListCommentsPlugin,
-		ListUsers:         a.Users.ListUsersPlugin,
-		ListMetas:         a.Metas.ListMetasPlugin,
-		ListRevisions:     a.listRevisionsPlugin,
-		ArchiveMonths:     a.archiveMonthsPlugin,
-		AdjacentPosts:     a.adjacentPostsPlugin,
-		RelatedPosts:      a.relatedPostsPlugin,
-		ListThemeFiles:    a.listThemeFilesPlugin,
-		ThemeEditableDir:  a.themeEditableDirPlugin,
-		ContentURL:        a.pluginContentURL,
-		CommentURL:        a.pluginCommentURL,
-		AvatarURL:         a.emailAvatarURL,
-		SiteURL:           a.siteURLPlugin,
-		AdminURL:          a.adminURLPlugin,
-		ClientIP:          a.clientIP,
-		CurrentUser:       a.currentUserPlugin,
-		Option:            a.Options.Get,
-		SetOption:         a.Options.Set,
-		SaveContent:       a.saveContentPlugin,
-		DeleteContent:     a.deleteContentPlugin,
-		SaveComment:       a.saveCommentPlugin,
-		DeleteComment:     a.deleteCommentPlugin,
-		Config:            a.pluginConfig,
-		PersonalConfig:    a.pluginPersonalConfig,
-		NotifyAdmin:       a.setFlash,
-		OpenPluginDB:      a.openPluginDBForRuntime,
-		PluginDBDialect:   a.pluginDBDialectForRuntime,
-		IsIPBanned:        a.pluginIsIPBanned,
-		IsURLAllowed:      a.pluginIsURLAllowed,
-		GetContentAuthor:  a.getContentAuthorPlugin,
-		ListContentMetas:  a.listContentMetasPlugin,
-		GetContentFields:  a.getContentFieldsPlugin,
-		ActiveTheme:       a.activeThemeName,
-		ContentRenderMode: a.contentRenderModePlugin,
+		ListContents:       a.Contents.ListContentsPlugin,
+		ListComments:       a.Comments.ListCommentsPlugin,
+		ListUsers:          a.Users.ListUsersPlugin,
+		ListMetas:          a.Metas.ListMetasPlugin,
+		ListRevisions:      a.listRevisionsPlugin,
+		GetRevision:        a.getRevisionPlugin,
+		RestoreRevision:    a.restoreRevisionPlugin,
+		DeleteRevision:     a.deleteRevisionPlugin,
+		ArchiveMonths:      a.archiveMonthsPlugin,
+		AdjacentPosts:      a.adjacentPostsPlugin,
+		RelatedPosts:       a.relatedPostsPlugin,
+		GetEditingDraft:    a.getEditingDraftPlugin,
+		PublishDraft:       a.publishDraftPlugin,
+		ListThemeFiles:     a.listThemeFilesPlugin,
+		ThemeEditableDir:   a.themeEditableDirPlugin,
+		ContentURL:         a.pluginContentURL,
+		CommentURL:         a.pluginCommentURL,
+		AvatarURL:          a.emailAvatarURL,
+		SiteURL:            a.siteURLPlugin,
+		AdminURL:           a.adminURLPlugin,
+		ClientIP:           a.clientIP,
+		CurrentUser:        a.currentUserPlugin,
+		Option:             a.Options.Get,
+		SetOption:          a.Options.Set,
+		SaveContent:        a.saveContentPlugin,
+		DeleteContent:      a.deleteContentPlugin,
+		SaveComment:        a.saveCommentPlugin,
+		DeleteComment:      a.deleteCommentPlugin,
+		Config:             a.pluginConfig,
+		PersonalConfig:     a.pluginPersonalConfig,
+		NotifyAdmin:        a.setFlash,
+		OpenPluginDB:       a.openPluginDBForRuntime,
+		PluginDBDialect:    a.pluginDBDialectForRuntime,
+		IsIPBanned:         a.pluginIsIPBanned,
+		IsURLAllowed:       a.pluginIsURLAllowed,
+		BanIP:              a.pluginBanIP,
+		UnbanIP:            a.pluginUnbanIP,
+		WAFStats:           a.pluginWAFStats,
+		GetContentAuthor:   a.getContentAuthorPlugin,
+		ListContentMetas:   a.listContentMetasPlugin,
+		GetContentFields:   a.getContentFieldsPlugin,
+		SetContentField:    a.setContentFieldPlugin,
+		DeleteContentField: a.deleteContentFieldPlugin,
+		ThumbnailURL:       a.thumbnailURLPlugin,
+		AttachmentMeta:     a.attachmentMetaPlugin,
+		ActiveTheme:        a.activeThemeName,
+		ContentRenderMode:  a.contentRenderModePlugin,
 	}
 	runtime.DispatchHook = func(ctx context.Context, name string, payload any) (plugin.HookDispatch, error) {
 		return a.Plugins.DispatchActive(plugin.ContextWithRuntime(ctx, runtime), name, payload)
@@ -10969,15 +10981,39 @@ func (a *App) listRevisionsPlugin(ctx context.Context, cid int64) ([]plugin.Publ
 	}
 	out := make([]plugin.PublicRevision, 0, len(revisions))
 	for _, rev := range revisions {
-		out = append(out, plugin.PublicRevision{
-			RID: rev.RID, CID: rev.CID, Created: rev.Created, AuthorID: rev.AuthorID,
-			Title: rev.Title, Slug: rev.Slug, Text: rev.Text, Status: rev.Status,
-			Password: rev.Password, SortOrder: rev.SortOrder, Template: rev.Template,
-			Parent: rev.Parent, AllowComment: rev.AllowComment, AllowPing: rev.AllowPing,
-			AllowFeed: rev.AllowFeed,
-		})
+		out = append(out, revisionToPublic(rev))
 	}
 	return out, nil
+}
+
+func (a *App) getRevisionPlugin(ctx context.Context, rid int64) (plugin.PublicRevision, error) {
+	revision, err := a.Contents.RevisionByID(ctx, rid)
+	if err != nil {
+		return plugin.PublicRevision{}, err
+	}
+	return revisionToPublic(revision), nil
+}
+
+func (a *App) restoreRevisionPlugin(ctx context.Context, cid, rid int64) error {
+	_, err := a.Contents.RestoreRevision(ctx, cid, rid)
+	if err == nil && a.WAF != nil {
+		a.WAF.invalidatePublicData()
+	}
+	return err
+}
+
+func (a *App) deleteRevisionPlugin(ctx context.Context, cid, rid int64) error {
+	return a.Contents.DeleteRevision(ctx, cid, rid)
+}
+
+func revisionToPublic(rev models.Revision) plugin.PublicRevision {
+	return plugin.PublicRevision{
+		RID: rev.RID, CID: rev.CID, Created: rev.Created, AuthorID: rev.AuthorID,
+		Title: rev.Title, Slug: rev.Slug, Text: rev.Text, Status: rev.Status,
+		Password: rev.Password, SortOrder: rev.SortOrder, Template: rev.Template,
+		Parent: rev.Parent, AllowComment: rev.AllowComment, AllowPing: rev.AllowPing,
+		AllowFeed: rev.AllowFeed,
+	}
 }
 
 func (a *App) archiveMonthsPlugin(ctx context.Context, limit int) ([]plugin.PublicArchivePeriod, error) {
@@ -11053,6 +11089,125 @@ func (a *App) listThemeFilesPlugin(ctx context.Context, names ...string) ([]stri
 
 func (a *App) getContentFieldsPlugin(ctx context.Context, cid int64) (map[string]any, error) {
 	return a.Contents.FieldMap(ctx, cid)
+}
+
+func (a *App) setContentFieldPlugin(ctx context.Context, cid int64, name, value string) error {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return fmt.Errorf("content field name is required")
+	}
+	if _, err := a.Contents.ByID(ctx, cid); err != nil {
+		return err
+	}
+	fields, err := a.Contents.FieldsForContent(ctx, cid)
+	if err != nil {
+		return err
+	}
+	next := make([]services.SaveFieldInput, 0, len(fields)+1)
+	replaced := false
+	for _, field := range fields {
+		if field.Name == name {
+			next = append(next, services.SaveFieldInput{Name: name, Type: "str", StrValue: value})
+			replaced = true
+			continue
+		}
+		next = append(next, saveFieldFromModel(field))
+	}
+	if !replaced {
+		next = append(next, services.SaveFieldInput{Name: name, Type: "str", StrValue: value})
+	}
+	return a.Contents.SaveFields(ctx, cid, next)
+}
+
+func (a *App) deleteContentFieldPlugin(ctx context.Context, cid int64, name string) error {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return fmt.Errorf("content field name is required")
+	}
+	if _, err := a.Contents.ByID(ctx, cid); err != nil {
+		return err
+	}
+	fields, err := a.Contents.FieldsForContent(ctx, cid)
+	if err != nil {
+		return err
+	}
+	next := make([]services.SaveFieldInput, 0, len(fields))
+	for _, field := range fields {
+		if field.Name == name {
+			continue
+		}
+		next = append(next, saveFieldFromModel(field))
+	}
+	return a.Contents.SaveFields(ctx, cid, next)
+}
+
+func (a *App) getEditingDraftPlugin(ctx context.Context, publishedID int64) (plugin.PublicContent, error) {
+	draft, err := a.Contents.DraftForContent(ctx, publishedID)
+	if err != nil {
+		return plugin.PublicContent{}, err
+	}
+	return a.contentToPublic(draft), nil
+}
+
+func (a *App) publishDraftPlugin(ctx context.Context, draftID int64) error {
+	draft, err := a.Contents.ByID(ctx, draftID)
+	if err != nil {
+		return err
+	}
+	if draft.DraftOf <= 0 {
+		return sql.ErrNoRows
+	}
+	payload := plugin.ContentStatusPayload{ID: draftID, PreviousStatus: draft.Status, Status: models.ContentStatusPost, Content: draft}
+	if out, err := a.Plugins.ApplyActive(ctx, plugin.HookContentBeforeStatus, payload); err != nil {
+		return err
+	} else if next, ok := out.(plugin.ContentStatusPayload); ok {
+		payload = next
+	}
+	if payload.Status != models.ContentStatusPost {
+		return fmt.Errorf("publish draft requires post status")
+	}
+	if err := a.Contents.PublishDraft(ctx, draftID); err != nil {
+		return err
+	}
+	if err := a.runContentStatusAfter(ctx, payload, draft.DraftOf); err != nil {
+		return err
+	}
+	if a.WAF != nil {
+		a.WAF.invalidatePublicData()
+	}
+	return nil
+}
+
+func (a *App) attachmentMetaPlugin(ctx context.Context, cid int64) (plugin.AttachmentMetaInfo, error) {
+	item, err := a.Contents.ByID(ctx, cid)
+	if err != nil {
+		return plugin.AttachmentMetaInfo{}, err
+	}
+	if item.Type != models.ContentTypeAttach {
+		return plugin.AttachmentMetaInfo{}, sql.ErrNoRows
+	}
+	meta := a.attachmentMeta(ctx, item)
+	return plugin.AttachmentMetaInfo{
+		URL: meta.URL, MIME: meta.MIME, Size: meta.Size,
+		Width: meta.Width, Height: meta.Height,
+	}, nil
+}
+
+func (a *App) thumbnailURLPlugin(ctx context.Context, attachmentCID int64, width, height int) (string, error) {
+	_ = width
+	_ = height
+	item, err := a.Contents.ByID(ctx, attachmentCID)
+	if err != nil {
+		return "", err
+	}
+	if item.Type != models.ContentTypeAttach {
+		return "", sql.ErrNoRows
+	}
+	meta := a.attachmentMeta(ctx, item)
+	if !meta.IsImage || strings.TrimSpace(meta.URL) == "" {
+		return meta.URL, nil
+	}
+	return adminThumbnailURLForAttachment(item.CID, meta.URL), nil
 }
 
 func (a *App) siteURLPlugin(ctx context.Context) string {

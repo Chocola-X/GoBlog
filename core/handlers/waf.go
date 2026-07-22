@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"net/netip"
 	"os"
 	"path"
 	"path/filepath"
@@ -571,6 +572,65 @@ func (m *wafManager) isBanned(ip string, now time.Time) bool {
 	return true
 }
 
+func (m *wafManager) banIP(ctx context.Context, ip string, duration time.Duration, reason string) error {
+	ip = strings.TrimSpace(ip)
+	if _, err := netip.ParseAddr(ip); err != nil {
+		return fmt.Errorf("invalid IP address: %w", err)
+	}
+	if duration <= 0 {
+		return fmt.Errorf("ban duration must be positive")
+	}
+	cfg := m.currentConfig(ctx)
+	now := time.Now()
+	m.mu.Lock()
+	m.bans[ip] = now.Add(duration)
+	m.trimTimeMapLocked(m.bans, now, cfg.StateMaxEntries)
+	m.mu.Unlock()
+	reason = strings.TrimSpace(reason)
+	if reason == "" {
+		reason = "runtime WAF ban"
+	}
+	m.logEvent(cfg, "%s banned IP %s for %s", reason, ip, duration)
+	return nil
+}
+
+func (m *wafManager) unbanIP(ctx context.Context, ip string) error {
+	ip = strings.TrimSpace(ip)
+	if _, err := netip.ParseAddr(ip); err != nil {
+		return fmt.Errorf("invalid IP address: %w", err)
+	}
+	cfg := m.currentConfig(ctx)
+	m.mu.Lock()
+	delete(m.bans, ip)
+	m.mu.Unlock()
+	m.logEvent(cfg, "runtime WAF unbanned IP %s", ip)
+	return nil
+}
+
+func (m *wafManager) stats(ctx context.Context) (plugin.WAFStatistics, error) {
+	cfg := m.currentConfig(ctx)
+	now := time.Now()
+	if cfg.URLIndexEnabled {
+		if err := m.refreshPublicIndex(ctx, cfg, now); err != nil {
+			return plugin.WAFStatistics{}, err
+		}
+	}
+	m.mu.Lock()
+	m.trimTimeMapLocked(m.bans, now, cfg.StateMaxEntries)
+	stats := plugin.WAFStatistics{
+		BannedIPs:    len(m.bans),
+		AllowedPaths: len(m.publicIndex),
+	}
+	m.mu.Unlock()
+	for _, line := range splitLogLines(m.logText(cfg.LogMaxEntries)) {
+		lower := strings.ToLower(line)
+		if strings.Contains(lower, "blocked") || strings.Contains(lower, "ban triggered") || strings.Contains(lower, "rate limit exceeded") {
+			stats.RecentBlocks++
+		}
+	}
+	return stats, nil
+}
+
 func (a *App) pluginIsIPBanned(ctx context.Context, ip string) bool {
 	if a.WAF == nil {
 		return false
@@ -588,6 +648,27 @@ func (a *App) pluginIsURLAllowed(ctx context.Context, pathValue string) bool {
 	}
 	exists, err := a.WAF.publicURLExists(ctx, pathValue, cfg, time.Now())
 	return err == nil && exists
+}
+
+func (a *App) pluginBanIP(ctx context.Context, ip string, duration time.Duration, reason string) error {
+	if a.WAF == nil {
+		return fmt.Errorf("WAF is unavailable")
+	}
+	return a.WAF.banIP(ctx, ip, duration, reason)
+}
+
+func (a *App) pluginUnbanIP(ctx context.Context, ip string) error {
+	if a.WAF == nil {
+		return fmt.Errorf("WAF is unavailable")
+	}
+	return a.WAF.unbanIP(ctx, ip)
+}
+
+func (a *App) pluginWAFStats(ctx context.Context) (plugin.WAFStatistics, error) {
+	if a.WAF == nil {
+		return plugin.WAFStatistics{}, fmt.Errorf("WAF is unavailable")
+	}
+	return a.WAF.stats(ctx)
 }
 
 func (m *wafManager) recordInvalidPath(ip string, cfg wafConfig, now time.Time) bool {

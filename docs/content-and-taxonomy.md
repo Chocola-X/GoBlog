@@ -50,6 +50,8 @@
 
 后台列表因此以一个公开内容实例为一个列表项，通过“编辑草稿”入口提示该项目存在未发布修改，而不是把草稿显示成另一篇文章。
 
+插件可通过 Runtime 的 `GetEditingDraft(ctx, publishedID)` 读取某篇已发布内容的编辑草稿，通过 `PublishDraft(ctx, draftID)` 将编辑草稿合并回已发布内容。发布草稿会触发内容状态变更前后钩子；协作审核、定时发布等插件应优先使用该接口，而不是直接修改 `draftOf` 或 `status` 字段。
+
 ## Slug ID 与固定链接
 
 `cid`、`slugId` 和 `slug` 是三个不同概念：
@@ -113,6 +115,8 @@ return payload, nil
 - 删除内容时同步删除它的修订。
 - 修订不参与文章/页面数量统计，也不生成公开 URL。
 
+插件可通过 Runtime 的 `ListRevisions`、`GetRevision`、`RestoreRevision` 和 `DeleteRevision` 实现版本对比、回滚和清理。恢复修订会复用核心恢复逻辑，并刷新公开缓存。
+
 ## 查询与归档
 
 `services.ContentQuery` 支持按类型、状态、关键字、分类、标签、作者、父级、年月日、未来时间、草稿、分页等条件组合查询。
@@ -165,6 +169,8 @@ func (MyPlugin) ContentFieldSchema() []plugin.FieldSchema {
 ```
 
 字段名称必须通过服务端校验。`ForTypes` 限制适用内容类型；`ReadOnly` 或 `content.field_readonly` 可保护已有字段，服务端会拒绝伪造表单覆盖只读值。
+
+插件运行时可用 `GetContentFields` 读取字段映射，并用 `SetContentField(ctx, cid, name, value)` 或 `DeleteContentField(ctx, cid, name)` 修改单个字段。单字段写入保存为字符串字段，适合阅读量、点赞数、外部同步状态等轻量扩展；需要保存大量明细数据时应使用插件数据库。
 
 ## 删除内容
 

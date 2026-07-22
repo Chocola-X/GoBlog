@@ -21,6 +21,8 @@ type AttachmentMeta struct {
 
 `Parent` 是所属文章或页面的 `cid`。附件标题、Slug 和描述可在后台编辑；描述位于元数据 JSON，不额外占用数据库列。
 
+插件和主题可通过 Runtime 的 `AttachmentMeta(ctx, cid)` 读取附件 URL、MIME、大小和图片尺寸等精简元数据。该接口会应用 `attachment.url` 钩子，因此能兼容远程存储或 CDN URL 改写。
+
 ## 本地目录策略
 
 默认附件文件系统根目录为 `data/uploads`，即 `<GOPHERINK_DATA_DIR>/uploads`；可用 `GOPHERINK_UPLOAD_DIR` 单独覆盖。核心把这个目录挂载为浏览器可访问的 `/uploads/` URL 前缀。
@@ -108,6 +110,8 @@ jpg,jpeg,png,gif,webp,svg,pdf,txt,md,zip
 - 远程存储附件可通过 `attachment.data` 提供源文件字节。
 
 禁用缩略图会减少服务器处理，但后台预览可能直接传输大图，应结合带宽和附件下载 WAF 策略评估。
+
+Runtime 的 `ThumbnailURL(ctx, attachmentCID, width, height)` 返回当前后台缩略图端点，适合插件后台页面或管理卡片复用。当前核心缩略图尺寸由后台预览常量控制，`width`、`height` 为兼容预留参数；公开主题页面需要响应式图片或 CDN 变体时，应通过 `attachment.url`、`attachment.data` 或插件自定义路由实现。
 
 ## 替换附件
 

@@ -153,6 +153,19 @@ data/waf.log
 
 日志可能包含客户端 IP和请求路径，应限制文件访问权限并纳入隐私和保留策略。不要通过前台静态目录暴露 `data/`。
 
+插件可通过 Runtime 读取 WAF 统计，或写入/解除当前进程内的运行时 IP 封禁：
+
+```go
+func (Plugin) RuntimeHook(ctx context.Context, rt *plugin.Runtime, payload any) (any, error) {
+    if rt.BanIP != nil {
+        _ = rt.BanIP(ctx, "203.0.113.8", 30*time.Minute, "example plugin rule")
+    }
+    return payload, nil
+}
+```
+
+该接口不会修改后台配置，也不会创建重启后仍存在的永久黑名单。需要长期生效的 IP 信誉库或规则库，应由插件自行保存，并在 `HookWAFCheck` 中重新应用。
+
 ## 状态容量
 
 WAF 对缓存、索引和计数状态设置最大条目，避免攻击者用不同 IP/路径无限增长内存。默认状态上限 100000，索引上限 10000。设置过低可能频繁丢弃正常状态，设置过高会增加攻击期间内存占用。
