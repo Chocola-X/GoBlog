@@ -14,7 +14,7 @@
 | [评论与用户](comments-and-users.md) | 评论审核、访客身份、未审核评论自可见、用户角色、会话与头像 |
 | [附件与图片处理](media-and-images.md) | 附件目录、绑定和删除策略、上传安全、WebP、缩略图及素材管理 |
 | [主题开发](themes.md) | 主题注册、模板、静态资源、配置项、自定义字段和前端钩子 |
-| [插件与钩子开发](plugins-and-hooks.md) | 插件注册、启停、配置、路由、后台菜单、50 个内置钩子和完整示例 |
+| [插件与钩子开发](plugins-and-hooks.md) | 插件注册、启停、配置、路由、后台菜单、82 个内置钩子和完整示例 |
 | [安全与 WAF](security-and-waf.md) | WAF 请求链、限流、封禁、缓存、URL 索引、反向代理信任和安全边界 |
 | [兼容接口与订阅](compatibility-apis.md) | RSS/Atom、Sitemap、XML-RPC、Pingback、Trackback、RSD 和外发通知 |
 
@@ -31,9 +31,11 @@
 |---|---|
 | 启动、CLI 与依赖组装 | `cmd/gopherink/main.go`、`cmd/gopherink/runtime_config.go`、`cmd/gopherink/user_commands.go`、`cmd/gopherink/plugins.go`、`cmd/gopherink-builder/` |
 | HTTP 和后台 | `core/handlers/app.go` |
+| 评论守卫 | `core/handlers/comment_guard.go` |
 | WAF | `core/handlers/waf.go` |
 | 兼容接口 | `core/handlers/compat_api.go` |
 | 数据模型和 Schema | `core/models/` |
+| 服务编排（写入钩子调度与递归防护） | `core/orchestration/write.go` |
 | 业务服务 | `core/services/` |
 | 插件和主题接口 | `core/plugin/plugin.go` |
 | Markdown 和文本渲染 | `pkg/render/render.go` |
