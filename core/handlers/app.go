@@ -667,12 +667,13 @@ func (a *App) adminDashboard(w http.ResponseWriter, r *http.Request) {
 	}
 	themeView := dashboardThemeView{}
 	if theme, ok := a.activeTheme(r.Context()); ok {
+		lang := a.language(r.Context())
 		themeView = dashboardThemeView{
 			Name:        theme.Name,
-			DisplayName: theme.DisplayName,
+			DisplayName: themeDisplayNameLang(theme, lang),
 			Version:     theme.Version,
 			Author:      theme.Author,
-			Description: theme.Description,
+			Description: themeText(theme, lang, theme.Description),
 			HasConfig:   len(theme.ConfigSchema) > 0,
 			Editable:    theme.EditableDir != "" && !theme.Embedded,
 		}
@@ -3832,14 +3833,16 @@ type schemaFieldGroup struct {
 }
 
 type contentFieldView struct {
-	Field   plugin.FieldSchema
-	Value   string
-	Checked bool
+	Field     plugin.FieldSchema
+	Value     string
+	Checked   bool
+	Translate func(string) string
 }
 
 type contentFieldGroup struct {
-	Title  string
-	Fields []contentFieldView
+	Title     string
+	Fields    []contentFieldView
+	Translate func(string) string
 }
 
 type contentFieldFormData struct {
@@ -8121,7 +8124,17 @@ func (a *App) renderAdmin(w http.ResponseWriter, r *http.Request, page string, d
 }
 
 func (a *App) pluginAdminMenuItems(ctx context.Context) []plugin.AdminMenuItem {
-	return normalizeAdminMenuItems(a.Plugins.ActiveAdminMenuItems(ctx))
+	items := a.Plugins.ActiveAdminMenuItems(ctx)
+	lang := a.language(ctx)
+	for index := range items {
+		if items[index].Owner == "" {
+			continue
+		}
+		if registered, ok := a.Plugins.Plugin(items[index].Owner); ok {
+			items[index].Label = pluginText(registered, lang, items[index].Label)
+		}
+	}
+	return normalizeAdminMenuItems(items)
 }
 
 func normalizeAdminMenuItems(items []plugin.AdminMenuItem) []plugin.AdminMenuItem {
@@ -10217,8 +10230,13 @@ func (a *App) themeContentFields(ctx context.Context, typ string) []plugin.Field
 		return nil
 	}
 	fields := make([]plugin.FieldSchema, 0, len(theme.ContentFields))
+	lang := a.language(ctx)
+	translate := func(key string) string { return themeText(theme, lang, key) }
 	for _, field := range theme.ContentFields {
 		if len(field.ForTypes) == 0 || containsString(field.ForTypes, typ) {
+			if field.Translate == nil {
+				field.Translate = translate
+			}
 			fields = append(fields, field)
 		}
 	}
@@ -10232,7 +10250,14 @@ func (a *App) contentFieldSchemas(ctx context.Context, typ string, contentID int
 			continue
 		}
 		if provider, ok := registered.(plugin.ContentFieldsProvider); ok {
-			fields = append(fields, provider.ContentFieldSchema()...)
+			lang := a.language(ctx)
+			translate := func(key string) string { return pluginText(registered, lang, key) }
+			for _, field := range provider.ContentFieldSchema() {
+				if field.Translate == nil {
+					field.Translate = translate
+				}
+				fields = append(fields, field)
+			}
 		}
 	}
 	payload := plugin.ContentFieldsPayload{ContentID: contentID, Type: typ, Fields: fields}
@@ -10286,19 +10311,27 @@ func (a *App) contentFormFields(ctx context.Context, typ string, contentID int64
 		}
 		value := fieldValue(stored)
 		title := strings.TrimSpace(item.Group)
+		translate := item.Translate
+		if translate == nil {
+			translate = func(key string) string { return key }
+		}
+		groupTranslate := translate
 		if title == "" {
 			title = "Theme and plugin fields"
+			lang := a.language(ctx)
+			groupTranslate = func(key string) string { return i18n.T(lang, key) }
 		}
 		index, exists := groupIndexes[title]
 		if !exists {
 			index = len(result.Groups)
 			groupIndexes[title] = index
-			result.Groups = append(result.Groups, contentFieldGroup{Title: title})
+			result.Groups = append(result.Groups, contentFieldGroup{Title: title, Translate: groupTranslate})
 		}
 		result.Groups[index].Fields = append(result.Groups[index].Fields, contentFieldView{
-			Field:   item,
-			Value:   value,
-			Checked: checked(value),
+			Field:     item,
+			Value:     value,
+			Checked:   checked(value),
+			Translate: translate,
 		})
 	}
 

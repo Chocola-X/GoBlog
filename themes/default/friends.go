@@ -81,7 +81,7 @@ func renderFriendAdminPage(ctx context.Context, rt *plugin.Runtime, page string,
 	if data.PageTarget != "" {
 		content, contentErr := resolveFriendPageTarget(ctx, rt, data.PageTarget)
 		if contentErr != nil {
-			data.TargetNotice = contentErr.Error()
+			data.TargetNotice = defaultThemeT(data.Lang, contentErr.Error())
 		} else {
 			data.TargetTitle = content.Title
 			data.TargetURL, _ = rt.ContentURL(ctx, content.CID)
@@ -335,7 +335,11 @@ func adjustDefaultThemeData(ctx context.Context, data map[string]any) error {
 	return nil
 }
 
-func friendEnrichComments(_ context.Context, _ *plugin.Runtime, config map[string]string, comments []plugin.PublicComment) map[int64]plugin.CommentEnrichment {
+func friendEnrichComments(ctx context.Context, rt *plugin.Runtime, config map[string]string, comments []plugin.PublicComment) map[int64]plugin.CommentEnrichment {
+	lang := "en-US"
+	if rt != nil && rt.Language != nil {
+		lang = rt.Language(ctx)
+	}
 	links, _ := decodeFriendLinks(config[friendLinksKey])
 	emails := make(map[string]bool, len(links))
 	for _, link := range links {
@@ -348,11 +352,11 @@ func friendEnrichComments(_ context.Context, _ *plugin.Runtime, config map[strin
 		switch {
 		case comment.AuthorID > 0 && comment.AuthorID == comment.OwnerID:
 			enrichments[comment.COID] = plugin.CommentEnrichment{
-				Badges: []plugin.CommentBadge{{Label: "Owner", Icon: "bolt", Tone: "owner"}},
+				Badges: []plugin.CommentBadge{{Label: defaultThemeT(lang, "Owner"), Icon: "bolt", Tone: "owner"}},
 			}
 		case emails[strings.ToLower(strings.TrimSpace(comment.Mail))]:
 			enrichments[comment.COID] = plugin.CommentEnrichment{
-				Badges: []plugin.CommentBadge{{Label: "Friend", Icon: "bolt", Tone: "friend"}},
+				Badges: []plugin.CommentBadge{{Label: defaultThemeT(lang, "Friend"), Icon: "bolt", Tone: "friend"}},
 			}
 		}
 	}

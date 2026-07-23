@@ -85,7 +85,7 @@ func (Plugin) Info() plugin.PluginInfo {
 
 `RequireGopherInk` 在启用时与 `plugin.GopherInkVersion` 比较。版本比较提取各段数字，不是完整 SemVer 预发布语义；建议使用简单的 `major.minor.patch`。
 
-插件需要适配后台语言时，可以实现 `Translator`。核心只把当前语言传给插件，不维护插件翻译表；插件未实现该接口时，后台插件列表、原生 Schema 设置页、插件页签和插件通知都会显示插件注册时提供的原始文案。
+插件需要适配后台语言时，可以实现 `Translator`。核心只把当前语言传给插件，不维护插件翻译表；插件未实现该接口时，后台插件列表、侧边栏入口、原生 Schema 设置页、内容字段、插件页签和插件通知都会显示插件注册时提供的原始文案。
 
 ```go
 var zhCN = map[string]string{
@@ -536,7 +536,7 @@ func (Plugin) AdminMenuItems(ctx context.Context) []plugin.AdminMenuItem {
 }
 ```
 
-`Icon` 使用后台 Material Icon 名称，留空时界面使用默认 `extension`。`OpenNewTab` 为 `true` 时后台会输出 `target="_blank"`，适合插件完全自定义前端界面并注册独立路由的场景。菜单本身只负责导航外观；目标是核心原生配置页时具备后台权限和 CSRF 防护。需要后台风格统一时优先实现 `AdminPageProvider`；只有确实需要完整自定义界面时才使用独立路由，并自行处理对应安全边界。
+`Icon` 使用后台 Material Icon 名称，留空时界面使用默认 `extension`。`OpenNewTab` 为 `true` 时后台会输出 `target="_blank"`，适合插件完全自定义前端界面并注册独立路由的场景。菜单标签会自动交给注册插件的可选 `Translator` 处理，不会查询核心翻译表。菜单本身只负责导航外观；目标是核心原生配置页时具备后台权限和 CSRF 防护。需要后台风格统一时优先实现 `AdminPageProvider`；只有确实需要完整自定义界面时才使用独立路由，并自行处理对应安全边界。
 
 ## 钩子调度
 
@@ -1011,6 +1011,8 @@ func addFields(ctx context.Context, value any) (any, error) {
 ```
 
 服务端会再次执行字段名称、适用类型和只读校验。
+
+通过 `ContentFieldsProvider` 返回的字段标签、分组、说明和选项会自动交给该插件的 `Translator`。通过 `HookContentFields` 临时追加字段时，插件可以给 `FieldSchema.Translate` 设置请求级翻译函数；留空则原样显示插件提供的文案。
 
 ## 示例：改写附件 URL
 

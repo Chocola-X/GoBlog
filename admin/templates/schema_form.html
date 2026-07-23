@@ -98,8 +98,8 @@
 <section class="form-panel field-stack asset-manager">
   <div class="asset-manager-head">
     <div>
-      <h2>{{T .Title}}</h2>
-      {{if .Description}}<p class="muted">{{T .Description}}</p>{{end}}
+      <h2>{{call $.ExtensionT .Title}}</h2>
+      {{if .Description}}<p class="muted">{{call $.ExtensionT .Description}}</p>{{end}}
     </div>
     <form method="post" action="{{.CleanURL}}">
       <input type="hidden" name="_csrf" value="{{$.CSRF}}">

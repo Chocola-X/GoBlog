@@ -937,6 +937,9 @@ type AdminMenuItem struct {
 	URL        string
 	Icon       string
 	OpenNewTab bool
+	// Owner is assigned by Manager so the admin renderer can use the
+	// registering plugin's optional Translator. Plugins normally leave it blank.
+	Owner string
 }
 
 const (
@@ -1122,6 +1125,9 @@ type FieldSchema struct {
 	ForTypes      []string
 	ReadOnly      bool
 	Wide          bool
+	// Translate is attached while core collects theme and plugin content
+	// fields, keeping extension-owned labels out of the core translation table.
+	Translate func(string) string
 }
 
 type PluginInfo struct {
@@ -1436,6 +1442,7 @@ func (m *Manager) RegisterRoute(method, pattern string, handler RouteHandler) {
 func (m *Manager) RegisterAdminMenu(item AdminMenuItem) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	item.Owner = m.registering
 	m.adminMenus = append(m.adminMenus, ownedAdminMenu{Plugin: m.registering, Item: item})
 }
 
@@ -1470,7 +1477,9 @@ func (m *Manager) ActiveAdminMenuItems(ctx context.Context) []AdminMenuItem {
 	out := make([]AdminMenuItem, 0, len(registered))
 	for _, item := range registered {
 		if item.Plugin == "" || active[item.Plugin] {
-			out = append(out, item.Item)
+			entry := item.Item
+			entry.Owner = item.Plugin
+			out = append(out, entry)
 		}
 	}
 	for _, p := range plugins {
@@ -1482,7 +1491,10 @@ func (m *Manager) ActiveAdminMenuItems(ctx context.Context) []AdminMenuItem {
 		if !ok {
 			continue
 		}
-		out = append(out, provider.AdminMenuItems(ctx)...)
+		for _, item := range provider.AdminMenuItems(ctx) {
+			item.Owner = name
+			out = append(out, item)
+		}
 	}
 	return out
 }

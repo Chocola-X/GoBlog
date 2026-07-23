@@ -50,12 +50,12 @@
         <mdui-list-item href="/admin/plugins"><mdui-icon slot="icon" name="extension"></mdui-icon>{{T "Plugins"}}</mdui-list-item>
         <mdui-list-item href="/admin/options/general"><mdui-icon slot="icon" name="settings"></mdui-icon>{{T "Settings"}}</mdui-list-item>
         <mdui-list-item href="/admin/options/waf"><mdui-icon slot="icon" name="security"></mdui-icon>WAF</mdui-list-item>
-        <mdui-list-item href="/admin/management"><mdui-icon slot="icon" name="dashboard_customize"></mdui-icon>{{T "Backend personalization"}}</mdui-list-item>
+        <mdui-list-item href="/admin/management"><mdui-icon slot="icon" name="dashboard_customize"></mdui-icon>{{T "Backend Personalization"}}</mdui-list-item>
         <mdui-list-item href="/admin/backup"><mdui-icon slot="icon" name="download"></mdui-icon>{{T "Backup"}}</mdui-list-item>
         <mdui-list-item href="/admin/profile"><mdui-icon slot="icon" name="person"></mdui-icon>{{T "Profile"}}</mdui-list-item>
         {{if .AdminMenu}}
-        <div class="nav-section">{{T "Plugin extensions"}}</div>
-        {{range .AdminMenu}}<mdui-list-item href="{{.URL}}" {{if .OpenNewTab}}target="_blank" rel="noopener noreferrer"{{end}}><mdui-icon slot="icon" name="{{.Icon}}"></mdui-icon>{{T .Label}}</mdui-list-item>{{end}}
+        <div class="nav-section">{{T "Plugin Extensions"}}</div>
+        {{range .AdminMenu}}<mdui-list-item href="{{.URL}}" {{if .OpenNewTab}}target="_blank" rel="noopener noreferrer"{{end}}><mdui-icon slot="icon" name="{{.Icon}}"></mdui-icon>{{.Label}}</mdui-list-item>{{end}}
         {{end}}
       </mdui-list>
       <footer class="admin-product-info">
