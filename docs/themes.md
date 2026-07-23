@@ -159,7 +159,7 @@ plugin.RegisterTheme(plugin.Theme{
 
 该函数与插件的 `Runtime.AvatarURL(ctx, email, size)` 使用同一实现，会统一应用后台“自定义邮箱获取头像的替换链接”、`{hash}`、`{size}` 和头像等级设置。主题不应自行计算 MD5 或硬编码 Gravatar 域名。需要允许用户直接指定图片时，先判断显式图片 URL，留空后再调用 `emailAvatarURL`。
 
-`EnrichComments` 在一次请求中接收当前页面的评论副本，可以按邮箱、作者身份或主题配置返回以评论 ID 为键的 `CommentEnrichment`。`CommentEnrichment.Badges` 用于显示博主、友链好友等头像标志，`CSSClasses` 用于追加主题样式类，`Extra` 可携带主题模板自用的数据。默认主题使用它显示博主和友链好友标志。回调应批量处理，避免逐条评论查询数据库。
+`EnrichComments` 在一次请求中接收当前页面的评论副本、当前主题配置和插件运行时，可以按邮箱、作者身份或主题配置返回以评论 ID 为键的 `CommentEnrichment`。回调签名为 `func(context.Context, *plugin.Runtime, map[string]string, []plugin.PublicComment) map[int64]plugin.CommentEnrichment`，第三个参数为当前主题配置副本。`CommentEnrichment.Badges` 用于显示博主、友链好友等头像标志，`CSSClasses` 用于追加主题样式类，`Extra` 可携带主题模板自用的数据。默认主题使用它显示博主和友链好友标志。回调应批量处理，避免逐条评论查询数据库。
 
 ## 运行时初始化
 
@@ -279,6 +279,8 @@ form?.addEventListener("submit", async (event) => {
 - `PostPasswordProtected`：当前内容是否设置了访问密码。
 - `CommentAction`：评论提交地址，当前为 `/comment`。
 - `CommentRespondID`：评论表单锚点 ID，默认是 `comment-form`。
+- `CommentCSRF`：评论表单 CSRF 令牌。
+- `CommentIdentity`：当前评论者身份信息，包含 `LoggedIn`（是否已登录）、`Name`（昵称）和 `AvatarURL`（头像地址）。
 
 评论表单可以使用 `remember "author"`、`remember "mail"` 和 `remember "url"` 读取匿名访客上次评论时保存的称呼、邮箱和网址。该函数只读取核心评论记忆 Cookie，不做身份认证判断。
 

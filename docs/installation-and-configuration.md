@@ -55,7 +55,7 @@ go run ./cmd/gopherink-builder -o gopherink
 | `--tls` | `tls.enabled` | 启用内置 HTTPS/TLS；使用 `--tls=false` 关闭 |
 | `--tls-cert` | `tls.cert_file` | PEM 证书链文件路径，例如 Let's Encrypt 的 `fullchain.pem` |
 | `--tls-key` | `tls.key_file` | 与证书匹配的 PEM 私钥文件路径 |
-| `--db-type` | `database.type` | `sqlite`、`mysql`、`mariadb`、`postgres` |
+| `--db-type` | `database.type` | `sqlite`、`mysql`、`mariadb`、`postgres`（`sqlite3`、`postgresql`、`pgx` 也可识别） |
 | `--db-host` / `--db-port` | `database.host` / `database.port` | MySQL、MariaDB、PostgreSQL 的 IP 和端口 |
 | `--db-name` | `database.name` | 外部数据库名称，默认 `gopherink` |
 | `--db-user` / `--db-password` | 对应数据库凭据 | 外部数据库账户 |
@@ -113,7 +113,7 @@ go run ./cmd/gopherink-builder -o gopherink
 | `GOPHERINK_TLS_ENABLED` | 是否启用内置 HTTPS/TLS | `false` |
 | `GOPHERINK_TLS_CERT` | TLS 证书链文件路径 | 空 |
 | `GOPHERINK_TLS_KEY` | TLS 私钥文件路径 | 空 |
-| `GOPHERINK_DB_DRIVER` | `sqlite3`、`mysql`、`mariadb` 或 `postgres` | `sqlite` |
+| `GOPHERINK_DB_DRIVER` | `sqlite3`、`mysql`、`mariadb` 或 `postgres`（`sqlite`、`postgresql`、`pgx` 也可识别） | `sqlite` |
 | `GOPHERINK_DB_DSN` | 主数据库 DSN | `data/gopherink.db` |
 | `GOPHERINK_DB_WRITE_DSN` | 独立写库 DSN | 回退到 `GOPHERINK_DB_DSN` |
 | `GOPHERINK_DB_READ_DSN` | 读库 DSN | 未设置时使用写库 |
